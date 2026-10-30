@@ -3,6 +3,8 @@ import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { BackendStatus, ImportSource } from "../../shared/desktop";
 import { SourceListItem } from "./SourceListItem";
+import { SourceUnavailableDialog } from "./SourceUnavailableDialog";
+import { newlyUnavailableSources } from "./sourceAvailability";
 import "./styles.css";
 
 function App() {
@@ -11,11 +13,28 @@ function App() {
     const [sourcesLoaded, setSourcesLoaded] = useState(false);
     const [choosingSource, setChoosingSource] = useState(false);
     const [sourceError, setSourceError] = useState<string | null>(null);
+    const [unavailableSources, setUnavailableSources] = useState<ImportSource[]>([]);
+    const notifiedUnavailable = useRef(new Set<string>());
     const [draggingFolders, setDraggingFolders] = useState(false);
     const dragDepth = useRef(0);
     const sourceRevision = useRef(0);
     const sourceMutation = useRef(false);
     const canAddSource = sourcesLoaded && !choosingSource && status.state === "connected";
+
+    function rememberSource(source: ImportSource) {
+        setSources((current) => current.some((item) => item.path === source.path)
+            ? current.map((item) => item.path === source.path ? source : item)
+            : [...current, source]);
+    }
+
+    useEffect(() => {
+        const additions = newlyUnavailableSources(sources, notifiedUnavailable.current);
+        const unavailableIds = new Set(sources.filter((source) => !source.available).map((source) => source.id));
+        setUnavailableSources((current) => [
+            ...current.filter((source) => unavailableIds.has(source.id)),
+            ...additions,
+        ]);
+    }, [sources]);
 
     async function addSource(droppedFiles?: File[]) {
         if (sourceMutation.current) return;
@@ -33,7 +52,7 @@ function App() {
                 for (const file of droppedFiles) {
                     try {
                         const source = await window.desktop.addDroppedSource(file);
-                        setSources((current) => [...current.filter((item) => item.path !== source.path), source]);
+                        rememberSource(source);
                     } catch {
                         rejected += 1;
                     }
@@ -45,7 +64,7 @@ function App() {
             } else {
                 const source = await window.desktop.chooseSource();
                 if (!source) return;
-                setSources((current) => [...current.filter((item) => item.path !== source.path), source]);
+                rememberSource(source);
             }
         } catch {
             setSourceError("Could not inspect this source. Check that it is connected and readable, then try again.");
@@ -222,6 +241,13 @@ function App() {
                     )}
                 </section>
             </main>
+            {unavailableSources[0] && (
+                <SourceUnavailableDialog
+                    key={unavailableSources[0].id}
+                    source={unavailableSources[0]}
+                    onDismiss={() => setUnavailableSources((current) => current.slice(1))}
+                />
+            )}
             <footer className="flex items-center justify-between border-t border-white/8 px-5 py-3 text-xs text-zinc-500">
                 <div role="status" className="flex items-center gap-2">
                     <span

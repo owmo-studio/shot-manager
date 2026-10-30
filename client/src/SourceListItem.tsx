@@ -22,10 +22,16 @@ export function sourcePresentation(source: ImportSource): { name: string; icon: 
     return { name: volumeRoot ? `${source.name} (Drive)` : source.name, icon: volumeRoot ? "drive" : "folder" };
 }
 
-function SourceIcon({ type }: { type: SourceIconType }) {
+function SourceIcon({ type, error }: { type: SourceIconType; error: boolean }) {
     return (
-        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className="size-6 shrink-0 text-slate-400">
-            {type === "card" ? (
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" className={`size-6 shrink-0 ${error ? "text-red-400" : "text-slate-400"}`}>
+            {error ? (
+                <>
+                    <circle cx="12" cy="12" r="10" fill="currentColor" />
+                    <path d="M12 6v7" stroke="#1b2029" strokeWidth="2.5" strokeLinecap="round" />
+                    <circle cx="12" cy="17" r="1.4" fill="#1b2029" />
+                </>
+            ) : type === "card" ? (
                 <>
                     <path d="M7 3h10l3 7v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-9l3-7Z" fill="currentColor" />
                     <circle cx="12" cy="13" r="4" fill="#1b2029" />
@@ -50,20 +56,21 @@ export function SourceListItem({ source, onRemove }: {
     onRemove: () => void;
 }) {
     const presentation = sourcePresentation(source);
+    const unavailable = !source.available;
 
     return (
-        <li className="group relative rounded-lg transition hover:bg-white/4 focus-within:bg-white/4">
+        <li className={`group relative rounded-lg transition ${unavailable ? "bg-red-500/8 hover:bg-red-500/15 focus-within:bg-red-500/15" : "hover:bg-white/4 focus-within:bg-white/4"}`}>
             <div
-                title={`${presentation.name}\n${source.path}`}
-                className="flex min-h-14 w-full items-center gap-3 rounded-lg border border-transparent py-2.5 pr-8 pl-3 text-left"
+                title={`${presentation.name}\n${source.path}${source.warning ? `\n${source.warning}` : ""}`}
+                className={`flex min-h-14 w-full items-center gap-3 rounded-lg border py-2.5 pr-8 pl-3 text-left transition ${unavailable ? "border-red-500/30 group-hover:border-red-400/60 group-focus-within:border-red-400/60" : "border-transparent"}`}
             >
-                <SourceIcon type={presentation.icon} />
+                <SourceIcon type={presentation.icon} error={unavailable} />
                 <span className="min-w-0 flex-1">
                     <span className="block truncate text-[13px] text-zinc-200">{presentation.name}</span>
-                    <span className="mt-0.5 block text-xs text-zinc-500" aria-label={source.available ? "Clip count not available yet" : undefined}>
-                        {source.available ? "— clips" : "Unavailable"}
+                    <span className={`mt-0.5 flex items-center gap-1.5 text-xs ${unavailable ? "font-medium text-red-300" : "text-zinc-500"}`} aria-label={source.available ? "Clip count not available yet" : undefined}>
+                        {source.available ? "— clips" : "source is unavailable"}
                     </span>
-                    {source.warning && <span className="mt-1 block text-xs text-amber-300">{source.warning}</span>}
+                    {source.available && source.warning && <span className="mt-1 block text-xs text-amber-300">{source.warning}</span>}
                 </span>
             </div>
             <button
