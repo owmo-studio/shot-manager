@@ -1,6 +1,7 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { BackendStatus, ImportSource } from "../../shared/desktop";
+import { SourceListItem, sourcePresentation } from "./SourceListItem";
 import "./styles.css";
 
 function App() {
@@ -108,7 +109,7 @@ function App() {
                 <span className="text-xs text-zinc-500">Development</span>
             </header>
             <main className="flex min-h-0 flex-1">
-                <aside className="w-64 shrink-0 overflow-y-auto border-r border-white/8 bg-white/[0.015] p-4">
+                <aside className="w-72 shrink-0 overflow-y-auto border-r border-white/8 bg-white/[0.015] p-3">
                     <div className="flex items-center justify-between gap-2">
                         <h2 className="font-medium text-zinc-300">Sources</h2>
                         <button
@@ -131,37 +132,13 @@ function App() {
                     )}
                     <ul aria-label="Import sources" className="mt-4 space-y-2">
                         {sources.map((source) => (
-                            <li key={source.id} className="relative">
-                                <button
-                                    onClick={() => setActiveSourceId(source.id)}
-                                    aria-pressed={source.id === activeSourceId}
-                                    title={source.path}
-                                    className={`w-full rounded-lg border py-3 pr-9 pl-3 text-left transition focus-visible:outline-2 focus-visible:outline-blue-400 ${source.id === activeSourceId ? "border-white/15 bg-white/8" : "border-transparent hover:bg-white/4"}`}
-                                >
-                                    <span className="block truncate font-medium text-zinc-200">{source.name}</span>
-                                    <span className="mt-1 block text-xs text-zinc-500">
-                                        {!source.available
-                                            ? "Unavailable"
-                                            : source.type === "sony"
-                                              ? source.cameraModels.length
-                                                  ? `Sony · ${source.cameraModels.join(", ")}`
-                                                  : "Sony card structure"
-                                              : "Video folder"}
-                                    </span>
-                                    <span className="mt-1 block truncate text-xs text-zinc-600">{source.path}</span>
-                                    {source.warning && (
-                                        <span className="mt-1 block text-xs text-amber-300">{source.warning}</span>
-                                    )}
-                                </button>
-                                <button
-                                    onClick={() => void removeSource(source.id)}
-                                    aria-label={`Remove ${source.name} from sources`}
-                                    title="Remove source (does not delete files)"
-                                    className="absolute top-2 right-2 rounded p-1 text-zinc-500 hover:bg-white/10 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400"
-                                >
-                                    ×
-                                </button>
-                            </li>
+                            <SourceListItem
+                                key={source.id}
+                                source={source}
+                                selected={source.id === activeSourceId}
+                                onSelect={() => setActiveSourceId(source.id)}
+                                onRemove={() => void removeSource(source.id)}
+                            />
                         ))}
                     </ul>
                 </aside>
@@ -174,7 +151,7 @@ function App() {
                             ＋
                         </div>
                         <h2 className="text-xl font-medium tracking-tight">
-                            {activeSource ? activeSource.name : "Your workspace is ready"}
+                            {activeSource ? sourcePresentation(activeSource).name : "Your workspace is ready"}
                         </h2>
                         <p className="mt-3 leading-6 text-zinc-500">
                             {activeSource
