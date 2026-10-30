@@ -11,7 +11,11 @@ npm install
 npm run dev
 ```
 
-Opens an Electron window with a React/Tailwind interface and a separate local Fastify backend. The footer checks the backend connection. This starter does not access media, cards, or NAS storage.
+Opens an Electron window with a React/Tailwind interface and a separate local Fastify backend. The footer checks the backend connection. Use **+ Add Source** to choose the root of a mounted card or an ordinary video folder. The backend recognizes Sony's `PRIVATE/M4ROOT` structure and samples up to eight XML sidecars (at most 1 MiB each) for camera models, independently of video filenames. Unrecognized structures use the generic video-folder type. Shot discovery and playback are not implemented yet.
+
+Sources last only for the current backend session. Previous `sources.json` files are no longer read or written. Selected paths are rechecked every five seconds: missing roots are removed, inaccessible roots are marked unavailable, and changed root identity or sampled metadata creates a fresh source ID. This is live detection, not a guarantee of physical card identity; ingestion will need stronger source validation. Camera models reflect the metadata sample, not an assertion that every shot uses the same camera. No shot-specific configuration is reused between cards.
+
+Use **×** beside a source to remove it from the list without deleting or changing any files. Reinserted cards can be added again. Detection is read-only; generic video files are not probed yet. The native picker belongs to the desktop shell; source registration and detection belong to the backend.
 
 `npm run build` checks TypeScript and builds into `out/`. `npm start` opens that build; it does not create an installable application.
 

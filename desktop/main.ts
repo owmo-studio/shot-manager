@@ -1,5 +1,5 @@
-import { app, BrowserWindow, ipcMain, utilityProcess } from 'electron'
-import type { UtilityProcess } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, utilityProcess } from 'electron'
+import type { IpcMainInvokeEvent, UtilityProcess } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { join } from 'node:path'
 import type { BackendHealth, BackendStatus } from '../shared/desktop'
@@ -11,6 +11,29 @@ let backendState: 'starting' | 'unavailable' = 'starting'
 let quitting = false
 let shutdownComplete = false
 const token = randomBytes(32).toString('hex')
+let choosingSource = false
+
+async function backendRequest(path: string, options: RequestInit = {}) {
+  if (!backendURL) throw new Error('Backend is not ready')
+  const response = await fetch(`${backendURL}${path}`, {
+    ...options,
+    headers: {
+      ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      Authorization: `Bearer ${token}`
+    },
+    signal: AbortSignal.timeout(15000)
+  })
+  if (!response.ok) throw new Error(`Backend request failed (${response.status})`)
+  if (response.status !== 204) return response.json()
+}
+
+function requireMainWindow(event: IpcMainInvokeEvent): BrowserWindow {
+  if (!mainWindow || event.sender !== mainWindow.webContents ||
+      event.senderFrame !== mainWindow.webContents.mainFrame) {
+    throw new Error('Untrusted sender')
+  }
+  return mainWindow
+}
 
 function startBackend() {
   backend = utilityProcess.fork(join(__dirname, 'backend.cjs'), [], {
@@ -72,10 +95,34 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(() => {
-    ipcMain.handle('backend:status', async (event): Promise<BackendStatus> => {
-      if (event.sender !== mainWindow?.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
-        throw new Error('Untrusted sender')
+    ipcMain.handle('sources:list', async (event) => {
+      requireMainWindow(event)
+      return backendRequest('/api/sources')
+    })
+    ipcMain.handle('sources:remove', async (event, id: unknown) => {
+      requireMainWindow(event)
+      if (typeof id !== 'string' || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Invalid source ID')
+      await backendRequest(`/api/sources/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    })
+    ipcMain.handle('sources:choose', async (event) => {
+      const owner = requireMainWindow(event)
+      if (choosingSource) return null
+      choosingSource = true
+      try {
+        const result = await dialog.showOpenDialog(owner, {
+          title: 'Add Source',
+          buttonLabel: 'Add Source',
+          message: 'Choose the root of a mounted card, or a folder containing video files.',
+          properties: ['openDirectory']
+        })
+        if (result.canceled || !result.filePaths[0]) return null
+        return await backendRequest('/api/sources', { method: 'POST', body: JSON.stringify({ path: result.filePaths[0] }) })
+      } finally {
+        choosingSource = false
       }
+    })
+    ipcMain.handle('backend:status', async (event): Promise<BackendStatus> => {
+      requireMainWindow(event)
       if (!backendURL) return { state: backendState, message: backendState === 'starting' ? 'Starting backend…' : 'Backend stopped. Relaunch the app to reconnect.' }
       try {
         const response = await fetch(`${backendURL}/api/health`, {
