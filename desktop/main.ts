@@ -42,6 +42,11 @@ function startBackend() {
   })
   backend.on('message', (message: unknown) => {
     if (typeof message === 'object' && message !== null && 'type' in message &&
+        message.type === 'shots:changed' && 'collection' in message) {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('shots:changed', message.collection)
+      return
+    }
+    if (typeof message === 'object' && message !== null && 'type' in message &&
         message.type === 'ready' && 'url' in message && typeof message.url === 'string') {
       backendURL = message.url
       console.info(`Backend ready at ${backendURL}`)
@@ -95,6 +100,21 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(() => {
+    ipcMain.handle('shots:list', async (event) => {
+      requireMainWindow(event)
+      return backendRequest('/api/shots')
+    })
+    ipcMain.handle('shots:thumbnail', async (event, id: unknown) => {
+      requireMainWindow(event)
+      if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid shot ID')
+      const result = await backendRequest(`/api/shots/${id}/thumbnail`)
+      return result.dataUrl
+    })
+    ipcMain.handle('sources:refresh', async (event, id: unknown) => {
+      requireMainWindow(event)
+      if (typeof id !== 'string' || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Invalid source ID')
+      return backendRequest(`/api/sources/${encodeURIComponent(id)}/refresh`, { method: 'POST' })
+    })
     ipcMain.handle('sources:list', async (event) => {
       requireMainWindow(event)
       return backendRequest('/api/sources')

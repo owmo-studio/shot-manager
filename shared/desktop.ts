@@ -1,3 +1,5 @@
+import type { ShotCollection } from './shots'
+
 export interface BackendHealth {
   status: 'ok'
   service: 'shot-manager-backend'
@@ -24,4 +26,8 @@ export interface DesktopAPI {
   chooseSource: () => Promise<ImportSource | null>
   addDroppedSource: (file: File) => Promise<ImportSource>
   removeSource: (id: string) => Promise<void>
+  refreshSource: (id: string) => Promise<{ source: ImportSource; collection: ShotCollection }>
+  getShots: () => Promise<ShotCollection>
+  onShotsChanged: (listener: (collection: ShotCollection) => void) => () => void
+  getShotThumbnail: (id: string) => Promise<string | null>
 }

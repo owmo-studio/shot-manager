@@ -3,7 +3,9 @@ import { createServer } from './app'
 const token = process.env.SHOT_MANAGER_TOKEN
 if (!token || !process.parentPort) throw new Error('Backend must be started by Shot Manager')
 
-const server = createServer(token)
+const server = createServer(token, (collection) => {
+  process.parentPort?.postMessage({ type: 'shots:changed', collection })
+})
 let stopping = false
 
 async function shutdown() {

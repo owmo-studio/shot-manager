@@ -2,32 +2,78 @@ import type { DragEvent } from "react";
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { BackendStatus, ImportSource } from "../../shared/desktop";
+import type { ShotCollection } from "../../shared/shots";
+import { RemoveSourceDialog } from "./RemoveSourceDialog";
+import { ShotGrid } from "./ShotGrid";
+import { newlyUnavailableSources } from "./sourceAvailability";
 import { SourceListItem } from "./SourceListItem";
 import { SourceUnavailableDialog } from "./SourceUnavailableDialog";
-import { newlyUnavailableSources } from "./sourceAvailability";
 import "./styles.css";
 
 function App() {
     const [status, setStatus] = useState<BackendStatus>({ state: "starting", message: "Starting backend…" });
     const [sources, setSources] = useState<ImportSource[]>([]);
     const [sourcesLoaded, setSourcesLoaded] = useState(false);
+    const [shotCollection, setShotCollection] = useState<ShotCollection>({ revision: 0, shots: [], scans: [] });
+    const latestShotRevision = useRef(-1);
     const [choosingSource, setChoosingSource] = useState(false);
+    const [refreshingSourceId, setRefreshingSourceId] = useState<string | null>(null);
     const [sourceError, setSourceError] = useState<string | null>(null);
+    const [removalSourceId, setRemovalSourceId] = useState<string | null>(null);
+    const [removingSource, setRemovingSource] = useState(false);
+    const [removalError, setRemovalError] = useState<string | null>(null);
+    const removalSource = sources.find((source) => source.id === removalSourceId);
+    const removalScan = shotCollection.scans.find((scan) => scan.sourceId === removalSourceId);
     const [unavailableSources, setUnavailableSources] = useState<ImportSource[]>([]);
     const notifiedUnavailable = useRef(new Set<string>());
     const [draggingFolders, setDraggingFolders] = useState(false);
     const dragDepth = useRef(0);
     const sourceRevision = useRef(0);
     const sourceMutation = useRef(false);
-    const canAddSource = sourcesLoaded && !choosingSource && status.state === "connected";
+    const canAddSource = sourcesLoaded && !choosingSource && !refreshingSourceId && status.state === "connected";
+
+    function receiveShots(collection: ShotCollection) {
+        if (collection.revision < latestShotRevision.current) return;
+        latestShotRevision.current = collection.revision;
+        setShotCollection(collection);
+    }
+
+    useEffect(() => window.desktop.onShotsChanged(receiveShots), []);
+
+    async function refreshSource(id: string) {
+        if (sourceMutation.current) return;
+        sourceMutation.current = true;
+        sourceRevision.current += 1;
+        setRefreshingSourceId(id);
+        setSourceError(null);
+        try {
+            const result = await window.desktop.refreshSource(id);
+            rememberSource(result.source);
+            receiveShots(result.collection);
+        } catch {
+            setSourceError("Could not refresh this source. Check that it is available and not already scanning.");
+        } finally {
+            sourceRevision.current += 1;
+            sourceMutation.current = false;
+            setRefreshingSourceId(null);
+        }
+    }
 
     function rememberSource(source: ImportSource) {
-        setSources((current) => current.some((item) => item.path === source.path)
-            ? current.map((item) => item.path === source.path ? source : item)
-            : [...current, source]);
+        setSources((current) =>
+            current.some((item) => item.path === source.path)
+                ? current.map((item) => (item.path === source.path ? source : item))
+                : [...current, source],
+        );
     }
 
     useEffect(() => {
+        const registeredIds = new Set(sources.map((source) => source.id));
+        setShotCollection((current) => ({
+            revision: current.revision,
+            shots: current.shots.filter((shot) => registeredIds.has(shot.sourceId)),
+            scans: current.scans.filter((scan) => registeredIds.has(scan.sourceId)),
+        }));
         const additions = newlyUnavailableSources(sources, notifiedUnavailable.current);
         const unavailableIds = new Set(sources.filter((source) => !source.available).map((source) => source.id));
         setUnavailableSources((current) => [
@@ -111,12 +157,16 @@ function App() {
         sourceMutation.current = true;
         sourceRevision.current += 1;
         setSourceError(null);
+        setRemovalError(null);
+        setRemovingSource(true);
         try {
             await window.desktop.removeSource(id);
             setSources((current) => current.filter((source) => source.id !== id));
+            setRemovalSourceId(null);
         } catch {
-            setSourceError("Could not remove the source. Please try again.");
+            setRemovalError("Could not remove the source. If it is scanning, wait for it to finish, then try again.");
         } finally {
+            setRemovingSource(false);
             sourceRevision.current += 1;
             sourceMutation.current = false;
         }
@@ -133,8 +183,10 @@ function App() {
                     const revision = sourceRevision.current;
                     try {
                         const currentSources = await window.desktop.getSources();
+                        const currentShots = await window.desktop.getShots();
                         if (!disposed && revision === sourceRevision.current) {
                             setSources(currentSources);
+                            receiveShots(currentShots);
                             setSourcesLoaded(true);
                         }
                     } catch {
@@ -182,7 +234,7 @@ function App() {
                             disabled={!canAddSource}
                             className="rounded-md border border-white/10 bg-white/4 px-2.5 py-1.5 text-xs text-zinc-300 transition hover:bg-white/8 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40"
                         >
-                            + Add Source
+                            +
                         </button>
                     </div>
                     {sourceError && (
@@ -200,7 +252,13 @@ function App() {
                             <SourceListItem
                                 key={source.id}
                                 source={source}
-                                onRemove={() => void removeSource(source.id)}
+                                scan={shotCollection.scans.find((scan) => scan.sourceId === source.id)}
+                                refreshing={refreshingSourceId === source.id}
+                                onRefresh={() => void refreshSource(source.id)}
+                                onRemove={() => {
+                                    setRemovalError(null);
+                                    setRemovalSourceId(source.id);
+                                }}
                             />
                         ))}
                     </ul>
@@ -214,16 +272,16 @@ function App() {
                         event.dataTransfer.dropEffect = canAddSource ? "copy" : "none";
                     }}
                     onDrop={dropSources}
-                    className={`relative flex flex-1 items-center justify-center p-10 text-center transition ${draggingFolders ? "bg-blue-400/5 outline-2 -outline-offset-4 outline-dashed outline-blue-400/50" : ""}`}
+                    className={`relative flex min-w-0 flex-1 items-center justify-center overflow-y-auto text-center transition ${draggingFolders ? "bg-blue-400/5 outline-2 -outline-offset-4 outline-dashed outline-blue-400/50" : ""}`}
                 >
                     {draggingFolders ? (
                         <p className="pointer-events-none text-sm text-blue-300">
                             Drop folders or a card root to add sources
                         </p>
                     ) : sources.length ? (
-                        <p className="text-sm text-zinc-600">No shots to display yet.</p>
+                        <ShotGrid collection={shotCollection} sources={sources} />
                     ) : (
-                        <div className="max-w-md">
+                        <div className="max-w-md p-10">
                             <button
                                 onClick={() => void addSource()}
                                 disabled={!canAddSource}
@@ -241,7 +299,18 @@ function App() {
                     )}
                 </section>
             </main>
-            {unavailableSources[0] && (
+            {removalSource && (
+                <RemoveSourceDialog
+                    key={removalSource.id}
+                    source={removalSource}
+                    removing={removingSource}
+                    scanning={removalScan?.state === "queued" || removalScan?.state === "scanning"}
+                    error={removalError}
+                    onCancel={() => setRemovalSourceId(null)}
+                    onProceed={() => void removeSource(removalSource.id)}
+                />
+            )}
+            {!removalSource && unavailableSources[0] && (
                 <SourceUnavailableDialog
                     key={unavailableSources[0].id}
                     source={unavailableSources[0]}
@@ -255,7 +324,7 @@ function App() {
                     />
                     {status.state === "connected" ? "Backend connected" : status.message}
                 </div>
-                <span>Dummy data only · No active operations</span>
+                <span>Read-only · No ingestion operations</span>
             </footer>
         </div>
     );

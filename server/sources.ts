@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { opendir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { ImportSource } from "../shared/desktop";
+import { ShotScanner } from "./scanner";
 
 const parser = new XMLParser({ ignoreAttributes: false, removeNSPrefix: true, processEntities: false });
 
@@ -22,11 +23,7 @@ export async function inspectSource(path: string) {
     const fingerprint = createHash("sha256").update(`${info.dev}:${info.ino}:${info.birthtimeMs}`);
     const root = join(path, "PRIVATE", "M4ROOT");
     const clipPath = join(root, "CLIP");
-    const sony =
-        (await exists(clipPath, true)) &&
-        ((await exists(join(root, "MEDIAPRO.XML"), false)) ||
-            (await exists(join(root, "SUB"), true)) ||
-            (await exists(join(root, "THMBNL"), true)));
+    const sony = await exists(clipPath, true);
     const models = new Set<string>();
     let warning: string | undefined;
     if (sony) {
@@ -65,6 +62,7 @@ export async function inspectSource(path: string) {
 }
 
 export class SourceRegistry {
+    readonly scanner = new ShotScanner();
     private sources = new Map<string, { source: ImportSource; fingerprint: string }>();
     private pending: Promise<unknown> = Promise.resolve();
 
@@ -89,6 +87,7 @@ export class SourceRegistry {
                 warning: inspection.warning,
             };
             this.sources.set(path, { source, fingerprint: inspection.fingerprint });
+            this.scanner.sync([...this.sources.values()].map((entry) => entry.source));
             return source;
         });
     }
@@ -118,15 +117,56 @@ export class SourceRegistry {
                     };
                 }
             }
-            return [...this.sources.values()].map((entry) => entry.source);
+            const sources = [...this.sources.values()].map((entry) => entry.source);
+            this.scanner.sync(sources);
+            return sources;
+        });
+    }
+
+    refresh(id: string) {
+        return this.serialize(async () => {
+            const entry = [...this.sources.values()].find((item) => item.source.id === id);
+            if (!entry) throw Object.assign(new Error("Source not found."), { statusCode: 404 });
+            if (this.scanner.isBusy(id)) {
+                throw Object.assign(new Error("Wait for the current scan to finish."), { statusCode: 409 });
+            }
+            let inspection: Awaited<ReturnType<typeof inspectSource>>;
+            try {
+                inspection = await inspectSource(entry.source.path);
+            } catch {
+                entry.source = {
+                    ...entry.source,
+                    available: false,
+                    warning: "Source not found. It may have been disconnected, moved, or renamed. Please resolve to continue.",
+                };
+                this.scanner.sync([...this.sources.values()].map((item) => item.source));
+                throw Object.assign(new Error("Source is unavailable."), { statusCode: 409 });
+            }
+            entry.source = {
+                ...entry.source,
+                id: entry.fingerprint === inspection.fingerprint ? id : randomUUID(),
+                type: inspection.type,
+                cameraModels: inspection.cameraModels,
+                available: true,
+                warning: inspection.warning,
+            };
+            entry.fingerprint = inspection.fingerprint;
+            if (entry.source.id === id) this.scanner.refresh(entry.source);
+            this.scanner.sync([...this.sources.values()].map((item) => item.source));
+            return { source: entry.source, collection: this.scanner.snapshot() };
         });
     }
 
     remove(id: string): Promise<void> {
         return this.serialize(async () => {
+            if (this.scanner.isBusy(id)) {
+                throw Object.assign(new Error("Wait for scanning to finish before removing this source."), { statusCode: 409 });
+            }
             for (const [path, entry] of this.sources) {
                 if (entry.source.id === id) this.sources.delete(path);
             }
+            this.scanner.sync([...this.sources.values()].map((entry) => entry.source));
         });
     }
+
 }
