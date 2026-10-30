@@ -1,31 +1,52 @@
+import type { DragEvent } from "react";
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { BackendStatus, ImportSource } from "../../shared/desktop";
-import { SourceListItem, sourcePresentation } from "./SourceListItem";
+import { SourceListItem } from "./SourceListItem";
 import "./styles.css";
 
 function App() {
     const [status, setStatus] = useState<BackendStatus>({ state: "starting", message: "Starting backend…" });
     const [sources, setSources] = useState<ImportSource[]>([]);
-    const [activeSourceId, setActiveSourceId] = useState<string | null>(null);
     const [sourcesLoaded, setSourcesLoaded] = useState(false);
     const [choosingSource, setChoosingSource] = useState(false);
     const [sourceError, setSourceError] = useState<string | null>(null);
+    const [draggingFolders, setDraggingFolders] = useState(false);
+    const dragDepth = useRef(0);
     const sourceRevision = useRef(0);
     const sourceMutation = useRef(false);
-    const activeSource = sources.find((source) => source.id === activeSourceId);
+    const canAddSource = sourcesLoaded && !choosingSource && status.state === "connected";
 
-    async function addSource() {
+    async function addSource(droppedFiles?: File[]) {
         if (sourceMutation.current) return;
+        if (!canAddSource) {
+            setSourceError("Please wait for the backend to connect before adding a source.");
+            return;
+        }
         sourceMutation.current = true;
         sourceRevision.current += 1;
         setChoosingSource(true);
         setSourceError(null);
         try {
-            const source = await window.desktop.chooseSource();
-            if (!source) return;
-            setSources((current) => [...current.filter((item) => item.path !== source.path), source]);
-            setActiveSourceId(source.id);
+            if (droppedFiles) {
+                let rejected = 0;
+                for (const file of droppedFiles) {
+                    try {
+                        const source = await window.desktop.addDroppedSource(file);
+                        setSources((current) => [...current.filter((item) => item.path !== source.path), source]);
+                    } catch {
+                        rejected += 1;
+                    }
+                }
+                if (rejected)
+                    setSourceError(
+                        `${rejected} dropped item${rejected === 1 ? " could" : "s could"} not be added. Drop readable folders or card roots, rather than individual files.`,
+                    );
+            } else {
+                const source = await window.desktop.chooseSource();
+                if (!source) return;
+                setSources((current) => [...current.filter((item) => item.path !== source.path), source]);
+            }
         } catch {
             setSourceError("Could not inspect this source. Check that it is connected and readable, then try again.");
         } finally {
@@ -35,6 +56,37 @@ function App() {
         }
     }
 
+    function dragEnter(event: DragEvent<HTMLElement>) {
+        event.preventDefault();
+        if (!event.dataTransfer.types.includes("Files")) return;
+        dragDepth.current += 1;
+        setDraggingFolders(true);
+    }
+
+    function dragLeave(event: DragEvent<HTMLElement>) {
+        event.preventDefault();
+        dragDepth.current = Math.max(0, dragDepth.current - 1);
+        if (!dragDepth.current) setDraggingFolders(false);
+    }
+
+    function dropSources(event: DragEvent<HTMLElement>) {
+        event.preventDefault();
+        dragDepth.current = 0;
+        setDraggingFolders(false);
+        const files = Array.from(event.dataTransfer.files);
+        if (files.length) void addSource(files);
+    }
+
+    useEffect(() => {
+        const preventNavigation = (event: globalThis.DragEvent) => event.preventDefault();
+        window.addEventListener("dragover", preventNavigation);
+        window.addEventListener("drop", preventNavigation);
+        return () => {
+            window.removeEventListener("dragover", preventNavigation);
+            window.removeEventListener("drop", preventNavigation);
+        };
+    }, []);
+
     async function removeSource(id: string) {
         if (sourceMutation.current) return;
         sourceMutation.current = true;
@@ -43,7 +95,6 @@ function App() {
         try {
             await window.desktop.removeSource(id);
             setSources((current) => current.filter((source) => source.id !== id));
-            setActiveSourceId((current) => (current === id ? null : current));
         } catch {
             setSourceError("Could not remove the source. Please try again.");
         } finally {
@@ -66,11 +117,6 @@ function App() {
                         if (!disposed && revision === sourceRevision.current) {
                             setSources(currentSources);
                             setSourcesLoaded(true);
-                            setActiveSourceId((current) =>
-                                currentSources.some((source) => source.id === current)
-                                    ? current
-                                    : (currentSources[0]?.id ?? null),
-                            );
                         }
                     } catch {
                         if (!disposed) setSourceError("Could not refresh sources. The app will retry shortly.");
@@ -114,10 +160,10 @@ function App() {
                         <h2 className="font-medium text-zinc-300">Sources</h2>
                         <button
                             onClick={() => void addSource()}
-                            disabled={!sourcesLoaded || choosingSource || status.state !== "connected"}
+                            disabled={!canAddSource}
                             className="rounded-md border border-white/10 bg-white/4 px-2.5 py-1.5 text-xs text-zinc-300 transition hover:bg-white/8 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40"
                         >
-                            {choosingSource ? "Choosing…" : "+ Add Source"}
+                            + Add Source
                         </button>
                     </div>
                     {sourceError && (
@@ -135,39 +181,45 @@ function App() {
                             <SourceListItem
                                 key={source.id}
                                 source={source}
-                                selected={source.id === activeSourceId}
-                                onSelect={() => setActiveSourceId(source.id)}
                                 onRemove={() => void removeSource(source.id)}
                             />
                         ))}
                     </ul>
                 </aside>
-                <section className="flex flex-1 items-center justify-center p-10 text-center">
-                    <div className="max-w-md">
-                        <div
-                            className="mx-auto mb-6 grid size-14 place-items-center rounded-2xl border border-white/10 bg-white/4 text-2xl text-zinc-500"
-                            aria-hidden="true"
-                        >
-                            ＋
+                <section
+                    aria-label="Shots from all sources"
+                    onDragEnter={dragEnter}
+                    onDragLeave={dragLeave}
+                    onDragOver={(event) => {
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = canAddSource ? "copy" : "none";
+                    }}
+                    onDrop={dropSources}
+                    className={`relative flex flex-1 items-center justify-center p-10 text-center transition ${draggingFolders ? "bg-blue-400/5 outline-2 -outline-offset-4 outline-dashed outline-blue-400/50" : ""}`}
+                >
+                    {draggingFolders ? (
+                        <p className="pointer-events-none text-sm text-blue-300">
+                            Drop folders or a card root to add sources
+                        </p>
+                    ) : sources.length ? (
+                        <p className="text-sm text-zinc-600">No shots to display yet.</p>
+                    ) : (
+                        <div className="max-w-md">
+                            <button
+                                onClick={() => void addSource()}
+                                disabled={!canAddSource}
+                                aria-label="Add Source"
+                                title="Add Source"
+                                className="mx-auto mb-6 grid size-14 place-items-center rounded-2xl border border-white/10 bg-white/4 text-2xl text-zinc-400 transition hover:border-white/20 hover:bg-white/8 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40"
+                            >
+                                ＋
+                            </button>
+                            <h2 className="text-xl font-medium tracking-tight">Your workspace is ready</h2>
+                            <p className="mt-3 leading-6 text-zinc-500">
+                                Add a source, or drag folders here to get started.
+                            </p>
                         </div>
-                        <h2 className="text-xl font-medium tracking-tight">
-                            {activeSource ? sourcePresentation(activeSource).name : "Your workspace is ready"}
-                        </h2>
-                        <p className="mt-3 leading-6 text-zinc-500">
-                            {activeSource
-                                ? !activeSource.available
-                                    ? "This source is currently inaccessible."
-                                    : activeSource.type === "sony"
-                                      ? "Sony card structure recognized. Shot browsing will be added next."
-                                      : "Ready to inspect as a folder of videos. Shot browsing will be added next."
-                                : "Add a source to begin building your workspace."}
-                        </p>
-                        {activeSource && <p className="mt-4 break-all text-xs text-zinc-500">{activeSource.path}</p>}
-                        <p className="mt-6 text-xs text-zinc-600">
-                            Sources last for this session. Detection reads folders and camera metadata only; media is
-                            never modified.
-                        </p>
-                    </div>
+                    )}
                 </section>
             </main>
             <footer className="flex items-center justify-between border-t border-white/8 px-5 py-3 text-xs text-zinc-500">

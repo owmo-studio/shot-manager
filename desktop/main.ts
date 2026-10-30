@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, utilityProcess } from 'electron'
 import type { IpcMainInvokeEvent, UtilityProcess } from 'electron'
 import { randomBytes } from 'node:crypto'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import type { BackendHealth, BackendStatus } from '../shared/desktop'
 
 let mainWindow: BrowserWindow | null = null
@@ -98,6 +98,13 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle('sources:list', async (event) => {
       requireMainWindow(event)
       return backendRequest('/api/sources')
+    })
+    ipcMain.handle('sources:drop', async (event, path: unknown) => {
+      requireMainWindow(event)
+      if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) {
+        throw new Error('Drop a folder from your computer')
+      }
+      return backendRequest('/api/sources', { method: 'POST', body: JSON.stringify({ path }) })
     })
     ipcMain.handle('sources:remove', async (event, id: unknown) => {
       requireMainWindow(event)

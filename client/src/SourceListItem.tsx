@@ -45,21 +45,17 @@ function SourceIcon({ type }: { type: SourceIconType }) {
     );
 }
 
-export function SourceListItem({ source, selected, onSelect, onRemove }: {
+export function SourceListItem({ source, onRemove }: {
     source: ImportSource;
-    selected: boolean;
-    onSelect: () => void;
     onRemove: () => void;
 }) {
     const presentation = sourcePresentation(source);
 
     return (
-        <li className="group relative">
-            <button
-                onClick={onSelect}
-                aria-pressed={selected}
+        <li className="group relative rounded-lg transition hover:bg-white/4 focus-within:bg-white/4">
+            <div
                 title={`${presentation.name}\n${source.path}`}
-                className={`flex min-h-14 w-full items-center gap-3 rounded-lg border py-2.5 pr-8 pl-3 text-left transition focus-visible:outline-2 focus-visible:outline-blue-400 ${selected ? "border-[#424b5a] bg-[#2b313c]" : "border-transparent hover:bg-white/4"}`}
+                className="flex min-h-14 w-full items-center gap-3 rounded-lg border border-transparent py-2.5 pr-8 pl-3 text-left"
             >
                 <SourceIcon type={presentation.icon} />
                 <span className="min-w-0 flex-1">
@@ -69,7 +65,7 @@ export function SourceListItem({ source, selected, onSelect, onRemove }: {
                     </span>
                     {source.warning && <span className="mt-1 block text-xs text-amber-300">{source.warning}</span>}
                 </span>
-            </button>
+            </div>
             <button
                 onClick={onRemove}
                 aria-label={`Remove ${presentation.name} from sources`}

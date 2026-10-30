@@ -15,7 +15,7 @@ Opens an Electron window with a React/Tailwind interface and a separate local Fa
 
 Sources last only for the current backend session. Previous `sources.json` files are no longer read or written. Selected paths are rechecked every five seconds: missing roots are removed, inaccessible roots are marked unavailable, and changed root identity or sampled metadata creates a fresh source ID. This is live detection, not a guarantee of physical card identity; ingestion will need stronger source validation. Camera models reflect the metadata sample, not an assertion that every shot uses the same camera. No shot-specific configuration is reused between cards.
 
-Use **×** beside a source to remove it from the list without deleting or changing any files. Reinserted cards can be added again. Detection is read-only; generic video files are not probed yet. The native picker belongs to the desktop shell; source registration and detection belong to the backend.
+Use **×** beside a source to remove it from the list without deleting or changing any files. Reinserted cards can be added again. The central **+** opens the same picker as **+ Add Source**. Folders or mounted cards can also be dragged from Finder onto the main workspace, including after sources have been added. Individual files are rejected. Once a source is added, the workspace shows an empty shot placeholder. Detection is read-only; generic video files are not probed yet. The native picker belongs to the desktop shell; source registration and detection belong to the backend.
 
 `npm run build` checks TypeScript and builds into `out/`. `npm start` opens that build; it does not create an installable application.
 

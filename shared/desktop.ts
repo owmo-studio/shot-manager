@@ -22,5 +22,6 @@ export interface DesktopAPI {
   getBackendStatus: () => Promise<BackendStatus>
   getSources: () => Promise<ImportSource[]>
   chooseSource: () => Promise<ImportSource | null>
+  addDroppedSource: (file: File) => Promise<ImportSource>
   removeSource: (id: string) => Promise<void>
 }
