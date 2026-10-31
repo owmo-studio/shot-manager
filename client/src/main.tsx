@@ -8,6 +8,7 @@ import { ShotGrid } from "./ShotGrid";
 import { newlyUnavailableSources } from "./sourceAvailability";
 import { SourceListItem } from "./SourceListItem";
 import { SourceUnavailableDialog } from "./SourceUnavailableDialog";
+import { SourceErrorDialog } from "./SourceErrorDialog";
 import "./styles.css";
 
 function App() {
@@ -20,6 +21,7 @@ function App() {
     const [choosingSource, setChoosingSource] = useState(false);
     const [refreshingSourceId, setRefreshingSourceId] = useState<string | null>(null);
     const [sourceError, setSourceError] = useState<string | null>(null);
+    const sourceRefreshFailed = useRef(false);
     const [removalSourceId, setRemovalSourceId] = useState<string | null>(null);
     const [removingSource, setRemovingSource] = useState(false);
     const [removalError, setRemovalError] = useState<string | null>(null);
@@ -186,12 +188,16 @@ function App() {
                         const currentSources = await window.desktop.getSources();
                         const currentShots = await window.desktop.getShots();
                         if (!disposed && revision === sourceRevision.current) {
+                            sourceRefreshFailed.current = false;
                             setSources(currentSources);
                             receiveShots(currentShots);
                             setSourcesLoaded(true);
                         }
                     } catch {
-                        if (!disposed) setSourceError("Could not refresh sources. The app will retry shortly.");
+                        if (!disposed && !sourceRefreshFailed.current) {
+                            sourceRefreshFailed.current = true;
+                            setSourceError("Could not refresh sources. The app will retry shortly.");
+                        }
                     }
                 }
             } catch {
@@ -238,12 +244,7 @@ function App() {
                             +
                         </button>
                     </div>
-                    {sourceError && (
-                        <p role="alert" className="mt-4 text-xs leading-5 text-red-300">
-                            {sourceError}
-                        </p>
-                    )}
-                    {sources.length === 0 && !sourceError && (
+                    {sources.length === 0 && (
                         <p className="mt-4 text-xs leading-6 text-zinc-500">
                             {sourcesLoaded ? "Add a folder or SD Card to get started." : "Loading sources…"}
                         </p>
@@ -312,7 +313,10 @@ function App() {
                     onProceed={() => void removeSource(removalSource.id)}
                 />
             )}
-            {!removalSource && unavailableSources[0] && (
+            {!removalSource && sourceError && (
+                <SourceErrorDialog message={sourceError} onDismiss={() => setSourceError(null)} />
+            )}
+            {!removalSource && !sourceError && unavailableSources[0] && (
                 <SourceUnavailableDialog
                     key={unavailableSources[0].id}
                     source={unavailableSources[0]}

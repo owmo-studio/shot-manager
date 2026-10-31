@@ -54,6 +54,13 @@ function ShotCard({ shot, source, dimmed, selected = false }: { shot: VideoShot;
                 {unavailable && <div className="pointer-events-none absolute inset-0 bg-red-950/30">
                     <span aria-hidden="true" className="absolute top-2 left-2 grid size-6 place-items-center rounded-full bg-red-400 font-bold text-[#1b2029]">!</span>
                 </div>}
+                {shot.hasProxy && (
+                    <div className="absolute bottom-1.5 left-1.5 flex gap-1">
+                        {shot.hasProxy && <span role="img" aria-label="Proxy detected" title="Proxy detected" className="grid size-5 place-items-center rounded bg-black/75 text-zinc-200">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-3.5"><path d="M7 4h13v12" /><rect x="3" y="8" width="13" height="12" rx="1.5" /><path d="m8 11 4 3-4 3v-6Z" /></svg>
+                        </span>}
+                    </div>
+                )}
                 {shot.durationSeconds !== null && <span className="absolute right-1.5 bottom-1.5 rounded bg-black/75 px-1.5 py-0.5 text-xs text-zinc-200">{durationLabel(shot.durationSeconds)}</span>}
             </div>
             <h3 className="mt-2 truncate text-[13px] text-zinc-200">{shot.filename}</h3>
