@@ -3,6 +3,7 @@ import type { BackendHealth } from '../shared/desktop'
 import type { ShotCollection } from '../shared/shots'
 import { SourceRegistry } from './sources'
 import { pruneThumbnailCache } from './thumbnails'
+import { sendVideo } from './media'
 
 export function createServer(token: string, onShotsChanged?: (collection: ShotCollection) => void, thumbnailCacheDirectory?: string) {
   const server = Fastify({ logger: true })
@@ -36,6 +37,15 @@ export function createServer(token: string, onShotsChanged?: (collection: ShotCo
   server.get('/api/sources', () => sources.list())
   server.post<{ Params: { id: string } }>('/api/sources/:id/refresh', (request) => sources.refresh(request.params.id))
   server.get('/api/shots', () => sources.scanner.snapshot())
+  server.get<{ Params: { id: string } }>('/api/shots/:id/details', (request) => sources.scanner.details(request.params.id))
+  server.get<{ Params: { id: string; variant: 'original' | 'proxy' } }>('/api/shots/:id/media/:variant', {
+    schema: { params: { type: 'object', required: ['id', 'variant'], properties: {
+      id: { type: 'string', pattern: '^[a-f0-9]{64}$' }, variant: { type: 'string', enum: ['original', 'proxy'] }
+    } } }
+  }, async (request, reply) => {
+    const asset = await sources.scanner.openVideo(request.params.id, request.params.variant)
+    return sendVideo(request, reply, asset.file, asset.path)
+  })
   server.get<{ Params: { id: string }; Querystring: { fallback?: string } }>('/api/shots/:id/thumbnail', async (request) => ({
     dataUrl: await sources.scanner.thumbnail(request.params.id, request.query.fallback === '1')
   }))

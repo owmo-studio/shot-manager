@@ -30,3 +30,10 @@ export interface ShotCollection {
     shots: VideoShot[];
     scans: SourceScan[];
 }
+
+export interface ShotDetails {
+    assets: { role: "original" | "proxy" | "thumbnail" | "xml"; filename: string; path: string; relativePath: string; bytes: number }[];
+    mediaInfo: Record<string, unknown> | null;
+    cameraXml: string | null;
+    errors: string[];
+}

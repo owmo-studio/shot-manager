@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, utilityProcess } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, protocol, utilityProcess } from 'electron'
 import type { IpcMainInvokeEvent, UtilityProcess } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { isAbsolute, join } from 'node:path'
@@ -12,6 +12,10 @@ let quitting = false
 let shutdownComplete = false
 const token = randomBytes(32).toString('hex')
 let choosingSource = false
+
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'shot-media', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } }
+])
 
 async function backendRequest(path: string, options: RequestInit = {}) {
   if (!backendURL) throw new Error('Backend is not ready')
@@ -66,9 +70,9 @@ function startBackend() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 960,
-    minWidth: 800,
+    width: 1600,
+    height: 1080,
+    minWidth: 1100,
     minHeight: 560,
     title: 'OWMO Shot Manager',
     backgroundColor: '#111318',
@@ -100,6 +104,26 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(() => {
+    protocol.handle('shot-media', async (request) => {
+      const url = new URL(request.url)
+      const match = /^\/shots\/([a-f0-9]{64})\/(original|proxy)$/.exec(url.pathname)
+      if (url.hostname !== 'local' || url.search || !match || !['GET', 'HEAD'].includes(request.method)) return new Response(null, { status: 404 })
+      if (!backendURL) return new Response(null, { status: 503 })
+      const headers = new Headers({ Authorization: `Bearer ${token}` })
+      const range = request.headers.get('range')
+      if (range) headers.set('Range', range)
+      try {
+        const response = await fetch(`${backendURL}/api/shots/${match[1]}/media/${match[2]}`, {
+          method: request.method, headers, signal: request.signal
+        })
+        return new Response(response.body, { status: response.status, headers: response.headers })
+      } catch { return new Response(null, { status: 503 }) }
+    })
+    ipcMain.handle('shots:details', async (event, id: unknown) => {
+      requireMainWindow(event)
+      if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid shot ID')
+      return backendRequest(`/api/shots/${id}/details`)
+    })
     ipcMain.handle('shots:list', async (event) => {
       requireMainWindow(event)
       return backendRequest('/api/shots')

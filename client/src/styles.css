@@ -12,6 +12,14 @@ body {
   -webkit-user-select: none;
 }
 
+#clip-inspector video::-webkit-media-controls-panel {
+  background: transparent;
+}
+
+#clip-inspector video::-internal-media-controls-overflow-button {
+  display: none;
+}
+
 input,
 textarea,
 [contenteditable=""],

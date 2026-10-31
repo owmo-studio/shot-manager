@@ -9,6 +9,8 @@ import { newlyUnavailableSources } from "./sourceAvailability";
 import { SourceListItem } from "./SourceListItem";
 import { SourceUnavailableDialog } from "./SourceUnavailableDialog";
 import { SourceErrorDialog } from "./SourceErrorDialog";
+import { ClipInspector } from "./ClipInspector";
+import { MIN_INSPECTOR_WIDTH } from "./ResizableInspector";
 import "./styles.css";
 
 function App() {
@@ -16,8 +18,15 @@ function App() {
     const [sources, setSources] = useState<ImportSource[]>([]);
     const [sourcesLoaded, setSourcesLoaded] = useState(false);
     const [hoveredSourceId, setHoveredSourceId] = useState<string | null>(null);
+    const [inspectedShotId, setInspectedShotId] = useState<string | null>(null);
+    const [inspectorWidth, setInspectorWidth] = useState(MIN_INSPECTOR_WIDTH);
     const [shotCollection, setShotCollection] = useState<ShotCollection>({ revision: 0, shots: [], scans: [] });
     const latestShotRevision = useRef(-1);
+    const inspectedShot = shotCollection.shots.find((shot) => shot.id === inspectedShotId);
+
+    useEffect(() => {
+        if (inspectedShotId && !inspectedShot) setInspectedShotId(null);
+    }, [inspectedShotId, inspectedShot]);
     const [choosingSource, setChoosingSource] = useState(false);
     const [refreshingSourceId, setRefreshingSourceId] = useState<string | null>(null);
     const [sourceError, setSourceError] = useState<string | null>(null);
@@ -282,7 +291,7 @@ function App() {
                             Drop folders or a card root to add sources
                         </p>
                     ) : sources.length ? (
-                        <ShotGrid collection={shotCollection} sources={sources} hoveredSourceId={hoveredSourceId} />
+                        <ShotGrid collection={shotCollection} sources={sources} hoveredSourceId={hoveredSourceId} inspectedShotId={inspectedShotId} onInspect={(id) => setInspectedShotId((current) => current === id ? null : id)} />
                     ) : (
                         <div className="max-w-md p-10">
                             <button
@@ -301,6 +310,7 @@ function App() {
                         </div>
                     )}
                 </section>
+                {inspectedShot && <ClipInspector key={inspectedShot.id} shot={inspectedShot} source={sources.find((source) => source.id === inspectedShot.sourceId)} width={inspectorWidth} onResize={setInspectorWidth} onClose={() => setInspectedShotId(null)} />}
             </main>
             {removalSource && (
                 <RemoveSourceDialog

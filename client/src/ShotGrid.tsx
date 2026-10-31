@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ImportSource } from "../../shared/desktop";
 import type { ShotCollection, VideoShot } from "../../shared/shots";
 import { sourcePresentation } from "./SourceListItem";
+import { sourceFilePath } from "./mediaInfo";
 
 function durationLabel(seconds: number | null) {
     if (seconds === null) return "";
@@ -9,13 +10,20 @@ function durationLabel(seconds: number | null) {
     return `${Math.floor(rounded / 60)}:${String(rounded % 60).padStart(2, "0")}`;
 }
 
-function ShotCard({ shot, source, dimmed, selected = false }: { shot: VideoShot; source?: ImportSource; dimmed: boolean; selected?: boolean }) {
+function ShotCard({ shot, source, highlighted, selected = false, onInspect }: { shot: VideoShot; source?: ImportSource; highlighted: boolean; selected?: boolean; onInspect: () => void }) {
     const [thumbnail, setThumbnail] = useState<string | null>(null);
     const [failedImage, setFailedImage] = useState(false);
     const card = useRef<HTMLElement>(null);
     const attemptedFallback = useRef(false);
     const unavailable = !shot.available || !source?.available;
     const inactive = !unavailable && !shot.editable;
+    const cardStyle = unavailable
+        ? `${selected ? "ring-red-400" : "ring-red-500/30"} hover:bg-red-500/15 hover:ring-red-400/60 ${highlighted ? "bg-red-500/15 ring-red-400/60" : "bg-red-500/8"}`
+        : inactive
+          ? `cursor-not-allowed grayscale opacity-50 ${selected ? "ring-zinc-300" : "ring-transparent"}`
+          : selected
+            ? `hover:bg-blue-400/15 hover:ring-blue-300 ${highlighted ? "bg-blue-400/15 ring-blue-300" : "bg-blue-400/5 ring-blue-400/80"}`
+            : `hover:bg-white/10 hover:ring-white/25 ${highlighted ? "bg-white/10 ring-white/25" : "ring-transparent"}`;
     useEffect(() => {
         if (unavailable || thumbnail || shot.thumbnailStatus === "pending" || shot.thumbnailStatus === "failed" || !card.current) return;
         let disposed = false;
@@ -42,9 +50,10 @@ function ShotCard({ shot, source, dimmed, selected = false }: { shot: VideoShot;
 
     return (
         <article ref={card} aria-disabled={unavailable || !shot.editable} data-editable={!unavailable && shot.editable}
-            className={`min-w-0 rounded-lg transition ${unavailable ? "bg-red-500/8 p-2 ring-1 ring-red-500/30 hover:bg-red-500/15 hover:ring-red-400/60" : inactive ? "cursor-not-allowed grayscale" : ""} ${dimmed ? "opacity-25" : inactive ? "opacity-50" : ""} ${selected ? `outline-2 outline-offset-4 ${unavailable ? "outline-red-400" : inactive ? "outline-zinc-300" : "bg-blue-400/5 outline-blue-400/80"}` : ""}`}
-            title={[shot.relativePath, ...(unavailable ? ["Source unavailable. Reconnect the source to edit this shot."] : inactive ? ["Source scan is queued or running. Editing is unavailable until it finishes."] : []), ...shot.warnings].join("\n")}>
-            <div className={`relative flex aspect-video items-center justify-center overflow-hidden rounded-lg border ${unavailable ? "border-red-500/30 bg-red-500/5" : "border-white/8 bg-white/4"}`}>
+            className={`-m-2 min-w-0 rounded-lg p-2 ring-1 transition duration-75 ${cardStyle}`}
+            title={[sourceFilePath(source?.path, shot.relativePath), ...(unavailable ? ["Source unavailable. Reconnect the source to edit this shot."] : inactive ? ["Source scan is queued or running. Editing is unavailable until it finishes."] : []), ...shot.warnings].join("\n")}>
+            <button type="button" onClick={onInspect} disabled={unavailable || inactive} aria-label={`Inspect ${shot.filename}`} aria-current={selected ? true : undefined} aria-controls="clip-inspector"
+                className={`relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg border focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:cursor-not-allowed ${unavailable ? "border-red-500/30 bg-red-500/5" : "border-white/8 bg-white/4"}`}>
                 {thumbnail && !failedImage ? <img src={thumbnail} alt="" onError={thumbnailFailed} className="size-full object-cover" /> : (
                     <div className="text-center text-zinc-600">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true" className="mx-auto size-7"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m10 9 5 3-5 3V9Z" /></svg>
@@ -54,15 +63,13 @@ function ShotCard({ shot, source, dimmed, selected = false }: { shot: VideoShot;
                 {unavailable && <div className="pointer-events-none absolute inset-0 bg-red-950/30">
                     <span aria-hidden="true" className="absolute top-2 left-2 grid size-6 place-items-center rounded-full bg-red-400 font-bold text-[#1b2029]">!</span>
                 </div>}
-                {shot.hasProxy && (
-                    <div className="absolute bottom-1.5 left-1.5 flex gap-1">
-                        {shot.hasProxy && <span role="img" aria-label="Proxy detected" title="Proxy detected" className="grid size-5 place-items-center rounded bg-black/75 text-zinc-200">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-3.5"><path d="M7 4h13v12" /><rect x="3" y="8" width="13" height="12" rx="1.5" /><path d="m8 11 4 3-4 3v-6Z" /></svg>
-                        </span>}
-                    </div>
+                {(shot.hasProxy || shot.hasXml) && (
+                    <span role="img" aria-label="Multiple associated files" title="Multiple associated files — review the Media section in the inspector" className="absolute bottom-1.5 left-1.5 grid size-5 place-items-center rounded bg-black/75 text-zinc-200">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-3.5"><path d="M7 4h13v12" /><rect x="3" y="8" width="13" height="12" rx="1.5" /></svg>
+                    </span>
                 )}
                 {shot.durationSeconds !== null && <span className="absolute right-1.5 bottom-1.5 rounded bg-black/75 px-1.5 py-0.5 text-xs text-zinc-200">{durationLabel(shot.durationSeconds)}</span>}
-            </div>
+            </button>
             <h3 className="mt-2 truncate text-[13px] text-zinc-200">{shot.filename}</h3>
             <div className="mt-0.5 flex items-baseline justify-between gap-2 text-xs text-zinc-500">
                 <p className="min-w-0 truncate">{source ? sourcePresentation(source).name : "Source"}</p>
@@ -74,10 +81,12 @@ function ShotCard({ shot, source, dimmed, selected = false }: { shot: VideoShot;
     );
 }
 
-export function ShotGrid({ collection, sources, hoveredSourceId }: {
+export function ShotGrid({ collection, sources, hoveredSourceId, inspectedShotId, onInspect }: {
     collection: ShotCollection;
     sources: ImportSource[];
     hoveredSourceId: string | null;
+    inspectedShotId: string | null;
+    onInspect: (id: string) => void;
 }) {
     const hoveredSource = sources.some((source) => source.id === hoveredSourceId) ? hoveredSourceId : null;
     const groups = new Map<string, VideoShot[]>();
@@ -103,7 +112,7 @@ export function ShotGrid({ collection, sources, hoveredSourceId }: {
                 <section key={day} aria-label={day} className="mb-8">
                     <h3 className="mb-4 border-b border-white/8 pb-2 text-sm font-medium text-zinc-400">{new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })} <span className="ml-2 font-normal text-zinc-600">{shots.length} clips</span></h3>
                     <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-x-5 gap-y-6">
-                        {shots.map((shot) => <ShotCard key={shot.id} shot={shot} source={sources.find((source) => source.id === shot.sourceId)} dimmed={hoveredSource !== null && shot.sourceId !== hoveredSource} />)}
+                        {shots.map((shot) => <ShotCard key={shot.id} shot={shot} source={sources.find((source) => source.id === shot.sourceId)} highlighted={shot.sourceId === hoveredSource} selected={shot.id === inspectedShotId} onInspect={() => onInspect(shot.id)} />)}
                     </div>
                 </section>
             ))}

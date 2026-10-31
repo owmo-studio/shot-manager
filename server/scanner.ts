@@ -1,7 +1,8 @@
-import { realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative } from "node:path";
+import { open, realpath, stat } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
+import { basename, isAbsolute, relative } from "node:path";
 import type { ImportSource } from "../shared/desktop";
-import type { ShotCollection, SourceScan } from "../shared/shots";
+import type { ShotCollection, ShotDetails, SourceScan } from "../shared/shots";
 import { discoverShots, readSmallFile } from "./discovery";
 import type { DiscoveredShot } from "./discovery";
 import { isJpeg, ThumbnailQueue } from "./thumbnails";
@@ -155,6 +156,64 @@ export class ShotScanner {
         };
     }
 
+    private findShot(id: string) {
+        for (const job of this.jobs.values()) {
+            const result = job.shots.find((item) => item.shot.id === id);
+            if (result) return { job, result };
+        }
+        throw Object.assign(new Error("Clip is no longer available."), { statusCode: 404 });
+    }
+
+    private async assetPath(id: string, role: keyof DiscoveredShot["assets"]) {
+        const { job, result } = this.findShot(id);
+        if (!job.source.available) throw Object.assign(new Error("Source is unavailable."), { statusCode: 409 });
+        const asset = result.assets[role];
+        if (!asset) throw Object.assign(new Error("Requested asset is not available."), { statusCode: 404 });
+        try {
+            const root = await stat(job.source.path);
+            if (`${root.dev}:${root.ino}:${root.birthtimeMs}` !== job.rootIdentity) throw new Error("Source changed");
+            const path = await realpath(asset);
+            const withinRoot = relative(job.source.path, path);
+            if (withinRoot.startsWith("..") || isAbsolute(withinRoot)) throw new Error("Asset outside source");
+            return { path, job, result };
+        } catch {
+            throw Object.assign(new Error("Source or file is no longer accessible."), { statusCode: 410 });
+        }
+    }
+
+    async openVideo(id: string, role: "original" | "proxy") {
+        const asset = await this.assetPath(id, role);
+        let file: FileHandle | undefined;
+        try {
+            file = await open(asset.path, "r");
+            if (!(await file.stat()).isFile() || this.jobs.get(asset.job.source.id) !== asset.job || !asset.job.source.available) {
+                await file.close();
+                throw new Error("Asset changed");
+            }
+            return { file, path: asset.path };
+        } catch {
+            await file?.close().catch(() => undefined);
+            throw Object.assign(new Error("Video is no longer accessible."), { statusCode: 410 });
+        }
+    }
+
+    async details(id: string): Promise<ShotDetails> {
+        const { result } = this.findShot(id);
+        const details: ShotDetails = { assets: [], mediaInfo: result.mediaInfo ?? null, cameraXml: null, errors: [] };
+        for (const role of ["original", "proxy", "xml"] as const) {
+            if (!result.assets[role]) continue;
+            try {
+                const asset = await this.assetPath(id, role);
+                const info = await stat(asset.path);
+                details.assets.push({ role, filename: basename(asset.path), path: asset.path, relativePath: relative(asset.job.source.path, asset.path), bytes: info.size });
+                if (role === "xml") details.cameraXml = (await readSmallFile(asset.path, 1024 * 1024)).toString("utf8");
+            } catch {
+                details.errors.push(`The ${role} asset could not be read.`);
+            }
+        }
+        return details;
+    }
+
     async thumbnail(id: string, fallback = false): Promise<string | null> {
         for (const job of this.jobs.values()) {
             if (!job.source.available) continue;
@@ -177,6 +236,10 @@ export class ShotScanner {
                 if (!fallback && result.assets.thumbnail) {
                     try {
                         const path = await resolveAsset(result.assets.thumbnail);
+                        if (path && this.thumbnailQueue) {
+                            const image = await this.thumbnailQueue.cameraImage(path, job.rootIdentity ?? "", job.controller.signal, valid);
+                            if (image) return image;
+                        }
                         const bytes = path ? await readSmallFile(path, 2 * 1024 * 1024) : null;
                         if (bytes && isJpeg(bytes) && await valid()) return `data:image/jpeg;base64,${bytes.toString("base64")}`;
                     } catch {}

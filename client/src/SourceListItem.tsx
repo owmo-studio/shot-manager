@@ -90,11 +90,11 @@ export function SourceListItem({
             onBlurCapture={(event) => {
                 if (!event.currentTarget.contains(event.relatedTarget)) onHighlight(false);
             }}
-            className={`group relative rounded-lg transition ${unavailable ? "bg-red-500/8 hover:bg-red-500/15 focus-within:bg-red-500/15" : scanning ? "bg-blue-500/8 hover:bg-blue-500/12 focus-within:bg-blue-500/12" : queued ? "bg-white/2 opacity-60" : "hover:bg-white/4 focus-within:bg-white/4"}`}
+            className={`group relative rounded-lg transition duration-75 ${unavailable ? "bg-red-500/8 hover:bg-red-500/15 focus-within:bg-red-500/15" : scanning ? "bg-blue-500/8 hover:bg-blue-500/12 focus-within:bg-blue-500/12" : queued ? "bg-white/2 opacity-60" : "hover:bg-white/4 focus-within:bg-white/4"}`}
         >
             <div
                 title={`${presentation.name}\n${source.path}${source.warning ? `\n${source.warning}` : ""}`}
-                className={`flex min-h-14 w-full items-center gap-3 rounded-lg border py-2.5 pl-3 text-left transition ${inProgress ? "pr-3" : "pr-18"} ${unavailable ? "border-red-500/30 group-hover:border-red-400/60 group-focus-within:border-red-400/60" : scanning ? "border-blue-400/30 group-hover:border-blue-400/50 group-focus-within:border-blue-400/50" : queued ? "border-white/5" : "border-transparent"}`}
+                className={`flex min-h-14 w-full items-center gap-3 rounded-lg border py-2.5 pl-3 text-left transition duration-75 ${inProgress ? "pr-3" : "pr-18"} ${unavailable ? "border-red-500/30 group-hover:border-red-400/60 group-focus-within:border-red-400/60" : scanning ? "border-blue-400/30 group-hover:border-blue-400/50 group-focus-within:border-blue-400/50" : queued ? "border-white/5" : "border-transparent"}`}
             >
                 {scanning ? (
                     <svg
@@ -127,13 +127,13 @@ export function SourceListItem({
                     )}
                 </span>
             </div>
-            <div className={`absolute top-1/2 right-2 flex -translate-y-1/2 gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100 ${inProgress ? "invisible" : ""}`}>
+            <div className={`absolute top-1/2 right-2 flex -translate-y-1/2 gap-1 opacity-0 transition duration-75 group-hover:opacity-100 group-focus-within:opacity-100 ${inProgress ? "invisible" : ""}`}>
             <button
                 onClick={onRefresh}
                 disabled={inProgress || unavailable}
                 aria-label={`Refresh ${presentation.name}`}
                 title={unavailable ? "Reconnect this source before refreshing" : inProgress ? "Wait for scanning to finish" : "Refresh source"}
-                className="grid size-7 place-items-center rounded-md text-zinc-400 transition hover:bg-white/10 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                className="grid size-7 place-items-center rounded-md text-zinc-400 transition duration-75 hover:bg-white/10 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
             >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-4">
                     <path d="M20 7v5h-5M4 17v-5h5" />
@@ -145,7 +145,7 @@ export function SourceListItem({
                 disabled={inProgress}
                 aria-label={`Remove ${presentation.name} from sources`}
                 title={inProgress ? "Wait for scanning to finish before removing this source" : "Remove source (does not delete files)"}
-                className="grid size-7 place-items-center rounded-md text-zinc-400 transition hover:bg-white/10 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                className="grid size-7 place-items-center rounded-md text-zinc-400 transition duration-75 hover:bg-white/10 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
             >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" aria-hidden="true" className="size-4"><path d="m6 6 12 12M18 6 6 18" /></svg>
             </button>

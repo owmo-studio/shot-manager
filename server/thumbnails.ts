@@ -54,6 +54,35 @@ export class ThumbnailQueue {
         this.cacheDirectory = cacheDirectory;
     }
 
+    async cameraImage(input: string, sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>): Promise<string | null> {
+        signal.throwIfAborted();
+        if (await realpath(input) !== input || !await validate()) return null;
+        const before = await stat(input);
+        if (!before.isFile()) return null;
+        const identity = fileIdentity(before);
+        const key = createHash("sha256").update(`camera-image-v1:${sourceIdentity}:${input}:${identity}`).digest("hex");
+        const cachedPath = join(this.cacheDirectory, `${key}.jpg`);
+        try {
+            const cached = await readSmallFile(cachedPath, maximumImageBytes);
+            signal.throwIfAborted();
+            if (isJpeg(cached) && await validate()) return `data:image/jpeg;base64,${cached.toString("base64")}`;
+        } catch { signal.throwIfAborted(); }
+        const bytes = await readSmallFile(input, maximumImageBytes);
+        signal.throwIfAborted();
+        if (!isJpeg(bytes) || fileIdentity(await stat(input)) !== identity || !await validate()) return null;
+        let temporaryPath: string | undefined;
+        try {
+            await mkdir(this.cacheDirectory, { recursive: true, mode: 0o700 });
+            temporaryPath = join(this.cacheDirectory, `${key}.${randomUUID()}.tmp`);
+            await writeFile(temporaryPath, bytes, { mode: 0o600, flush: true });
+            signal.throwIfAborted();
+            if (!await validate()) return null;
+            await rename(temporaryPath, cachedPath);
+        } catch { signal.throwIfAborted(); }
+        finally { if (temporaryPath) await unlink(temporaryPath).catch(() => undefined); }
+        return `data:image/jpeg;base64,${bytes.toString("base64")}`;
+    }
+
     enqueue(inputs: string[], sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>, completed: (image: string | null) => void) {
         const combinedSignal = AbortSignal.any([signal, this.shutdown.signal]);
         this.pending = this.pending.then(async () => {

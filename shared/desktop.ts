@@ -1,4 +1,4 @@
-import type { ShotCollection } from './shots'
+import type { ShotCollection, ShotDetails } from './shots'
 
 export interface BackendHealth {
   status: 'ok'
@@ -30,4 +30,5 @@ export interface DesktopAPI {
   getShots: () => Promise<ShotCollection>
   onShotsChanged: (listener: (collection: ShotCollection) => void) => () => void
   getShotThumbnail: (id: string, fallback?: boolean) => Promise<string | null>
+  getShotDetails: (id: string) => Promise<ShotDetails>
 }

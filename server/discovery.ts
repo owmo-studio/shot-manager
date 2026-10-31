@@ -21,6 +21,7 @@ export interface ShotAssets {
 export interface DiscoveredShot {
     shot: VideoShot;
     assets: ShotAssets;
+    mediaInfo?: Record<string, unknown>;
 }
 
 export async function readSmallFile(path: string, limit: number): Promise<Buffer> {
@@ -108,6 +109,7 @@ export async function discoverShots(source: ImportSource, signal: AbortSignal, f
             let dateSource: VideoShot["dateSource"] = "file-modified";
             let cameraModel: string | null = null;
             let durationSeconds: number | null = null;
+            let mediaInfo: Record<string, unknown> | undefined;
             if (assets.xml) {
                 try {
                     const xml = (await readSmallFile(assets.xml, 1024 * 1024)).toString("utf8");
@@ -119,8 +121,9 @@ export async function discoverShots(source: ImportSource, signal: AbortSignal, f
                 } catch { warnings.push("Camera XML could not be read; using available media metadata."); }
             }
             try {
-                const { stdout } = await execute("ffprobe", ["-v", "error", "-protocol_whitelist", "file", "-show_entries", "format=duration:format_tags=creation_time:stream=codec_type:stream_tags=creation_time", "-of", "json", "-i", assets.original], { timeout: 8000, maxBuffer: 1024 * 1024, signal });
+                const { stdout } = await execute("ffprobe", ["-v", "error", "-protocol_whitelist", "file", "-show_entries", "format=format_name,duration,size,bit_rate:format_tags:stream=codec_type,codec_name,profile,width,height,avg_frame_rate,bit_rate,pix_fmt,color_space,color_transfer,color_primaries,sample_rate,channels,channel_layout:stream_tags", "-of", "json", "-i", assets.original], { timeout: 8000, maxBuffer: 1024 * 1024, signal });
                 const metadata = JSON.parse(stdout);
+                mediaInfo = metadata;
                 const duration = Number(metadata.format?.duration);
                 if (Number.isFinite(duration) && duration >= 0) durationSeconds = duration;
                 if (!timestamp) {
@@ -139,7 +142,7 @@ export async function discoverShots(source: ImportSource, signal: AbortSignal, f
                 continue;
             }
             const relativePath = relative(source.path, assets.original);
-            found({ assets, shot: {
+            found({ assets, mediaInfo, shot: {
                 id: createHash("sha256").update(`${source.id}\0${relativePath}`).digest("hex"),
                 sourceId: source.id,
                 filename: basename(assets.original),
