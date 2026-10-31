@@ -29,5 +29,5 @@ export interface DesktopAPI {
   refreshSource: (id: string) => Promise<{ source: ImportSource; collection: ShotCollection }>
   getShots: () => Promise<ShotCollection>
   onShotsChanged: (listener: (collection: ShotCollection) => void) => () => void
-  getShotThumbnail: (id: string) => Promise<string | null>
+  getShotThumbnail: (id: string, fallback?: boolean) => Promise<string | null>
 }

@@ -14,6 +14,7 @@ function App() {
     const [status, setStatus] = useState<BackendStatus>({ state: "starting", message: "Starting backend…" });
     const [sources, setSources] = useState<ImportSource[]>([]);
     const [sourcesLoaded, setSourcesLoaded] = useState(false);
+    const [hoveredSourceId, setHoveredSourceId] = useState<string | null>(null);
     const [shotCollection, setShotCollection] = useState<ShotCollection>({ revision: 0, shots: [], scans: [] });
     const latestShotRevision = useRef(-1);
     const [choosingSource, setChoosingSource] = useState(false);
@@ -252,6 +253,7 @@ function App() {
                             <SourceListItem
                                 key={source.id}
                                 source={source}
+                                onHighlight={(highlighted) => setHoveredSourceId(highlighted ? source.id : null)}
                                 scan={shotCollection.scans.find((scan) => scan.sourceId === source.id)}
                                 refreshing={refreshingSourceId === source.id}
                                 onRefresh={() => void refreshSource(source.id)}
@@ -279,7 +281,7 @@ function App() {
                             Drop folders or a card root to add sources
                         </p>
                     ) : sources.length ? (
-                        <ShotGrid collection={shotCollection} sources={sources} />
+                        <ShotGrid collection={shotCollection} sources={sources} hoveredSourceId={hoveredSourceId} />
                     ) : (
                         <div className="max-w-md p-10">
                             <button

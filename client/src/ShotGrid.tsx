@@ -9,35 +9,46 @@ function durationLabel(seconds: number | null) {
     return `${Math.floor(rounded / 60)}:${String(rounded % 60).padStart(2, "0")}`;
 }
 
-function ShotCard({ shot, source }: { shot: VideoShot; source?: ImportSource }) {
+function ShotCard({ shot, source, dimmed, selected = false }: { shot: VideoShot; source?: ImportSource; dimmed: boolean; selected?: boolean }) {
     const [thumbnail, setThumbnail] = useState<string | null>(null);
     const [failedImage, setFailedImage] = useState(false);
     const card = useRef<HTMLElement>(null);
+    const attemptedFallback = useRef(false);
     const unavailable = !shot.available || !source?.available;
     const inactive = !unavailable && !shot.editable;
     useEffect(() => {
-        if (unavailable || thumbnail || !shot.hasThumbnail || !card.current) return;
+        if (unavailable || thumbnail || shot.thumbnailStatus === "pending" || shot.thumbnailStatus === "failed" || !card.current) return;
         let disposed = false;
         const observer = new IntersectionObserver((entries) => {
             if (!entries.some((entry) => entry.isIntersecting)) return;
             observer.disconnect();
-            window.desktop.getShotThumbnail(shot.id).then((data) => {
-                if (!disposed) setThumbnail(data);
+            window.desktop.getShotThumbnail(shot.id, attemptedFallback.current).then((data) => {
+                if (!disposed && data) { setThumbnail(data); setFailedImage(false); }
             }).catch(() => undefined);
         }, { rootMargin: "200px" });
         observer.observe(card.current);
         return () => { disposed = true; observer.disconnect(); };
-    }, [shot.id, shot.hasThumbnail, unavailable, thumbnail]);
+    }, [shot.id, shot.hasThumbnail, shot.thumbnailStatus, unavailable, thumbnail]);
+
+    function thumbnailFailed() {
+        setFailedImage(true);
+        if (attemptedFallback.current) return;
+        attemptedFallback.current = true;
+        setThumbnail(null);
+        void window.desktop.getShotThumbnail(shot.id, true).then((data) => {
+            if (data) { setThumbnail(data); setFailedImage(false); }
+        }).catch(() => undefined);
+    }
 
     return (
         <article ref={card} aria-disabled={unavailable || !shot.editable} data-editable={!unavailable && shot.editable}
-            className={`min-w-0 rounded-lg transition ${unavailable ? "bg-red-500/8 p-2 ring-1 ring-red-500/30 hover:bg-red-500/15 hover:ring-red-400/60" : inactive ? "cursor-not-allowed opacity-50 grayscale" : ""}`}
+            className={`min-w-0 rounded-lg transition ${unavailable ? "bg-red-500/8 p-2 ring-1 ring-red-500/30 hover:bg-red-500/15 hover:ring-red-400/60" : inactive ? "cursor-not-allowed grayscale" : ""} ${dimmed ? "opacity-25" : inactive ? "opacity-50" : ""} ${selected ? `outline-2 outline-offset-4 ${unavailable ? "outline-red-400" : inactive ? "outline-zinc-300" : "bg-blue-400/5 outline-blue-400/80"}` : ""}`}
             title={[shot.relativePath, ...(unavailable ? ["Source unavailable. Reconnect the source to edit this shot."] : inactive ? ["Source scan is queued or running. Editing is unavailable until it finishes."] : []), ...shot.warnings].join("\n")}>
             <div className={`relative flex aspect-video items-center justify-center overflow-hidden rounded-lg border ${unavailable ? "border-red-500/30 bg-red-500/5" : "border-white/8 bg-white/4"}`}>
-                {thumbnail && !failedImage ? <img src={thumbnail} alt="" onError={() => setFailedImage(true)} className="size-full object-cover" /> : (
+                {thumbnail && !failedImage ? <img src={thumbnail} alt="" onError={thumbnailFailed} className="size-full object-cover" /> : (
                     <div className="text-center text-zinc-600">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true" className="mx-auto size-7"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m10 9 5 3-5 3V9Z" /></svg>
-                        <span className="mt-2 block text-[11px]">No thumbnail</span>
+                        <span className="mt-2 block text-[11px]">{shot.thumbnailStatus === "pending" ? "Preparing thumbnail…" : "No thumbnail"}</span>
                     </div>
                 )}
                 {unavailable && <div className="pointer-events-none absolute inset-0 bg-red-950/30">
@@ -46,18 +57,22 @@ function ShotCard({ shot, source }: { shot: VideoShot; source?: ImportSource }) 
                 {shot.durationSeconds !== null && <span className="absolute right-1.5 bottom-1.5 rounded bg-black/75 px-1.5 py-0.5 text-xs text-zinc-200">{durationLabel(shot.durationSeconds)}</span>}
             </div>
             <h3 className="mt-2 truncate text-[13px] text-zinc-200">{shot.filename}</h3>
-            <p className="mt-0.5 truncate text-xs text-zinc-500">{source ? sourcePresentation(source).name : "Source"}</p>
+            <div className="mt-0.5 flex items-baseline justify-between gap-2 text-xs text-zinc-500">
+                <p className="min-w-0 truncate">{source ? sourcePresentation(source).name : "Source"}</p>
+                <p className="shrink-0 text-right" title={shot.dateSource === "file-modified" ? "File modification time" : "Recording time"}>{shot.timestamp.slice(11, 19)}{shot.dateSource === "file-modified" ? "*" : ""}</p>
+            </div>
             {unavailable && <p className="mt-1 text-xs font-medium text-red-300">source is unavailable</p>}
-            <p className="mt-0.5 text-xs text-zinc-500">{shot.timestamp.slice(11, 19)}{shot.dateSource === "file-modified" ? " · file modified" : ""}</p>
             {!unavailable && shot.warnings.length > 0 && <p className="mt-1 text-xs text-amber-300">Metadata incomplete</p>}
         </article>
     );
 }
 
-export function ShotGrid({ collection, sources }: {
+export function ShotGrid({ collection, sources, hoveredSourceId }: {
     collection: ShotCollection;
     sources: ImportSource[];
+    hoveredSourceId: string | null;
 }) {
+    const hoveredSource = sources.some((source) => source.id === hoveredSourceId) ? hoveredSourceId : null;
     const groups = new Map<string, VideoShot[]>();
     for (const shot of collection.shots) {
         const day = shot.timestamp.slice(0, 10);
@@ -81,7 +96,7 @@ export function ShotGrid({ collection, sources }: {
                 <section key={day} aria-label={day} className="mb-8">
                     <h3 className="mb-4 border-b border-white/8 pb-2 text-sm font-medium text-zinc-400">{new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })} <span className="ml-2 font-normal text-zinc-600">{shots.length} clips</span></h3>
                     <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-x-5 gap-y-6">
-                        {shots.map((shot) => <ShotCard key={shot.id} shot={shot} source={sources.find((source) => source.id === shot.sourceId)} />)}
+                        {shots.map((shot) => <ShotCard key={shot.id} shot={shot} source={sources.find((source) => source.id === shot.sourceId)} dimmed={hoveredSource !== null && shot.sourceId !== hoveredSource} />)}
                     </div>
                 </section>
             ))}

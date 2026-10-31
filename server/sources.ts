@@ -62,7 +62,11 @@ export async function inspectSource(path: string) {
 }
 
 export class SourceRegistry {
-    readonly scanner = new ShotScanner();
+    readonly scanner: ShotScanner;
+
+    constructor(thumbnailCacheDirectory?: string) {
+        this.scanner = new ShotScanner(thumbnailCacheDirectory);
+    }
     private sources = new Map<string, { source: ImportSource; fingerprint: string }>();
     private pending: Promise<unknown> = Promise.resolve();
 

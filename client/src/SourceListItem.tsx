@@ -66,12 +66,14 @@ export function SourceListItem({
     refreshing = false,
     onRefresh,
     onRemove,
+    onHighlight,
 }: {
     source: ImportSource;
     scan?: SourceScan;
     refreshing?: boolean;
     onRefresh: () => void;
     onRemove: () => void;
+    onHighlight: (highlighted: boolean) => void;
 }) {
     const presentation = sourcePresentation(source);
     const unavailable = !source.available;
@@ -82,6 +84,12 @@ export function SourceListItem({
     return (
         <li
             aria-busy={inProgress}
+            onMouseEnter={() => onHighlight(true)}
+            onMouseLeave={() => onHighlight(false)}
+            onFocusCapture={() => onHighlight(true)}
+            onBlurCapture={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) onHighlight(false);
+            }}
             className={`group relative rounded-lg transition ${unavailable ? "bg-red-500/8 hover:bg-red-500/15 focus-within:bg-red-500/15" : scanning ? "bg-blue-500/8 hover:bg-blue-500/12 focus-within:bg-blue-500/12" : queued ? "bg-white/2 opacity-60" : "hover:bg-white/4 focus-within:bg-white/4"}`}
         >
             <div

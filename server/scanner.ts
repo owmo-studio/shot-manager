@@ -4,6 +4,7 @@ import type { ImportSource } from "../shared/desktop";
 import type { ShotCollection, SourceScan } from "../shared/shots";
 import { discoverShots, readSmallFile } from "./discovery";
 import type { DiscoveredShot } from "./discovery";
+import { isJpeg, ThumbnailQueue } from "./thumbnails";
 
 interface ScanJob {
     source: ImportSource;
@@ -19,6 +20,12 @@ export class ShotScanner {
     private revision = 0;
     private progressTimer?: ReturnType<typeof setTimeout>;
     onChange?: (collection: ShotCollection) => void;
+    private thumbnailQueue?: ThumbnailQueue;
+    private generatedImages = new Map<string, string>();
+
+    constructor(thumbnailCacheDirectory?: string) {
+        if (thumbnailCacheDirectory) this.thumbnailQueue = new ThumbnailQueue(thumbnailCacheDirectory);
+    }
 
     private publish() {
         clearTimeout(this.progressTimer);
@@ -72,6 +79,9 @@ export class ShotScanner {
             shots: previous?.shots ?? [],
             rootIdentity: previous?.rootIdentity,
         };
+        for (const result of job.shots) {
+            if (result.shot.thumbnailStatus === "pending" || result.shot.thumbnailStatus === "failed") result.shot.thumbnailStatus = undefined;
+        }
         this.jobs.set(source.id, job);
         this.publish();
         this.pending = this.pending.then(async () => {
@@ -125,7 +135,9 @@ export class ShotScanner {
     }
 
     remove(id: string, publish = true) {
-        this.jobs.get(id)?.controller.abort();
+        const job = this.jobs.get(id);
+        job?.controller.abort();
+        for (const result of job?.shots ?? []) this.generatedImages.delete(result.shot.id);
         if (this.jobs.delete(id) && publish) this.publish();
     }
 
@@ -143,21 +155,60 @@ export class ShotScanner {
         };
     }
 
-    async thumbnail(id: string): Promise<string | null> {
+    async thumbnail(id: string, fallback = false): Promise<string | null> {
         for (const job of this.jobs.values()) {
             if (!job.source.available) continue;
             const result = job.shots.find((item) => item.shot.id === id);
-            if (!result?.assets.thumbnail) continue;
+            if (!result) continue;
             try {
-                const info = await stat(job.source.path);
-                if (`${info.dev}:${info.ino}:${info.birthtimeMs}` !== job.rootIdentity) return null;
-                const path = await realpath(result.assets.thumbnail);
-                const withinRoot = relative(job.source.path, path);
-                if (withinRoot.startsWith("..") || isAbsolute(withinRoot)) return null;
-                const bytes = await readSmallFile(path, 2 * 1024 * 1024);
-                if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
-                if (this.jobs.get(job.source.id) !== job || !job.source.available || job.controller.signal.aborted) return null;
-                return `data:image/jpeg;base64,${bytes.toString("base64")}`;
+                const valid = async () => {
+                    if (this.jobs.get(job.source.id) !== job || !job.source.available || job.controller.signal.aborted) return false;
+                    try {
+                        const info = await stat(job.source.path);
+                        return `${info.dev}:${info.ino}:${info.birthtimeMs}` === job.rootIdentity;
+                    } catch { return false; }
+                };
+                if (!await valid()) return null;
+                const resolveAsset = async (asset: string) => {
+                    const path = await realpath(asset);
+                    const withinRoot = relative(job.source.path, path);
+                    return !withinRoot.startsWith("..") && !isAbsolute(withinRoot) ? path : null;
+                };
+                if (!fallback && result.assets.thumbnail) {
+                    try {
+                        const path = await resolveAsset(result.assets.thumbnail);
+                        const bytes = path ? await readSmallFile(path, 2 * 1024 * 1024) : null;
+                        if (bytes && isJpeg(bytes) && await valid()) return `data:image/jpeg;base64,${bytes.toString("base64")}`;
+                    } catch {}
+                }
+                const generated = this.generatedImages.get(id);
+                if (generated) return generated;
+                if (!this.thumbnailQueue) return null;
+                const inputs: string[] = [];
+                for (const asset of [result.assets.proxy, result.assets.original]) {
+                    if (!asset) continue;
+                    try { const path = await resolveAsset(asset); if (path) inputs.push(path); } catch {}
+                }
+                if (!await valid()) return null;
+                if (!inputs.length) return null;
+                if (result.shot.thumbnailStatus === "pending" || result.shot.thumbnailStatus === "failed") return null;
+                result.shot.thumbnailStatus = "pending";
+                this.publishProgress();
+                this.thumbnailQueue.enqueue(inputs, job.rootIdentity ?? "", job.controller.signal, valid, (image) => {
+                    if (this.jobs.get(job.source.id) !== job) return;
+                    if (!job.source.available) {
+                        result.shot.thumbnailStatus = undefined;
+                        this.publishProgress();
+                        return;
+                    }
+                    result.shot.thumbnailStatus = image ? "ready" : "failed";
+                    if (image) {
+                        this.generatedImages.set(id, image);
+                        result.shot.hasThumbnail = true;
+                    }
+                    this.publishProgress();
+                });
+                return null;
             } catch { return null; }
         }
         return null;
@@ -167,6 +218,7 @@ export class ShotScanner {
         this.onChange = undefined;
         clearTimeout(this.progressTimer);
         for (const id of this.jobs.keys()) this.remove(id);
+        await this.thumbnailQueue?.close();
         await this.pending;
     }
 }

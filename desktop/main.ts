@@ -38,7 +38,7 @@ function requireMainWindow(event: IpcMainInvokeEvent): BrowserWindow {
 function startBackend() {
   backend = utilityProcess.fork(join(__dirname, 'backend.cjs'), [], {
     serviceName: 'Shot Manager Backend',
-    env: { ...process.env, SHOT_MANAGER_TOKEN: token }
+    env: { ...process.env, SHOT_MANAGER_TOKEN: token, SHOT_MANAGER_THUMBNAIL_CACHE: join(app.getPath('userData'), 'cache', 'thumbnails') }
   })
   backend.on('message', (message: unknown) => {
     if (typeof message === 'object' && message !== null && 'type' in message &&
@@ -66,8 +66,8 @@ function startBackend() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: 1440,
+    height: 960,
     minWidth: 800,
     minHeight: 560,
     title: 'OWMO Shot Manager',
@@ -104,10 +104,11 @@ if (!app.requestSingleInstanceLock()) {
       requireMainWindow(event)
       return backendRequest('/api/shots')
     })
-    ipcMain.handle('shots:thumbnail', async (event, id: unknown) => {
+    ipcMain.handle('shots:thumbnail', async (event, id: unknown, fallback: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid shot ID')
-      const result = await backendRequest(`/api/shots/${id}/thumbnail`)
+      if (fallback !== undefined && typeof fallback !== 'boolean') throw new Error('Invalid thumbnail option')
+      const result = await backendRequest(`/api/shots/${id}/thumbnail${fallback ? '?fallback=1' : ''}`)
       return result.dataUrl
     })
     ipcMain.handle('sources:refresh', async (event, id: unknown) => {

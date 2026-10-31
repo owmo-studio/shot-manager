@@ -14,7 +14,7 @@ const desktop: DesktopAPI = {
     ipcRenderer.on('shots:changed', handler)
     return () => { ipcRenderer.removeListener('shots:changed', handler) }
   },
-  getShotThumbnail: (id) => ipcRenderer.invoke('shots:thumbnail', id)
+  getShotThumbnail: (id, fallback) => ipcRenderer.invoke('shots:thumbnail', id, fallback)
 }
 
 contextBridge.exposeInMainWorld('desktop', desktop)
