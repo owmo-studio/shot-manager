@@ -29,6 +29,9 @@ export function ClipInspector({
     const [details, setDetails] = useState<ShotDetails | null>(null);
     const [detailsError, setDetailsError] = useState<string | null>(null);
     const [playbackMessage, setPlaybackMessage] = useState<string | null>(null);
+    const [thumbnailBusy, setThumbnailBusy] = useState(false);
+    const [thumbnailError, setThumbnailError] = useState<string | null>(null);
+    const [frameReady, setFrameReady] = useState(false);
     const [sidecarCopyStatus, setSidecarCopyStatus] = useState<"idle" | "copying" | "copied" | "failed">("idle");
     const video = useRef<HTMLVideoElement>(null);
     const position = useRef(0);
@@ -37,6 +40,30 @@ export function ClipInspector({
     const unavailable = !shot.available || !source?.available;
     const pausedForScan = !unavailable && !shot.editable;
     const mediaAssets = details?.assets.filter((asset) => asset.role !== "xml");
+
+    async function toggleThumbnail() {
+        if (thumbnailBusy) return;
+        setThumbnailBusy(true);
+        setThumbnailError(null);
+        try {
+            let dataUrl: string | null = null;
+            if (!shot.hasCustomThumbnail) {
+                const player = video.current;
+                if (!player || player.readyState < 2 || player.seeking || !player.videoWidth) throw new Error("Wait for a preview frame to load.");
+                const canvas = document.createElement("canvas");
+                const scale = Math.min(1, 480 / player.videoWidth, 270 / player.videoHeight);
+                canvas.width = Math.max(1, Math.round(player.videoWidth * scale));
+                canvas.height = Math.max(1, Math.round(player.videoHeight * scale));
+                const context = canvas.getContext("2d");
+                if (!context) throw new Error("Frame capture is unavailable.");
+                context.drawImage(player, 0, 0, canvas.width, canvas.height);
+                dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+            }
+            await window.desktop.setShotThumbnail(shot.id, dataUrl);
+        } catch {
+            setThumbnailError("Thumbnail could not be updated. Check the preview and try again.");
+        } finally { setThumbnailBusy(false); }
+    }
 
     useEffect(() => {
         if (sidecarCopyStatus !== "copied" && sidecarCopyStatus !== "failed") return;
@@ -102,6 +129,20 @@ export function ClipInspector({
                         {source ? sourcePresentation(source).name : "Source"}
                     </p>
                 </div>
+                <div className="flex shrink-0 items-center gap-1">
+                <button
+                    type="button"
+                    onClick={() => void toggleThumbnail()}
+                    disabled={thumbnailBusy || unavailable || pausedForScan || (!shot.hasCustomThumbnail && !frameReady)}
+                    aria-label={shot.hasCustomThumbnail ? "Clear custom thumbnail" : "Set current frame as thumbnail"}
+                    aria-pressed={!!shot.hasCustomThumbnail}
+                    title={shot.hasCustomThumbnail ? "Clear custom thumbnail" : "Set current frame as thumbnail"}
+                    className={`grid size-7 place-items-center rounded-md transition duration-75 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40 ${shot.hasCustomThumbnail ? "bg-blue-400/15 text-blue-300 hover:bg-blue-400/25" : "text-zinc-500 hover:bg-white/8 hover:text-zinc-200"}`}
+                >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-4">
+                        <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8" cy="8" r="1.5" /><path d="m21 15-5-5L5 21" />
+                    </svg>
+                </button>
                 <button
                     onClick={onClose}
                     aria-label="Close clip inspector"
@@ -109,7 +150,9 @@ export function ClipInspector({
                 >
                     ×
                 </button>
+                </div>
             </header>
+            {thumbnailError && <p role="alert" className="mb-3 text-xs text-amber-300">{thumbnailError}</p>}
             <div className="relative overflow-hidden rounded-lg border border-white/8 bg-black">
                 {unavailable || pausedForScan ? (
                     <div
@@ -123,6 +166,7 @@ export function ClipInspector({
                 ) : (
                     <video
                         ref={video}
+                        crossOrigin="anonymous"
                         key={`${shot.id}-${variant}`}
                         src={`shot-media://local/shots/${shot.id}/${variant}`}
                         controls
@@ -134,6 +178,11 @@ export function ClipInspector({
                         aria-label={`Preview ${shot.filename}`}
                         className="aspect-video w-full object-contain"
                         onError={playbackFailed}
+                        onLoadStart={() => setFrameReady(false)}
+                        onLoadedData={() => setFrameReady(true)}
+                        onSeeking={() => setFrameReady(false)}
+                        onSeeked={() => setFrameReady(true)}
+                        onEmptied={() => setFrameReady(false)}
                         onLoadedMetadata={() => {
                             if (!video.current) return;
                             const maximum = Number.isFinite(video.current.duration)

@@ -1,7 +1,7 @@
 import type { ImportSource } from "../../shared/desktop";
 import type { SourceScan } from "../../shared/shots";
 
-type SourceIconType = "card" | "drive" | "folder";
+type SourceIconType = "camera" | "drive" | "folder";
 
 export function sourcePresentation(source: ImportSource): { name: string; icon: SourceIconType } {
     const volumeRoot = /^\/Volumes\/[^/]+\/?$/.test(source.path);
@@ -15,8 +15,8 @@ export function sourcePresentation(source: ImportSource): { name: string; icon: 
             ? `Sony ${source.cameraModels.map((model) => cameraNames[model] ?? model).join(" / ")}`
             : "Sony Camera";
         return {
-            name: volumeRoot ? camera : `${camera} (${source.name})`,
-            icon: volumeRoot ? "card" : "folder",
+            name: camera,
+            icon: "camera",
         };
     }
 
@@ -37,11 +37,11 @@ function SourceIcon({ type, error }: { type: SourceIconType; error: boolean }) {
                     <path d="M12 6v7" stroke="#1b2029" strokeWidth="2.5" strokeLinecap="round" />
                     <circle cx="12" cy="17" r="1.4" fill="#1b2029" />
                 </>
-            ) : type === "card" ? (
+            ) : type === "camera" ? (
                 <>
-                    <path d="M7 3h10l3 7v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-9l3-7Z" fill="currentColor" />
+                    <path d="M8 4h8l2 3h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h2l2-3Z" fill="currentColor" />
                     <circle cx="12" cy="13" r="4" fill="#1b2029" />
-                    <path d="M9 5h6" stroke="#1b2029" strokeWidth="1.5" strokeLinecap="round" />
+                    <circle cx="19" cy="10" r="1" fill="#1b2029" />
                 </>
             ) : type === "drive" ? (
                 <>
@@ -62,6 +62,8 @@ function SourceIcon({ type, error }: { type: SourceIconType; error: boolean }) {
 
 export function SourceListItem({
     source,
+    selected = false,
+    onToggle,
     scan,
     refreshing = false,
     onRefresh,
@@ -69,6 +71,8 @@ export function SourceListItem({
     onHighlight,
 }: {
     source: ImportSource;
+    selected?: boolean;
+    onToggle: () => void;
     scan?: SourceScan;
     refreshing?: boolean;
     onRefresh: () => void;
@@ -85,16 +89,22 @@ export function SourceListItem({
         <li
             aria-busy={inProgress}
             onMouseEnter={() => onHighlight(true)}
-            onMouseLeave={() => onHighlight(false)}
-            onFocusCapture={() => onHighlight(true)}
-            onBlurCapture={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget)) onHighlight(false);
+            onMouseLeave={(event) => onHighlight(!!event.currentTarget.querySelector(":focus-visible"))}
+            onFocusCapture={(event) => {
+                if (event.target.matches(":focus-visible")) onHighlight(true);
             }}
-            className={`group relative rounded-lg transition duration-75 ${unavailable ? "bg-red-500/8 hover:bg-red-500/15 focus-within:bg-red-500/15" : scanning ? "bg-blue-500/8 hover:bg-blue-500/12 focus-within:bg-blue-500/12" : queued ? "bg-white/2 opacity-60" : "hover:bg-white/4 focus-within:bg-white/4"}`}
+            onBlurCapture={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget)) onHighlight(event.currentTarget.matches(":hover"));
+            }}
+            className={`group relative rounded-lg transition duration-75 ${unavailable ? "bg-red-500/8 hover:bg-red-500/15 has-[:focus-visible]:bg-red-500/15" : scanning ? "bg-blue-500/8 hover:bg-blue-500/12 has-[:focus-visible]:bg-blue-500/12" : queued ? "bg-white/2 opacity-60" : "hover:bg-white/4 has-[:focus-visible]:bg-white/4"}`}
         >
-            <div
+            <button
+                type="button"
+                onClick={onToggle}
+                aria-pressed={selected}
+                aria-label={`Filter clips from ${presentation.name}`}
                 title={`${presentation.name}\n${source.path}${source.warning ? `\n${source.warning}` : ""}`}
-                className={`flex min-h-14 w-full items-center gap-3 rounded-lg border py-2.5 pl-3 text-left transition duration-75 ${inProgress ? "pr-3" : "pr-18"} ${unavailable ? "border-red-500/30 group-hover:border-red-400/60 group-focus-within:border-red-400/60" : scanning ? "border-blue-400/30 group-hover:border-blue-400/50 group-focus-within:border-blue-400/50" : queued ? "border-white/5" : "border-transparent"}`}
+                className={`flex min-h-14 w-full items-center gap-3 rounded-lg border py-2.5 pl-3 text-left transition duration-75 focus-visible:outline-2 focus-visible:outline-blue-400 ${selected ? "bg-blue-400/10 ring-1 ring-blue-400/60" : ""} ${inProgress ? "pr-3" : "pr-18"} ${unavailable ? "border-red-500/30 group-hover:border-red-400/60 group-has-[:focus-visible]:border-red-400/60" : scanning ? "border-blue-400/30 group-hover:border-blue-400/50 group-has-[:focus-visible]:border-blue-400/50" : queued ? "border-white/5" : "border-transparent"}`}
             >
                 {scanning ? (
                     <svg
@@ -126,8 +136,8 @@ export function SourceListItem({
                         <span className="mt-1 block text-xs text-amber-300">{source.warning}</span>
                     )}
                 </span>
-            </div>
-            <div className={`absolute top-1/2 right-2 flex -translate-y-1/2 gap-1 opacity-0 transition duration-75 group-hover:opacity-100 group-focus-within:opacity-100 ${inProgress ? "invisible" : ""}`}>
+            </button>
+            <div className={`absolute top-1/2 right-2 flex -translate-y-1/2 gap-1 opacity-0 transition duration-75 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100 ${inProgress ? "invisible" : ""}`}>
             <button
                 onClick={onRefresh}
                 disabled={inProgress || unavailable}

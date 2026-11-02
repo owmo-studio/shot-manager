@@ -14,7 +14,7 @@ const token = randomBytes(32).toString('hex')
 let choosingSource = false
 
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'shot-media', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } }
+  { scheme: 'shot-media', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, corsEnabled: true } }
 ])
 
 async function backendRequest(path: string, options: RequestInit = {}) {
@@ -116,7 +116,9 @@ if (!app.requestSingleInstanceLock()) {
         const response = await fetch(`${backendURL}/api/shots/${match[1]}/media/${match[2]}`, {
           method: request.method, headers, signal: request.signal
         })
-        return new Response(response.body, { status: response.status, headers: response.headers })
+        const responseHeaders = new Headers(response.headers)
+        responseHeaders.set('Access-Control-Allow-Origin', '*')
+        return new Response(response.body, { status: response.status, headers: responseHeaders })
       } catch { return new Response(null, { status: 503 }) }
     })
     ipcMain.handle('shots:details', async (event, id: unknown) => {
@@ -134,6 +136,12 @@ if (!app.requestSingleInstanceLock()) {
       if (fallback !== undefined && typeof fallback !== 'boolean') throw new Error('Invalid thumbnail option')
       const result = await backendRequest(`/api/shots/${id}/thumbnail${fallback ? '?fallback=1' : ''}`)
       return result.dataUrl
+    })
+    ipcMain.handle('shots:set-thumbnail', async (event, id: unknown, dataUrl: unknown) => {
+      requireMainWindow(event)
+      if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid shot ID')
+      if (dataUrl !== null && (typeof dataUrl !== 'string' || dataUrl.length > 3000000 || !dataUrl.startsWith('data:image/jpeg;base64,'))) throw new Error('Invalid thumbnail')
+      await backendRequest(`/api/shots/${id}/thumbnail`, { method: 'PUT', body: JSON.stringify({ dataUrl }) })
     })
     ipcMain.handle('sources:refresh', async (event, id: unknown) => {
       requireMainWindow(event)

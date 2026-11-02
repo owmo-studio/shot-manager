@@ -10,6 +10,8 @@ export interface VideoShot {
     durationSeconds: number | null;
     hasProxy: boolean;
     hasThumbnail: boolean;
+    hasCustomThumbnail?: boolean;
+    thumbnailRevision?: number;
     thumbnailStatus?: "pending" | "ready" | "failed";
     hasXml: boolean;
     warnings: string[];

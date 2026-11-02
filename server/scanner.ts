@@ -23,6 +23,8 @@ export class ShotScanner {
     onChange?: (collection: ShotCollection) => void;
     private thumbnailQueue?: ThumbnailQueue;
     private generatedImages = new Map<string, string>();
+    private suppressedGeneration = new Set<string>();
+    private updatingThumbnails = new Set<string>();
 
     constructor(thumbnailCacheDirectory?: string) {
         if (thumbnailCacheDirectory) this.thumbnailQueue = new ThumbnailQueue(thumbnailCacheDirectory);
@@ -115,6 +117,12 @@ export class ShotScanner {
                     const existing = new Map(previous.shots.map((result) => [result.shot.id, result]));
                     job.shots = discovered.map((result) => existing.get(result.shot.id) ?? result);
                 }
+                for (const result of job.shots) {
+                    const custom = await this.thumbnailQueue?.customImage(result.assets.original, job.rootIdentity ?? "");
+                    result.shot.hasCustomThumbnail = !!custom;
+                    if (custom) result.shot.hasThumbnail = true;
+                }
+                job.controller.signal.throwIfAborted();
                 job.status.state = "complete";
                 this.publish();
             } catch {
@@ -138,7 +146,10 @@ export class ShotScanner {
     remove(id: string, publish = true) {
         const job = this.jobs.get(id);
         job?.controller.abort();
-        for (const result of job?.shots ?? []) this.generatedImages.delete(result.shot.id);
+        for (const result of job?.shots ?? []) {
+            this.generatedImages.delete(result.shot.id);
+            if (publish) this.suppressedGeneration.delete(result.shot.id);
+        }
         if (this.jobs.delete(id) && publish) this.publish();
     }
 
@@ -233,6 +244,11 @@ export class ShotScanner {
                     const withinRoot = relative(job.source.path, path);
                     return !withinRoot.startsWith("..") && !isAbsolute(withinRoot) ? path : null;
                 };
+                const original = await resolveAsset(result.assets.original);
+                if (original && this.thumbnailQueue) {
+                    const custom = await this.thumbnailQueue.customImage(original, job.rootIdentity ?? "");
+                    if (custom && await valid()) return custom;
+                }
                 if (!fallback && result.assets.thumbnail) {
                     try {
                         const path = await resolveAsset(result.assets.thumbnail);
@@ -246,6 +262,7 @@ export class ShotScanner {
                 }
                 const generated = this.generatedImages.get(id);
                 if (generated) return generated;
+                if (this.suppressedGeneration.has(id)) return null;
                 if (!this.thumbnailQueue) return null;
                 const inputs: string[] = [];
                 for (const asset of [result.assets.proxy, result.assets.original]) {
@@ -256,9 +273,10 @@ export class ShotScanner {
                 if (!inputs.length) return null;
                 if (result.shot.thumbnailStatus === "pending" || result.shot.thumbnailStatus === "failed") return null;
                 result.shot.thumbnailStatus = "pending";
+                const thumbnailRevision = result.shot.thumbnailRevision;
                 this.publishProgress();
                 this.thumbnailQueue.enqueue(inputs, job.rootIdentity ?? "", job.controller.signal, valid, (image) => {
-                    if (this.jobs.get(job.source.id) !== job) return;
+                    if (this.jobs.get(job.source.id) !== job || result.shot.thumbnailRevision !== thumbnailRevision) return;
                     if (!job.source.available) {
                         result.shot.thumbnailStatus = undefined;
                         this.publishProgress();
@@ -275,6 +293,32 @@ export class ShotScanner {
             } catch { return null; }
         }
         return null;
+    }
+
+    async setThumbnail(id: string, dataUrl: string | null) {
+        if (this.updatingThumbnails.has(id)) throw Object.assign(new Error("Thumbnail update is already in progress."), { statusCode: 409 });
+        this.updatingThumbnails.add(id);
+        try {
+            const asset = await this.assetPath(id, "original");
+            if (this.isBusy(asset.job.source.id)) throw Object.assign(new Error("Wait for scanning to finish."), { statusCode: 409 });
+            if (!this.thumbnailQueue) throw new Error("Thumbnail cache is unavailable.");
+            const valid = async () => {
+                try {
+                    const current = await this.assetPath(id, "original");
+                    return current.job === asset.job && current.path === asset.path && !this.isBusy(asset.job.source.id);
+                } catch { return false; }
+            };
+            await this.thumbnailQueue.setCustomImage(asset.path, asset.job.rootIdentity ?? "", dataUrl, valid);
+            if (!await valid()) throw new Error("Source changed while updating the thumbnail.");
+            this.generatedImages.delete(id);
+            if (dataUrl === null) this.suppressedGeneration.add(id);
+            else this.suppressedGeneration.delete(id);
+            asset.result.shot.hasCustomThumbnail = dataUrl !== null;
+            asset.result.shot.hasThumbnail = dataUrl !== null || !!asset.result.assets.thumbnail;
+            asset.result.shot.thumbnailStatus = undefined;
+            asset.result.shot.thumbnailRevision = (asset.result.shot.thumbnailRevision ?? 0) + 1;
+            this.publish();
+        } finally { this.updatingThumbnails.delete(id); }
     }
 
     async close() {

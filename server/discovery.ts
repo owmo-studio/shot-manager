@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import type { ImportSource } from "../shared/desktop";
 import type { VideoShot } from "../shared/shots";
+import { findSonyLayout } from "./sony";
 
 const execute = promisify(execFile);
 const videoExtensions = new Set([".mp4", ".mov", ".mxf", ".m4v", ".mts", ".m2ts", ".avi", ".mkv", ".webm"]);
@@ -54,8 +55,10 @@ async function directoryFiles(path: string, optional = false): Promise<Map<strin
 
 async function* candidates(source: ImportSource, signal: AbortSignal, warn: (message: string) => void): AsyncGenerator<ShotAssets> {
     if (source.type === "sony") {
-        const root = join(source.path, "PRIVATE", "M4ROOT");
-        const originals = await directoryFiles(join(root, "CLIP"));
+        const layout = await findSonyLayout(source.path);
+        if (!layout) throw new Error("Sony camera structure is no longer available.");
+        const { root } = layout;
+        const originals = await directoryFiles(layout.clips);
         async function optionalFiles(path: string) {
             try { return await directoryFiles(path, true); }
             catch { warn(`Could not read optional assets in ${relative(source.path, path)}.`); return new Map<string, string>(); }

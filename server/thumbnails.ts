@@ -54,6 +54,40 @@ export class ThumbnailQueue {
         this.cacheDirectory = cacheDirectory;
     }
 
+    private async customPath(input: string, sourceIdentity: string) {
+        const info = await stat(input);
+        if (!info.isFile()) throw new Error("Original video is unavailable.");
+        const key = createHash("sha256").update(`custom-preview-v1:${sourceIdentity}:${input}:${fileIdentity(info)}`).digest("hex");
+        return join(this.cacheDirectory, `${key}.jpg`);
+    }
+
+    async customImage(input: string, sourceIdentity: string): Promise<string | null> {
+        try {
+            const bytes = await readSmallFile(await this.customPath(input, sourceIdentity), maximumImageBytes);
+            return isJpeg(bytes) ? `data:image/jpeg;base64,${bytes.toString("base64")}` : null;
+        } catch { return null; }
+    }
+
+    async setCustomImage(input: string, sourceIdentity: string, dataUrl: string | null, validate: () => Promise<boolean>) {
+        const path = await this.customPath(input, sourceIdentity);
+        if (!await validate()) throw new Error("Source changed while updating the thumbnail.");
+        if (dataUrl === null) {
+            try { await unlink(path); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+            return;
+        }
+        const match = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl);
+        const bytes = match ? Buffer.from(match[1], "base64") : Buffer.alloc(0);
+        if (bytes.length > maximumImageBytes || !isJpeg(bytes)) throw Object.assign(new Error("Invalid thumbnail image."), { statusCode: 400 });
+        await mkdir(this.cacheDirectory, { recursive: true, mode: 0o700 });
+        const temporaryPath = path.replace(/\.jpg$/, `.${randomUUID()}.tmp`);
+        try {
+            await writeFile(temporaryPath, bytes, { mode: 0o600, flush: true });
+            if (!await validate() || await this.customPath(input, sourceIdentity) !== path) throw new Error("Source changed while saving the thumbnail.");
+            await rename(temporaryPath, path);
+        } finally { await unlink(temporaryPath).catch(() => undefined); }
+    }
+
     async cameraImage(input: string, sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>): Promise<string | null> {
         signal.throwIfAborted();
         if (await realpath(input) !== input || !await validate()) return null;

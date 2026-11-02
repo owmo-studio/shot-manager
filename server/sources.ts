@@ -4,29 +4,20 @@ import { opendir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { ImportSource } from "../shared/desktop";
 import { ShotScanner } from "./scanner";
+import { findSonyLayout } from "./sony";
 
 const parser = new XMLParser({ ignoreAttributes: false, removeNSPrefix: true, processEntities: false });
-
-async function exists(path: string, directory: boolean): Promise<boolean> {
-    try {
-        const info = await stat(path);
-        return directory ? info.isDirectory() : info.isFile();
-    } catch (error) {
-        if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
-        throw error;
-    }
-}
 
 export async function inspectSource(path: string) {
     const info = await stat(path);
     if (!info.isDirectory()) throw new Error("Choose a directory");
     const fingerprint = createHash("sha256").update(`${info.dev}:${info.ino}:${info.birthtimeMs}`);
-    const root = join(path, "PRIVATE", "M4ROOT");
-    const clipPath = join(root, "CLIP");
-    const sony = await exists(clipPath, true);
+    const layout = await findSonyLayout(path);
+    const sony = layout !== null;
     const models = new Set<string>();
     let warning: string | undefined;
-    if (sony) {
+    if (layout) {
+        const clipPath = layout.clips;
         const metadataFiles: string[] = [];
         const directory = await opendir(clipPath);
         for await (const entry of directory) {

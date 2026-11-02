@@ -30,5 +30,6 @@ export interface DesktopAPI {
   getShots: () => Promise<ShotCollection>
   onShotsChanged: (listener: (collection: ShotCollection) => void) => () => void
   getShotThumbnail: (id: string, fallback?: boolean) => Promise<string | null>
+  setShotThumbnail: (id: string, dataUrl: string | null) => Promise<void>
   getShotDetails: (id: string) => Promise<ShotDetails>
 }
