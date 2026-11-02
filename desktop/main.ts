@@ -70,7 +70,7 @@ function startBackend() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1600,
+    width: 1800,
     height: 1080,
     minWidth: 1100,
     minHeight: 560,
@@ -130,17 +130,16 @@ if (!app.requestSingleInstanceLock()) {
       requireMainWindow(event)
       return backendRequest('/api/shots')
     })
-    ipcMain.handle('shots:thumbnail', async (event, id: unknown, fallback: unknown) => {
+    ipcMain.handle('shots:thumbnail', async (event, id: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid shot ID')
-      if (fallback !== undefined && typeof fallback !== 'boolean') throw new Error('Invalid thumbnail option')
-      const result = await backendRequest(`/api/shots/${id}/thumbnail${fallback ? '?fallback=1' : ''}`)
+      const result = await backendRequest(`/api/shots/${id}/thumbnail`)
       return result.dataUrl
     })
     ipcMain.handle('shots:set-thumbnail', async (event, id: unknown, dataUrl: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid shot ID')
-      if (dataUrl !== null && (typeof dataUrl !== 'string' || dataUrl.length > 3000000 || !dataUrl.startsWith('data:image/jpeg;base64,'))) throw new Error('Invalid thumbnail')
+      if (typeof dataUrl !== 'string' || dataUrl.length > 3000000 || !dataUrl.startsWith('data:image/jpeg;base64,')) throw new Error('Invalid thumbnail')
       await backendRequest(`/api/shots/${id}/thumbnail`, { method: 'PUT', body: JSON.stringify({ dataUrl }) })
     })
     ipcMain.handle('sources:refresh', async (event, id: unknown) => {

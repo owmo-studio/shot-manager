@@ -11,7 +11,7 @@ export function ResizableInspector({ width, onResize, children }: {
     const [viewportWidth, setViewportWidth] = useState(window.innerWidth);
     const [resizing, setResizing] = useState(false);
     const drag = useRef<{ startX: number; startWidth: number } | null>(null);
-    const maximumWidth = Math.max(MIN_INSPECTOR_WIDTH, viewportWidth - 528);
+    const maximumWidth = Math.max(MIN_INSPECTOR_WIDTH, viewportWidth - 480);
     const visibleWidth = Math.round(Math.max(MIN_INSPECTOR_WIDTH, Math.min(width, maximumWidth)));
 
     function resize(next: number) {

@@ -14,7 +14,7 @@ const desktop: DesktopAPI = {
     ipcRenderer.on('shots:changed', handler)
     return () => { ipcRenderer.removeListener('shots:changed', handler) }
   },
-  getShotThumbnail: (id, fallback) => ipcRenderer.invoke('shots:thumbnail', id, fallback),
+  getShotThumbnail: (id) => ipcRenderer.invoke('shots:thumbnail', id),
   setShotThumbnail: (id, dataUrl) => ipcRenderer.invoke('shots:set-thumbnail', id, dataUrl),
   getShotDetails: (id) => ipcRenderer.invoke('shots:details', id)
 }

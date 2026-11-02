@@ -11,21 +11,27 @@ function bytesLabel(bytes: number) {
     return `${(bytes / 1024 ** unit).toLocaleString(undefined, { maximumFractionDigits: 1 })} ${["B", "KB", "MB", "GB"][unit]}`;
 }
 
+const emptyShot: VideoShot = {
+    id: "", sourceId: "", filename: "", relativePath: "", bytes: 0, timestamp: "",
+    dateSource: "file-modified", cameraModel: null, durationSeconds: null,
+    hasProxy: false, hasThumbnail: false, hasXml: false, warnings: [], available: false, editable: false,
+};
+
 export function ClipInspector({
-    shot,
+    shot: selectedShot,
     source,
     width,
     onResize,
-    onClose,
 }: {
-    shot: VideoShot;
+    shot?: VideoShot;
     source?: ImportSource;
     width: number;
     onResize: (width: number) => void;
-    onClose: () => void;
 }) {
+    const empty = !selectedShot;
+    const shot = selectedShot ?? emptyShot;
     const [tab, setTab] = useState<"metadata" | "file">("metadata");
-    const [variant, setVariant] = useState<"proxy" | "original">(shot.hasProxy ? "proxy" : "original");
+    const [variant, setVariant] = useState<"proxy" | "original">("original");
     const [details, setDetails] = useState<ShotDetails | null>(null);
     const [detailsError, setDetailsError] = useState<string | null>(null);
     const [playbackMessage, setPlaybackMessage] = useState<string | null>(null);
@@ -41,24 +47,21 @@ export function ClipInspector({
     const pausedForScan = !unavailable && !shot.editable;
     const mediaAssets = details?.assets.filter((asset) => asset.role !== "xml");
 
-    async function toggleThumbnail() {
-        if (thumbnailBusy) return;
+    async function setThumbnail() {
+        if (empty || thumbnailBusy) return;
         setThumbnailBusy(true);
         setThumbnailError(null);
         try {
-            let dataUrl: string | null = null;
-            if (!shot.hasCustomThumbnail) {
-                const player = video.current;
-                if (!player || player.readyState < 2 || player.seeking || !player.videoWidth) throw new Error("Wait for a preview frame to load.");
-                const canvas = document.createElement("canvas");
-                const scale = Math.min(1, 480 / player.videoWidth, 270 / player.videoHeight);
-                canvas.width = Math.max(1, Math.round(player.videoWidth * scale));
-                canvas.height = Math.max(1, Math.round(player.videoHeight * scale));
-                const context = canvas.getContext("2d");
-                if (!context) throw new Error("Frame capture is unavailable.");
-                context.drawImage(player, 0, 0, canvas.width, canvas.height);
-                dataUrl = canvas.toDataURL("image/jpeg", 0.9);
-            }
+            const player = video.current;
+            if (!player || player.readyState < 2 || player.seeking || !player.videoWidth) throw new Error("Wait for a preview frame to load.");
+            const canvas = document.createElement("canvas");
+            const scale = Math.min(1, 480 / player.videoWidth, 270 / player.videoHeight);
+            canvas.width = Math.max(1, Math.round(player.videoWidth * scale));
+            canvas.height = Math.max(1, Math.round(player.videoHeight * scale));
+            const context = canvas.getContext("2d");
+            if (!context) throw new Error("Frame capture is unavailable.");
+            context.drawImage(player, 0, 0, canvas.width, canvas.height);
+            const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
             await window.desktop.setShotThumbnail(shot.id, dataUrl);
         } catch {
             setThumbnailError("Thumbnail could not be updated. Check the preview and try again.");
@@ -117,44 +120,58 @@ export function ClipInspector({
 
     return (
         <ResizableInspector width={width} onResize={onResize}>
+            <div inert={empty} className={empty ? "opacity-40" : undefined}>
             <header className="mb-4 flex items-start justify-between gap-3">
                 <div className="min-w-0">
                     <h2
-                        className="truncate text-sm font-medium"
-                        title={sourceFilePath(source?.path, shot.relativePath)}
+                        className="min-h-5 truncate text-sm font-medium"
+                        title={empty ? undefined : sourceFilePath(source?.path, shot.relativePath)}
                     >
                         {shot.filename}
                     </h2>
-                    <p className="mt-1 truncate text-xs text-zinc-500">
-                        {source ? sourcePresentation(source).name : "Source"}
+                    <p className="mt-1 min-h-4 truncate text-xs text-zinc-500">
+                        {empty ? "" : source ? sourcePresentation(source).name : "Source"}
                     </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
+                {(empty || shot.hasProxy) && (
+                    <button
+                        type="button"
+                        onClick={() => switchVariant(variant === "proxy" ? "original" : "proxy")}
+                        disabled={unavailable || pausedForScan}
+                        aria-label="Proxy playback"
+                        aria-pressed={variant === "proxy"}
+                        title={
+                            variant === "proxy" ? "Proxy on — switch to High Quality" : "Proxy off — switch to proxy"
+                        }
+                        className={`flex h-7 items-center gap-1.5 rounded border px-2 py-1 text-[10px] font-medium transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:opacity-40 ${variant === "proxy" ? "border-white/20 bg-black/60 text-white/80 enabled:hover:bg-black/75" : "border-white/10 bg-black/20 text-white/50 enabled:hover:bg-black/40 enabled:hover:text-white/80"}`}
+                    >
+                        <span
+                            aria-hidden="true"
+                            className={`size-1 rounded-full ${variant === "proxy" ? "bg-green-400" : "bg-white/30"}`}
+                        />
+                        Proxy
+                    </button>
+                )}
                 <button
                     type="button"
-                    onClick={() => void toggleThumbnail()}
-                    disabled={thumbnailBusy || unavailable || pausedForScan || (!shot.hasCustomThumbnail && !frameReady)}
-                    aria-label={shot.hasCustomThumbnail ? "Clear custom thumbnail" : "Set current frame as thumbnail"}
-                    aria-pressed={!!shot.hasCustomThumbnail}
-                    title={shot.hasCustomThumbnail ? "Clear custom thumbnail" : "Set current frame as thumbnail"}
-                    className={`grid size-7 place-items-center rounded-md transition duration-75 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40 ${shot.hasCustomThumbnail ? "bg-blue-400/15 text-blue-300 hover:bg-blue-400/25" : "text-zinc-500 hover:bg-white/8 hover:text-zinc-200"}`}
+                    onClick={() => void setThumbnail()}
+                    disabled={thumbnailBusy || unavailable || pausedForScan || !frameReady}
+                    aria-label="Set current frame as thumbnail"
+                    title="Set current frame as thumbnail"
+                    className="grid size-7 place-items-center rounded-md text-zinc-500 transition duration-75 hover:bg-white/8 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40"
                 >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-4">
                         <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8" cy="8" r="1.5" /><path d="m21 15-5-5L5 21" />
                     </svg>
                 </button>
-                <button
-                    onClick={onClose}
-                    aria-label="Close clip inspector"
-                    className="grid size-7 shrink-0 place-items-center rounded-md text-xl text-zinc-500 hover:bg-white/8 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400"
-                >
-                    ×
-                </button>
                 </div>
             </header>
             {thumbnailError && <p role="alert" className="mb-3 text-xs text-amber-300">{thumbnailError}</p>}
             <div className="relative overflow-hidden rounded-lg border border-white/8 bg-black">
-                {unavailable || pausedForScan ? (
+                {empty ? (
+                    <div className="aspect-video" aria-label="No clip selected" />
+                ) : unavailable || pausedForScan ? (
                     <div
                         role="status"
                         className={`flex aspect-video items-center justify-center p-5 text-center text-xs ${unavailable ? "text-red-300" : "text-zinc-500"}`}
@@ -193,25 +210,7 @@ export function ClipInspector({
                         }}
                     />
                 )}
-                {shot.hasProxy && (
-                    <button
-                        type="button"
-                        onClick={() => switchVariant(variant === "proxy" ? "original" : "proxy")}
-                        disabled={unavailable || pausedForScan}
-                        aria-label="Proxy playback"
-                        aria-pressed={variant === "proxy"}
-                        title={
-                            variant === "proxy" ? "Proxy on — switch to High Quality" : "Proxy off — switch to proxy"
-                        }
-                        className={`absolute top-2 right-2 z-10 flex items-center gap-1.5 rounded border px-2 py-1 text-[10px] font-medium transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:opacity-40 ${variant === "proxy" ? "border-white/20 bg-black/60 text-white/80 enabled:hover:bg-black/75" : "border-white/10 bg-black/20 text-white/50 enabled:hover:bg-black/40 enabled:hover:text-white/80"}`}
-                    >
-                        <span
-                            aria-hidden="true"
-                            className={`size-1 rounded-full ${variant === "proxy" ? "bg-green-400" : "bg-white/30"}`}
-                        />
-                        Proxy
-                    </button>
-                )}
+
             </div>
             {playbackMessage && (
                 <p role="status" className="mt-3 text-xs leading-5 text-amber-300">
@@ -255,9 +254,9 @@ export function ClipInspector({
                     aria-labelledby="inspector-metadata-tab"
                     className="mt-4 rounded-lg border border-white/8 p-3"
                 >
-                    <p className="mb-4 text-xs leading-5 text-zinc-500">
+                    {!empty && <p className="mb-4 text-xs leading-5 text-zinc-500">
                         Identity, project, tags, and notes will be editable here soon. These fields are placeholders.
-                    </p>
+                    </p>}
                     <fieldset disabled className="space-y-4 text-xs text-zinc-500">
                         <label className="block">
                             Identity
@@ -265,7 +264,7 @@ export function ClipInspector({
                                 defaultValue=""
                                 className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2"
                             >
-                                <option value="">Not assigned</option>
+                                <option value="">{empty ? "" : "Not assigned"}</option>
                                 <option>OWMO</option>
                                 <option>CMSH</option>
                             </select>
@@ -273,14 +272,14 @@ export function ClipInspector({
                         <label className="block">
                             Project
                             <input
-                                placeholder="Optional project"
+                                placeholder={empty ? "" : "Optional project"}
                                 className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2"
                             />
                         </label>
                         <label className="block">
                             Tags
                             <input
-                                placeholder="Add tags…"
+                                placeholder={empty ? "" : "Add tags…"}
                                 className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2"
                             />
                         </label>
@@ -288,7 +287,7 @@ export function ClipInspector({
                             Notes
                             <textarea
                                 rows={4}
-                                placeholder="Optional notes"
+                                placeholder={empty ? "" : "Optional notes"}
                                 className="mt-1.5 block w-full resize-none rounded-md border border-white/10 bg-transparent px-3 py-2"
                             />
                         </label>
@@ -321,7 +320,7 @@ export function ClipInspector({
                         ].map(([label, value]) => (
                             <div key={label} className="grid grid-cols-[90px_1fr] gap-3">
                                 <dt className="text-zinc-500">{label}</dt>
-                                <dd className="min-w-0 break-all">{value}</dd>
+                                <dd className="min-w-0 break-all">{empty ? "" : value}</dd>
                             </div>
                         ))}
                     </dl>
@@ -420,6 +419,7 @@ export function ClipInspector({
                     ))}
                 </section>
             )}
+            </div>
         </ResizableInspector>
     );
 }

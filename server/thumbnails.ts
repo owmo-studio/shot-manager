@@ -68,14 +68,9 @@ export class ThumbnailQueue {
         } catch { return null; }
     }
 
-    async setCustomImage(input: string, sourceIdentity: string, dataUrl: string | null, validate: () => Promise<boolean>) {
+    async setCustomImage(input: string, sourceIdentity: string, dataUrl: string, validate: () => Promise<boolean>) {
         const path = await this.customPath(input, sourceIdentity);
         if (!await validate()) throw new Error("Source changed while updating the thumbnail.");
-        if (dataUrl === null) {
-            try { await unlink(path); }
-            catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-            return;
-        }
         const match = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl);
         const bytes = match ? Buffer.from(match[1], "base64") : Buffer.alloc(0);
         if (bytes.length > maximumImageBytes || !isJpeg(bytes)) throw Object.assign(new Error("Invalid thumbnail image."), { statusCode: 400 });
@@ -86,35 +81,6 @@ export class ThumbnailQueue {
             if (!await validate() || await this.customPath(input, sourceIdentity) !== path) throw new Error("Source changed while saving the thumbnail.");
             await rename(temporaryPath, path);
         } finally { await unlink(temporaryPath).catch(() => undefined); }
-    }
-
-    async cameraImage(input: string, sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>): Promise<string | null> {
-        signal.throwIfAborted();
-        if (await realpath(input) !== input || !await validate()) return null;
-        const before = await stat(input);
-        if (!before.isFile()) return null;
-        const identity = fileIdentity(before);
-        const key = createHash("sha256").update(`camera-image-v1:${sourceIdentity}:${input}:${identity}`).digest("hex");
-        const cachedPath = join(this.cacheDirectory, `${key}.jpg`);
-        try {
-            const cached = await readSmallFile(cachedPath, maximumImageBytes);
-            signal.throwIfAborted();
-            if (isJpeg(cached) && await validate()) return `data:image/jpeg;base64,${cached.toString("base64")}`;
-        } catch { signal.throwIfAborted(); }
-        const bytes = await readSmallFile(input, maximumImageBytes);
-        signal.throwIfAborted();
-        if (!isJpeg(bytes) || fileIdentity(await stat(input)) !== identity || !await validate()) return null;
-        let temporaryPath: string | undefined;
-        try {
-            await mkdir(this.cacheDirectory, { recursive: true, mode: 0o700 });
-            temporaryPath = join(this.cacheDirectory, `${key}.${randomUUID()}.tmp`);
-            await writeFile(temporaryPath, bytes, { mode: 0o600, flush: true });
-            signal.throwIfAborted();
-            if (!await validate()) return null;
-            await rename(temporaryPath, cachedPath);
-        } catch { signal.throwIfAborted(); }
-        finally { if (temporaryPath) await unlink(temporaryPath).catch(() => undefined); }
-        return `data:image/jpeg;base64,${bytes.toString("base64")}`;
     }
 
     enqueue(inputs: string[], sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>, completed: (image: string | null) => void) {

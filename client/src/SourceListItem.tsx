@@ -68,7 +68,6 @@ export function SourceListItem({
     refreshing = false,
     onRefresh,
     onRemove,
-    onHighlight,
 }: {
     source: ImportSource;
     selected?: boolean;
@@ -77,7 +76,6 @@ export function SourceListItem({
     refreshing?: boolean;
     onRefresh: () => void;
     onRemove: () => void;
-    onHighlight: (highlighted: boolean) => void;
 }) {
     const presentation = sourcePresentation(source);
     const unavailable = !source.available;
@@ -88,14 +86,6 @@ export function SourceListItem({
     return (
         <li
             aria-busy={inProgress}
-            onMouseEnter={() => onHighlight(true)}
-            onMouseLeave={(event) => onHighlight(!!event.currentTarget.querySelector(":focus-visible"))}
-            onFocusCapture={(event) => {
-                if (event.target.matches(":focus-visible")) onHighlight(true);
-            }}
-            onBlurCapture={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget)) onHighlight(event.currentTarget.matches(":hover"));
-            }}
             className={`group relative rounded-lg transition duration-75 ${unavailable ? "bg-red-500/8 hover:bg-red-500/15 has-[:focus-visible]:bg-red-500/15" : scanning ? "bg-blue-500/8 hover:bg-blue-500/12 has-[:focus-visible]:bg-blue-500/12" : queued ? "bg-white/2 opacity-60" : "hover:bg-white/4 has-[:focus-visible]:bg-white/4"}`}
         >
             <button

@@ -64,7 +64,6 @@ async function* candidates(source: ImportSource, signal: AbortSignal, warn: (mes
             catch { warn(`Could not read optional assets in ${relative(source.path, path)}.`); return new Map<string, string>(); }
         }
         const proxies = await optionalFiles(join(root, "SUB"));
-        const thumbnails = await optionalFiles(join(root, "THMBNL"));
         for (const path of originals.values()) {
             signal.throwIfAborted();
             if (!videoExtensions.has(extname(path).toLowerCase())) continue;
@@ -73,7 +72,6 @@ async function* candidates(source: ImportSource, signal: AbortSignal, warn: (mes
                 original: path,
                 xml: originals.get(`${stem}m01.xml`),
                 proxy: proxies.get(`${stem}s03.mp4`),
-                thumbnail: thumbnails.get(`${stem}t01.jpg`),
             };
         }
         return;
@@ -102,7 +100,7 @@ function validTimestamp(value: unknown): string | null {
     return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value)) ? value : null;
 }
 
-export async function discoverShots(source: ImportSource, signal: AbortSignal, found: (result: DiscoveredShot) => void, warn: (message: string) => void): Promise<void> {
+export async function discoverShots(source: ImportSource, signal: AbortSignal, found: (result: DiscoveredShot) => void | Promise<void>, warn: (message: string) => void): Promise<void> {
     for await (const assets of candidates(source, signal, warn)) {
         signal.throwIfAborted();
         try {
@@ -145,7 +143,7 @@ export async function discoverShots(source: ImportSource, signal: AbortSignal, f
                 continue;
             }
             const relativePath = relative(source.path, assets.original);
-            found({ assets, mediaInfo, shot: {
+            await found({ assets, mediaInfo, shot: {
                 id: createHash("sha256").update(`${source.id}\0${relativePath}`).digest("hex"),
                 sourceId: source.id,
                 filename: basename(assets.original),

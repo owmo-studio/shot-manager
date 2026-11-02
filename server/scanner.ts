@@ -5,7 +5,7 @@ import type { ImportSource } from "../shared/desktop";
 import type { ShotCollection, ShotDetails, SourceScan } from "../shared/shots";
 import { discoverShots, readSmallFile } from "./discovery";
 import type { DiscoveredShot } from "./discovery";
-import { isJpeg, ThumbnailQueue } from "./thumbnails";
+import { ThumbnailQueue } from "./thumbnails";
 
 interface ScanJob {
     source: ImportSource;
@@ -13,6 +13,7 @@ interface ScanJob {
     controller: AbortController;
     shots: DiscoveredShot[];
     rootIdentity?: string;
+    refreshing: boolean;
 }
 
 export class ShotScanner {
@@ -23,7 +24,6 @@ export class ShotScanner {
     onChange?: (collection: ShotCollection) => void;
     private thumbnailQueue?: ThumbnailQueue;
     private generatedImages = new Map<string, string>();
-    private suppressedGeneration = new Set<string>();
     private updatingThumbnails = new Set<string>();
 
     constructor(thumbnailCacheDirectory?: string) {
@@ -81,6 +81,7 @@ export class ShotScanner {
             controller: new AbortController(),
             shots: previous?.shots ?? [],
             rootIdentity: previous?.rootIdentity,
+            refreshing: !!previous,
         };
         for (const result of job.shots) {
             if (result.shot.thumbnailStatus === "pending" || result.shot.thumbnailStatus === "failed") result.shot.thumbnailStatus = undefined;
@@ -95,7 +96,11 @@ export class ShotScanner {
             try {
                 const root = await stat(source.path);
                 job.rootIdentity = `${root.dev}:${root.ino}:${root.birthtimeMs}`;
-                await discoverShots(source, job.controller.signal, (shot) => {
+                await discoverShots(source, job.controller.signal, async (shot) => {
+                    const custom = await this.thumbnailQueue?.customImage(shot.assets.original, job.rootIdentity ?? "");
+                    job.controller.signal.throwIfAborted();
+                    shot.shot.hasCustomThumbnail = !!custom;
+                    if (custom) shot.shot.hasThumbnail = true;
                     discovered.push(shot);
                     if (!previous) job.shots.push(shot);
                     job.status.clipCount = discovered.length;
@@ -116,11 +121,6 @@ export class ShotScanner {
                     if (job.status.warnings.length) throw new Error("Refresh was incomplete");
                     const existing = new Map(previous.shots.map((result) => [result.shot.id, result]));
                     job.shots = discovered.map((result) => existing.get(result.shot.id) ?? result);
-                }
-                for (const result of job.shots) {
-                    const custom = await this.thumbnailQueue?.customImage(result.assets.original, job.rootIdentity ?? "");
-                    result.shot.hasCustomThumbnail = !!custom;
-                    if (custom) result.shot.hasThumbnail = true;
                 }
                 job.controller.signal.throwIfAborted();
                 job.status.state = "complete";
@@ -143,12 +143,15 @@ export class ShotScanner {
         return state === "queued" || state === "scanning";
     }
 
+    private isReconciling(job: ScanJob): boolean {
+        return job.refreshing && this.isBusy(job.source.id);
+    }
+
     remove(id: string, publish = true) {
         const job = this.jobs.get(id);
         job?.controller.abort();
         for (const result of job?.shots ?? []) {
             this.generatedImages.delete(result.shot.id);
-            if (publish) this.suppressedGeneration.delete(result.shot.id);
         }
         if (this.jobs.delete(id) && publish) this.publish();
     }
@@ -159,7 +162,7 @@ export class ShotScanner {
             shots: [...this.jobs.values()].flatMap((job) => job.shots.map((result) => ({
                 ...result.shot,
                 available: job.source.available,
-                editable: job.source.available && !this.isBusy(job.source.id),
+                editable: job.source.available && !this.isReconciling(job),
             }))).sort((first, second) =>
                 first.timestamp.slice(0, 10).localeCompare(second.timestamp.slice(0, 10)) ||
                 Date.parse(first.timestamp) - Date.parse(second.timestamp) || first.id.localeCompare(second.id)),
@@ -225,7 +228,7 @@ export class ShotScanner {
         return details;
     }
 
-    async thumbnail(id: string, fallback = false): Promise<string | null> {
+    async thumbnail(id: string): Promise<string | null> {
         for (const job of this.jobs.values()) {
             if (!job.source.available) continue;
             const result = job.shots.find((item) => item.shot.id === id);
@@ -249,20 +252,8 @@ export class ShotScanner {
                     const custom = await this.thumbnailQueue.customImage(original, job.rootIdentity ?? "");
                     if (custom && await valid()) return custom;
                 }
-                if (!fallback && result.assets.thumbnail) {
-                    try {
-                        const path = await resolveAsset(result.assets.thumbnail);
-                        if (path && this.thumbnailQueue) {
-                            const image = await this.thumbnailQueue.cameraImage(path, job.rootIdentity ?? "", job.controller.signal, valid);
-                            if (image) return image;
-                        }
-                        const bytes = path ? await readSmallFile(path, 2 * 1024 * 1024) : null;
-                        if (bytes && isJpeg(bytes) && await valid()) return `data:image/jpeg;base64,${bytes.toString("base64")}`;
-                    } catch {}
-                }
                 const generated = this.generatedImages.get(id);
                 if (generated) return generated;
-                if (this.suppressedGeneration.has(id)) return null;
                 if (!this.thumbnailQueue) return null;
                 const inputs: string[] = [];
                 for (const asset of [result.assets.proxy, result.assets.original]) {
@@ -295,26 +286,24 @@ export class ShotScanner {
         return null;
     }
 
-    async setThumbnail(id: string, dataUrl: string | null) {
+    async setThumbnail(id: string, dataUrl: string) {
         if (this.updatingThumbnails.has(id)) throw Object.assign(new Error("Thumbnail update is already in progress."), { statusCode: 409 });
         this.updatingThumbnails.add(id);
         try {
             const asset = await this.assetPath(id, "original");
-            if (this.isBusy(asset.job.source.id)) throw Object.assign(new Error("Wait for scanning to finish."), { statusCode: 409 });
+            if (this.isReconciling(asset.job)) throw Object.assign(new Error("Wait for rescanning to finish."), { statusCode: 409 });
             if (!this.thumbnailQueue) throw new Error("Thumbnail cache is unavailable.");
             const valid = async () => {
                 try {
                     const current = await this.assetPath(id, "original");
-                    return current.job === asset.job && current.path === asset.path && !this.isBusy(asset.job.source.id);
+                    return current.job === asset.job && current.path === asset.path && !this.isReconciling(asset.job);
                 } catch { return false; }
             };
             await this.thumbnailQueue.setCustomImage(asset.path, asset.job.rootIdentity ?? "", dataUrl, valid);
             if (!await valid()) throw new Error("Source changed while updating the thumbnail.");
             this.generatedImages.delete(id);
-            if (dataUrl === null) this.suppressedGeneration.add(id);
-            else this.suppressedGeneration.delete(id);
-            asset.result.shot.hasCustomThumbnail = dataUrl !== null;
-            asset.result.shot.hasThumbnail = dataUrl !== null || !!asset.result.assets.thumbnail;
+            asset.result.shot.hasCustomThumbnail = true;
+            asset.result.shot.hasThumbnail = true;
             asset.result.shot.thumbnailStatus = undefined;
             asset.result.shot.thumbnailRevision = (asset.result.shot.thumbnailRevision ?? 0) + 1;
             this.publish();

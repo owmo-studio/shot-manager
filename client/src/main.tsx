@@ -17,8 +17,8 @@ function App() {
     const [status, setStatus] = useState<BackendStatus>({ state: "starting", message: "Starting backend…" });
     const [sources, setSources] = useState<ImportSource[]>([]);
     const [sourcesLoaded, setSourcesLoaded] = useState(false);
-    const [hoveredSourceId, setHoveredSourceId] = useState<string | null>(null);
     const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
+    const [newestFirst, setNewestFirst] = useState(true);
     const [inspectedShotId, setInspectedShotId] = useState<string | null>(null);
     const [inspectorWidth, setInspectorWidth] = useState(MIN_INSPECTOR_WIDTH);
     const [shotCollection, setShotCollection] = useState<ShotCollection>({ revision: 0, shots: [], scans: [] });
@@ -260,7 +260,7 @@ function App() {
                 <span className="text-xs text-zinc-500">Development</span>
             </header>
             <main className="flex min-h-0 flex-1">
-                <aside className="w-72 shrink-0 overflow-y-auto border-r border-white/8 bg-white/1.5 p-3">
+                <aside className="w-60 shrink-0 overflow-y-auto border-r border-white/8 bg-white/1.5 p-3">
                     <div className="flex items-center justify-between gap-2">
                         <h2 className="font-medium text-zinc-300">Sources</h2>
                         <button
@@ -271,11 +271,6 @@ function App() {
                             +
                         </button>
                     </div>
-                    {sources.length === 0 && (
-                        <p className="mt-4 text-xs leading-6 text-zinc-500">
-                            {sourcesLoaded ? "Add a source drive or folder get started." : "Loading sources…"}
-                        </p>
-                    )}
                     <ul aria-label="Import sources" className="mt-4 space-y-2">
                         {sources.map((source) => (
                             <SourceListItem
@@ -284,7 +279,6 @@ function App() {
                                 selected={filteredIds.has(source.id)}
                                 onToggle={() => setSelectedSourceIds((current) => current.includes(source.id)
                                     ? current.filter((id) => id !== source.id) : [...current, source.id])}
-                                onHighlight={(highlighted) => setHoveredSourceId(highlighted ? source.id : null)}
                                 scan={shotCollection.scans.find((scan) => scan.sourceId === source.id)}
                                 refreshing={refreshingSourceId === source.id}
                                 onRefresh={() => void refreshSource(source.id)}
@@ -316,8 +310,9 @@ function App() {
                             collection={visibleCollection}
                             title={gridTitle}
                             filterDescription={filterDescription}
+                            newestFirst={newestFirst}
+                            onToggleOrder={() => setNewestFirst((current) => !current)}
                             sources={sources}
-                            hoveredSourceId={hoveredSourceId}
                             inspectedShotId={inspectedShotId}
                             onInspect={(id) => setInspectedShotId((current) => (current === id ? null : id))}
                         />
@@ -339,16 +334,13 @@ function App() {
                         </div>
                     )}
                 </section>
-                {inspectedShot && (
                     <ClipInspector
-                        key={inspectedShot.id}
+                        key={inspectedShot?.id ?? "empty"}
                         shot={inspectedShot}
-                        source={sources.find((source) => source.id === inspectedShot.sourceId)}
+                        source={sources.find((source) => source.id === inspectedShot?.sourceId)}
                         width={inspectorWidth}
                         onResize={setInspectorWidth}
-                        onClose={() => setInspectedShotId(null)}
                     />
-                )}
             </main>
             {removalSource && (
                 <RemoveSourceDialog

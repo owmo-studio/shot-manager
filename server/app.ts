@@ -46,15 +46,15 @@ export function createServer(token: string, onShotsChanged?: (collection: ShotCo
     const asset = await sources.scanner.openVideo(request.params.id, request.params.variant)
     return sendVideo(request, reply, asset.file, asset.path)
   })
-  server.get<{ Params: { id: string }; Querystring: { fallback?: string } }>('/api/shots/:id/thumbnail', async (request) => ({
-    dataUrl: await sources.scanner.thumbnail(request.params.id, request.query.fallback === '1')
+  server.get<{ Params: { id: string } }>('/api/shots/:id/thumbnail', async (request) => ({
+    dataUrl: await sources.scanner.thumbnail(request.params.id)
   }))
-  server.put<{ Params: { id: string }; Body: { dataUrl: string | null } }>('/api/shots/:id/thumbnail', {
+  server.put<{ Params: { id: string }; Body: { dataUrl: string } }>('/api/shots/:id/thumbnail', {
     bodyLimit: 3000100,
     schema: {
       params: { type: 'object', required: ['id'], properties: { id: { type: 'string', pattern: '^[a-f0-9]{64}$' } } },
       body: { type: 'object', required: ['dataUrl'], additionalProperties: false, properties: {
-        dataUrl: { anyOf: [{ type: 'null' }, { type: 'string', maxLength: 3000000, pattern: '^data:image/jpeg;base64,' }] }
+        dataUrl: { type: 'string', maxLength: 3000000, pattern: '^data:image/jpeg;base64,' }
       } }
     }
   }, async (request, reply) => {
