@@ -106,14 +106,14 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     protocol.handle('shot-media', async (request) => {
       const url = new URL(request.url)
-      const match = /^\/shots\/([a-f0-9]{64})\/(original|proxy)$/.exec(url.pathname)
+      const match = /^\/shots\/([a-f0-9]{64})\/original$/.exec(url.pathname)
       if (url.hostname !== 'local' || url.search || !match || !['GET', 'HEAD'].includes(request.method)) return new Response(null, { status: 404 })
       if (!backendURL) return new Response(null, { status: 503 })
       const headers = new Headers({ Authorization: `Bearer ${token}` })
       const range = request.headers.get('range')
       if (range) headers.set('Range', range)
       try {
-        const response = await fetch(`${backendURL}/api/shots/${match[1]}/media/${match[2]}`, {
+        const response = await fetch(`${backendURL}/api/shots/${match[1]}/media/original`, {
           method: request.method, headers, signal: request.signal
         })
         const responseHeaders = new Headers(response.headers)

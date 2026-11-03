@@ -1,28 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 import type { ImportSource } from "../../shared/desktop";
 import type { ShotDetails, VideoShot } from "../../shared/shots";
-import { readableMediaInfo, sourceFilePath } from "./mediaInfo";
+import { emptyVideoMetadata } from "../../shared/shots";
+import { durationRow, primaryMetadataRows, sourceFilePath } from "./mediaInfo";
 import { ResizableInspector } from "./ResizableInspector";
 import { sourcePresentation } from "./SourceListItem";
 
 function bytesLabel(bytes: number) {
     if (!bytes) return "0 B";
     const unit = Math.min(3, Math.floor(Math.log(bytes) / Math.log(1024)));
-    return `${(bytes / 1024 ** unit).toLocaleString(undefined, { maximumFractionDigits: 1 })} ${["B", "KB", "MB", "GB"][unit]}`;
+    return (bytes / 1024 ** unit).toLocaleString(undefined, { maximumFractionDigits: 1 }) + " " + ["B", "KB", "MB", "GB"][unit];
 }
 
 const emptyShot: VideoShot = {
     id: "", sourceId: "", filename: "", relativePath: "", bytes: 0, timestamp: "",
-    dateSource: "file-modified", cameraModel: null, durationSeconds: null,
-    hasProxy: false, hasThumbnail: false, hasXml: false, warnings: [], available: false, editable: false,
+    dateSource: "file-modified", dateEvidence: "", dateConfidence: "uncertain",
+    cameraModel: null, metadata: emptyVideoMetadata(), durationSeconds: null,
+    hasThumbnail: false, warnings: [], available: false, editable: false,
 };
 
-export function ClipInspector({
-    shot: selectedShot,
-    source,
-    width,
-    onResize,
-}: {
+export function ClipInspector({ shot: selectedShot, source, width, onResize }: {
     shot?: VideoShot;
     source?: ImportSource;
     width: number;
@@ -31,21 +28,17 @@ export function ClipInspector({
     const empty = !selectedShot;
     const shot = selectedShot ?? emptyShot;
     const [tab, setTab] = useState<"metadata" | "file">("metadata");
-    const [variant, setVariant] = useState<"proxy" | "original">("original");
     const [details, setDetails] = useState<ShotDetails | null>(null);
     const [detailsError, setDetailsError] = useState<string | null>(null);
     const [playbackMessage, setPlaybackMessage] = useState<string | null>(null);
     const [thumbnailBusy, setThumbnailBusy] = useState(false);
     const [thumbnailError, setThumbnailError] = useState<string | null>(null);
     const [frameReady, setFrameReady] = useState(false);
-    const [sidecarCopyStatus, setSidecarCopyStatus] = useState<"idle" | "copying" | "copied" | "failed">("idle");
+    const [copyStatus, setCopyStatus] = useState<"idle" | "copying" | "copied" | "failed">("idle");
     const video = useRef<HTMLVideoElement>(null);
-    const position = useRef(0);
-    const resume = useRef(false);
-    const fallbackUsed = useRef(false);
     const unavailable = !shot.available || !source?.available;
     const pausedForScan = !unavailable && !shot.editable;
-    const mediaAssets = details?.assets.filter((asset) => asset.role !== "xml");
+    const rawMetadata = details?.embeddedMetadata.map((entry) => entry.label + " (" + entry.format.toUpperCase() + ")\n\n" + entry.text).join("\n\n────────────────────\n\n") ?? "";
 
     async function setThumbnail() {
         if (empty || thumbnailBusy) return;
@@ -61,364 +54,144 @@ export function ClipInspector({
             const context = canvas.getContext("2d");
             if (!context) throw new Error("Frame capture is unavailable.");
             context.drawImage(player, 0, 0, canvas.width, canvas.height);
-            const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
-            await window.desktop.setShotThumbnail(shot.id, dataUrl);
+            await window.desktop.setShotThumbnail(shot.id, canvas.toDataURL("image/jpeg", 0.9));
         } catch {
             setThumbnailError("Thumbnail could not be updated. Check the preview and try again.");
         } finally { setThumbnailBusy(false); }
     }
 
     useEffect(() => {
-        if (sidecarCopyStatus !== "copied" && sidecarCopyStatus !== "failed") return;
-        const timeout = window.setTimeout(() => setSidecarCopyStatus("idle"), 2000);
+        if (copyStatus !== "copied" && copyStatus !== "failed") return;
+        const timeout = window.setTimeout(() => setCopyStatus("idle"), 2000);
         return () => window.clearTimeout(timeout);
-    }, [sidecarCopyStatus]);
+    }, [copyStatus]);
 
-    async function copySidecar() {
-        if (!details?.cameraXml) return;
-        setSidecarCopyStatus("copying");
+    async function copyMetadata() {
+        if (!rawMetadata) return;
+        setCopyStatus("copying");
         try {
-            await navigator.clipboard.writeText(details.cameraXml);
-            setSidecarCopyStatus("copied");
-        } catch {
-            setSidecarCopyStatus("failed");
-        }
+            await navigator.clipboard.writeText(rawMetadata);
+            setCopyStatus("copied");
+        } catch { setCopyStatus("failed"); }
     }
 
     useEffect(() => {
         let disposed = false;
         setDetailsError(null);
-        if (unavailable) return;
-        window.desktop
-            .getShotDetails(shot.id)
-            .then((data) => {
-                if (!disposed) setDetails(data);
-            })
-            .catch(() => {
-                if (!disposed) setDetailsError("File details could not be loaded. Check that the source is connected.");
-            });
-        return () => {
-            disposed = true;
-        };
-    }, [shot.id, unavailable]);
-
-    function switchVariant(next: "proxy" | "original", automatic = false) {
-        position.current = video.current?.currentTime ?? position.current;
-        resume.current = video.current ? !video.current.paused : false;
-        fallbackUsed.current = true;
-        setVariant(next);
-        setPlaybackMessage(automatic ? "Proxy preview unavailable; trying the original." : null);
-    }
-
-    function playbackFailed() {
-        if (variant === "proxy" && !fallbackUsed.current) switchVariant("original", true);
-        else
-            setPlaybackMessage(
-                `This ${variant === "proxy" ? "proxy" : "video"} cannot be played here. Its codec may be unsupported, or the file may be unavailable.`,
-            );
-    }
+        if (empty || unavailable || pausedForScan) return;
+        window.desktop.getShotDetails(shot.id).then((data) => {
+            if (!disposed) setDetails(data);
+        }).catch(() => {
+            if (!disposed) setDetailsError("File details could not be loaded. Check that the source is connected.");
+        });
+        return () => { disposed = true; };
+    }, [shot.id, unavailable, pausedForScan, empty]);
 
     return (
         <ResizableInspector width={width} onResize={onResize}>
             <div inert={empty} className={empty ? "opacity-40" : undefined}>
-            <header className="mb-4 flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                    <h2
-                        className="min-h-5 truncate text-sm font-medium"
-                        title={empty ? undefined : sourceFilePath(source?.path, shot.relativePath)}
-                    >
-                        {shot.filename}
-                    </h2>
-                    <p className="mt-1 min-h-4 truncate text-xs text-zinc-500">
-                        {empty ? "" : source ? sourcePresentation(source).name : "Source"}
-                    </p>
-                </div>
-                <div className="flex shrink-0 items-center gap-1">
-                {(empty || shot.hasProxy) && (
-                    <button
-                        type="button"
-                        onClick={() => switchVariant(variant === "proxy" ? "original" : "proxy")}
-                        disabled={unavailable || pausedForScan}
-                        aria-label="Proxy playback"
-                        aria-pressed={variant === "proxy"}
-                        title={
-                            variant === "proxy" ? "Proxy on — switch to High Quality" : "Proxy off — switch to proxy"
-                        }
-                        className={`flex h-7 items-center gap-1.5 rounded border px-2 py-1 text-[10px] font-medium transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:opacity-40 ${variant === "proxy" ? "border-white/20 bg-black/60 text-white/80 enabled:hover:bg-black/75" : "border-white/10 bg-black/20 text-white/50 enabled:hover:bg-black/40 enabled:hover:text-white/80"}`}
-                    >
-                        <span
-                            aria-hidden="true"
-                            className={`size-1 rounded-full ${variant === "proxy" ? "bg-green-400" : "bg-white/30"}`}
-                        />
-                        Proxy
-                    </button>
-                )}
-                <button
-                    type="button"
-                    onClick={() => void setThumbnail()}
-                    disabled={thumbnailBusy || unavailable || pausedForScan || !frameReady}
-                    aria-label="Set current frame as thumbnail"
-                    title="Set current frame as thumbnail"
-                    className="grid size-7 place-items-center rounded-md text-zinc-500 transition duration-75 hover:bg-white/8 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40"
-                >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-4">
-                        <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8" cy="8" r="1.5" /><path d="m21 15-5-5L5 21" />
-                    </svg>
-                </button>
-                </div>
-            </header>
-            {thumbnailError && <p role="alert" className="mb-3 text-xs text-amber-300">{thumbnailError}</p>}
-            <div className="relative overflow-hidden rounded-lg border border-white/8 bg-black">
-                {empty ? (
-                    <div className="aspect-video" aria-label="No clip selected" />
-                ) : unavailable || pausedForScan ? (
-                    <div
-                        role="status"
-                        className={`flex aspect-video items-center justify-center p-5 text-center text-xs ${unavailable ? "text-red-300" : "text-zinc-500"}`}
-                    >
-                        {unavailable
-                            ? "Source is unavailable."
-                            : "Preview paused while this source is queued or scanning."}
+                <header className="mb-4 flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                        <h2 className="min-h-5 truncate text-sm font-medium" title={empty ? undefined : sourceFilePath(source?.path, shot.relativePath)}>{shot.filename}</h2>
+                        <p className="mt-1 min-h-4 truncate text-xs text-zinc-500">{empty ? "" : source ? sourcePresentation(source).name : "Source"}</p>
                     </div>
-                ) : (
-                    <video
-                        ref={video}
-                        crossOrigin="anonymous"
-                        key={`${shot.id}-${variant}`}
-                        src={`shot-media://local/shots/${shot.id}/${variant}`}
-                        controls
-                        controlsList="nodownload noplaybackrate noremoteplayback"
-                        disablePictureInPicture
-                        disableRemotePlayback
-                        playsInline
-                        preload="metadata"
-                        aria-label={`Preview ${shot.filename}`}
-                        className="aspect-video w-full object-contain"
-                        onError={playbackFailed}
-                        onLoadStart={() => setFrameReady(false)}
-                        onLoadedData={() => setFrameReady(true)}
-                        onSeeking={() => setFrameReady(false)}
-                        onSeeked={() => setFrameReady(true)}
-                        onEmptied={() => setFrameReady(false)}
-                        onLoadedMetadata={() => {
-                            if (!video.current) return;
-                            const maximum = Number.isFinite(video.current.duration)
-                                ? Math.max(0, video.current.duration - 0.05)
-                                : position.current;
-                            video.current.currentTime = Math.min(position.current, maximum);
-                            if (resume.current) void video.current.play().catch(() => undefined);
-                        }}
-                    />
-                )}
-
-            </div>
-            {playbackMessage && (
-                <p role="status" className="mt-3 text-xs leading-5 text-amber-300">
-                    {playbackMessage}
-                </p>
-            )}
-            <div role="tablist" aria-label="Clip information" className="mt-5 flex rounded-lg bg-white/4 p-1">
-                {(["metadata", "file"] as const).map((choice) => (
-                    <button
-                        key={choice}
-                        id={`inspector-${choice}-tab`}
-                        role="tab"
-                        aria-selected={tab === choice}
-                        aria-controls={`inspector-${choice}-panel`}
-                        tabIndex={tab === choice ? 0 : -1}
-                        onClick={() => setTab(choice)}
-                        onKeyDown={(event) => {
-                            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-                            event.preventDefault();
-                            const next =
-                                event.key === "Home"
-                                    ? "metadata"
-                                    : event.key === "End"
-                                      ? "file"
-                                      : tab === "metadata"
-                                        ? "file"
-                                        : "metadata";
-                            setTab(next);
-                            document.getElementById(`inspector-${next}-tab`)?.focus();
-                        }}
-                        className={`flex-1 rounded-md px-3 py-2 text-xs ${tab === choice ? "bg-white/10 text-zinc-200" : "text-zinc-500 hover:text-zinc-300"}`}
-                    >
-                        {choice === "metadata" ? "Context" : "File info"}
+                    <button type="button" onClick={() => void setThumbnail()} disabled={thumbnailBusy || unavailable || pausedForScan || !frameReady}
+                        aria-label="Set current frame as thumbnail" title="Set current frame as thumbnail"
+                        className="grid size-7 shrink-0 place-items-center rounded-md text-zinc-500 transition duration-75 hover:bg-white/8 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-4">
+                            <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8" cy="8" r="1.5" /><path d="m21 15-5-5L5 21" />
+                        </svg>
                     </button>
-                ))}
-            </div>
-            {tab === "metadata" ? (
-                <section
-                    role="tabpanel"
-                    id="inspector-metadata-panel"
-                    aria-labelledby="inspector-metadata-tab"
-                    className="mt-4 rounded-lg border border-white/8 p-3"
-                >
-                    {!empty && <p className="mb-4 text-xs leading-5 text-zinc-500">
-                        Identity, project, tags, and notes will be editable here soon. These fields are placeholders.
-                    </p>}
-                    <fieldset disabled className="space-y-4 text-xs text-zinc-500">
-                        <label className="block">
-                            Identity
-                            <select
-                                defaultValue=""
-                                className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2"
-                            >
-                                <option value="">{empty ? "" : "Not assigned"}</option>
-                                <option>OWMO</option>
-                                <option>CMSH</option>
-                            </select>
-                        </label>
-                        <label className="block">
-                            Project
-                            <input
-                                placeholder={empty ? "" : "Optional project"}
-                                className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2"
-                            />
-                        </label>
-                        <label className="block">
-                            Tags
-                            <input
-                                placeholder={empty ? "" : "Add tags…"}
-                                className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2"
-                            />
-                        </label>
-                        <label className="block">
-                            Notes
-                            <textarea
-                                rows={4}
-                                placeholder={empty ? "" : "Optional notes"}
-                                className="mt-1.5 block w-full resize-none rounded-md border border-white/10 bg-transparent px-3 py-2"
-                            />
-                        </label>
-                    </fieldset>
-                </section>
-            ) : (
-                <section
-                    role="tabpanel"
-                    id="inspector-file-panel"
-                    aria-labelledby="inspector-file-tab"
-                    className="mt-4 space-y-5 text-xs"
-                >
-                    <dl className="space-y-2 text-zinc-400">
-                        {[
-                            ["Filename", shot.filename],
-                            [
-                                "Source path",
-                                details?.assets.find((asset) => asset.role === "original")?.path ??
-                                    sourceFilePath(source?.path, shot.relativePath),
-                            ],
-                            ["Size", bytesLabel(shot.bytes)],
-                            ["Camera", shot.cameraModel ?? "Unknown"],
-                            [shot.dateSource === "file-modified" ? "File modified" : "Recorded", shot.timestamp],
-                            [
-                                "Duration",
-                                shot.durationSeconds === null
-                                    ? "Unknown"
-                                    : `${shot.durationSeconds.toFixed(2)} seconds`,
-                            ],
-                        ].map(([label, value]) => (
-                            <div key={label} className="grid grid-cols-[90px_1fr] gap-3">
-                                <dt className="text-zinc-500">{label}</dt>
-                                <dd className="min-w-0 break-all">{empty ? "" : value}</dd>
-                            </div>
-                        ))}
-                    </dl>
-                    {detailsError && (
-                        <p role="status" className="text-amber-300">
-                            {detailsError}
-                        </p>
+                </header>
+                {thumbnailError && <p role="alert" className="mb-3 text-xs text-amber-300">{thumbnailError}</p>}
+                <div className="overflow-hidden rounded-lg border border-white/8 bg-black">
+                    {empty ? <div className="aspect-video" aria-label="No clip selected" /> : unavailable || pausedForScan ? (
+                        <div role="status" className={'flex aspect-video items-center justify-center p-5 text-center text-xs ' + (unavailable ? 'text-red-300' : 'text-zinc-500')}>
+                            {unavailable ? "Source is unavailable." : "Preview paused while this source is queued for rescanning or being rescanned."}
+                        </div>
+                    ) : (
+                        <video ref={video} crossOrigin="anonymous" src={'shot-media://local/shots/' + shot.id + '/original'}
+                            controls controlsList="nodownload noplaybackrate noremoteplayback" disablePictureInPicture disableRemotePlayback playsInline preload="metadata"
+                            aria-label={'Preview ' + shot.filename} className="block aspect-video w-full object-contain"
+                            onError={() => { setFrameReady(false); setPlaybackMessage("This video cannot be played here. Its codec may be unsupported, or the file may be unavailable."); }}
+                            onLoadStart={() => { setFrameReady(false); setPlaybackMessage(null); }}
+                            onLoadedData={() => setFrameReady(true)} onSeeking={() => setFrameReady(false)} onSeeked={() => setFrameReady(true)} onEmptied={() => setFrameReady(false)} />
                     )}
-                    {!details && !detailsError && !unavailable && (
-                        <p className="text-zinc-500">Loading file details…</p>
-                    )}
-                    {details?.errors.map((error) => (
-                        <p key={error} className="text-amber-300">
-                            {error}
-                        </p>
+                </div>
+                {playbackMessage && <p role="status" className="mt-3 text-xs leading-5 text-amber-300">{playbackMessage}</p>}
+                <div role="tablist" aria-label="Clip information" className="mt-5 flex rounded-lg bg-white/4 p-1">
+                    {(["metadata", "file"] as const).map((choice) => (
+                        <button key={choice} id={'inspector-' + choice + '-tab'} role="tab" aria-selected={tab === choice} aria-controls={'inspector-' + choice + '-panel'}
+                            tabIndex={tab === choice ? 0 : -1} onClick={() => setTab(choice)}
+                            onKeyDown={(event) => {
+                                if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                                event.preventDefault();
+                                const next = event.key === "Home" ? "metadata" : event.key === "End" ? "file" : tab === "metadata" ? "file" : "metadata";
+                                setTab(next);
+                                document.getElementById('inspector-' + next + '-tab')?.focus();
+                            }}
+                            className={'flex-1 rounded-md px-3 py-2 text-xs ' + (tab === choice ? 'bg-white/10 text-zinc-200' : 'text-zinc-500 hover:text-zinc-300')}>
+                            {choice === "metadata" ? "Context" : "File info"}
+                        </button>
                     ))}
-                    <details open className="rounded-lg border border-white/8 p-3">
-                        <summary className="cursor-pointer font-medium text-zinc-300">
-                            Media ({mediaAssets ? mediaAssets.length : "…"})
-                        </summary>
-                        <div className="mt-3 space-y-4">
-                            {mediaAssets?.map((asset) => (
-                                <div key={asset.role}>
-                                    <h3 className="mb-1 font-medium text-zinc-300">
-                                        {
-                                            {
-                                                original: "Original",
-                                                proxy: "Proxy",
-                                                thumbnail: "Thumbnail",
-                                                xml: "Sidecar (XML)",
-                                            }[asset.role]
-                                        }
-                                    </h3>
-                                    <p className="break-all text-zinc-500">{asset.path}</p>
-                                    <p className="mt-1 text-zinc-500">{bytesLabel(asset.bytes)}</p>
+                </div>
+                {tab === "metadata" ? (
+                    <section role="tabpanel" id="inspector-metadata-panel" aria-labelledby="inspector-metadata-tab" className="mt-4 rounded-lg border border-white/8 p-3">
+                        {!empty && <p className="mb-4 text-xs leading-5 text-zinc-500">Identity, project, tags, and notes will be editable here soon. These fields are placeholders.</p>}
+                        <fieldset disabled className="space-y-4 text-xs text-zinc-500">
+                            <label className="block">Identity
+                                <select defaultValue="" className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2">
+                                    <option value="">{empty ? "" : "Not assigned"}</option><option>OWMO</option><option>CMSH</option>
+                                </select>
+                            </label>
+                            <label className="block">Project<input placeholder={empty ? "" : "Optional project"} className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2" /></label>
+                            <label className="block">Tags<input placeholder={empty ? "" : "Add tags…"} className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2" /></label>
+                            <label className="block">Notes<textarea rows={4} placeholder={empty ? "" : "Optional notes"} className="mt-1.5 block w-full resize-none rounded-md border border-white/10 bg-transparent px-3 py-2" /></label>
+                        </fieldset>
+                    </section>
+                ) : (
+                    <section role="tabpanel" id="inspector-file-panel" aria-labelledby="inspector-file-tab" className="mt-4 space-y-5 text-xs">
+                        <dl className="space-y-4 text-zinc-400">
+                            {[
+                                ...primaryMetadataRows(shot.metadata),
+                                durationRow(shot.durationSeconds, shot.metadata),
+                                { label: "Filename", value: shot.filename, detail: "" },
+                                { label: "File path", value: details?.file.path ?? sourceFilePath(source?.path, shot.relativePath), detail: "" },
+                                { label: "Size", value: bytesLabel(details?.file.bytes ?? shot.bytes), detail: "" },
+                                { label: "Date", value: shot.timestamp, detail: "" },
+                            ].map((row) => (
+                                <div key={row.label} className="grid grid-cols-[100px_minmax(0,1fr)] gap-3">
+                                    <dt className="text-zinc-500">{row.label}</dt>
+                                    <dd className="min-w-0 break-words">
+                                        <p className="break-all text-zinc-200">{empty ? "" : row.value}</p>
+                                        {!empty && row.detail && <p className="mt-1 text-[11px] leading-5 text-zinc-500">{row.detail}</p>}
+                                    </dd>
                                 </div>
                             ))}
-                        </div>
-                    </details>
-                    <details className="rounded-lg border border-white/8 p-3">
-                        <summary className="cursor-pointer font-medium text-zinc-300">Metadata</summary>
-                        {details?.mediaInfo ? (
-                            <div className="mt-3 space-y-5">
-                                {readableMediaInfo(details.mediaInfo).map((group) => (
-                                    <section key={group.title}>
-                                        <h3 className="mb-2 font-medium text-zinc-300">{group.title}</h3>
-                                        <dl className="space-y-2">
-                                            {group.rows.map((row) => (
-                                                <div
-                                                    key={row.key}
-                                                    className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-3"
-                                                >
-                                                    <dt title={row.key} className="break-words text-zinc-500">
-                                                        {row.label}
-                                                    </dt>
-                                                    <dd className="break-all text-zinc-300">{row.value}</dd>
-                                                </div>
-                                            ))}
-                                        </dl>
-                                    </section>
-                                ))}
-                            </div>
-                        ) : (
-                            <p className="mt-3 text-zinc-500">No embedded metadata available.</p>
-                        )}
-                    </details>
-                    {details?.cameraXml?.trim() && (
+                        </dl>
+                        {shot.metadata.color.conflicts.map((message) => <p key={message} className="leading-5 text-amber-300">{message}</p>)}
+                        {detailsError && <p role="status" className="text-amber-300">{detailsError}</p>}
+                        {!details && !detailsError && !unavailable && !pausedForScan && <p className="text-zinc-500">Loading embedded metadata…</p>}
+                        {details?.errors.map((error) => <p key={error} className="text-amber-300">{error}</p>)}
                         <details className="rounded-lg border border-white/8 p-3">
-                            <summary className="cursor-pointer font-medium text-zinc-300">Sidecar (XML)</summary>
-                            <div className="relative mt-3 rounded-md bg-black/20">
-                                <span role="status" className="sr-only">
-                                    {sidecarCopyStatus === "copied" ? "Copied" : sidecarCopyStatus === "failed" ? "Could not copy. Try again." : ""}
-                                </span>
-                                <button
-                                    type="button"
-                                    onClick={() => void copySidecar()}
-                                    disabled={sidecarCopyStatus === "copying"}
-                                    aria-label="Copy sidecar to clipboard"
-                                    title={sidecarCopyStatus === "copied" ? "Copied" : sidecarCopyStatus === "failed" ? "Could not copy. Try again." : "Copy to clipboard"}
-                                    className={`absolute top-2 right-6 z-10 grid size-7 place-items-center rounded border border-white/10 bg-[#181b21]/90 transition duration-75 hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-50 ${sidecarCopyStatus === "copied" ? "text-green-400" : sidecarCopyStatus === "failed" ? "text-amber-300" : "text-zinc-400 hover:text-zinc-200"}`}
-                                >
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-4">
-                                        {sidecarCopyStatus === "copied" ? <path d="m5 12 4 4L19 6" /> : <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></>}
-                                    </svg>
-                                </button>
-                                <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-all p-3 pr-16 text-[11px] leading-5 text-zinc-500">
-                                    {details.cameraXml}
-                                </pre>
-                            </div>
+                            <summary className="cursor-pointer font-medium text-zinc-300">Embedded metadata</summary>
+                            {rawMetadata ? (
+                                <div className="relative mt-3 rounded-md bg-black/20">
+                                    <span role="status" className="sr-only">{copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Could not copy. Try again." : ""}</span>
+                                    <button type="button" onClick={() => void copyMetadata()} disabled={copyStatus === "copying"} aria-label="Copy embedded metadata to clipboard"
+                                        title={copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Could not copy. Try again." : "Copy to clipboard"}
+                                        className={'absolute top-2 right-6 z-10 grid size-7 place-items-center rounded border border-white/10 bg-[#181b21]/90 transition duration-75 hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-50 ' + (copyStatus === "copied" ? "text-green-400" : copyStatus === "failed" ? "text-amber-300" : "text-zinc-400 hover:text-zinc-200")}>
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-4">
+                                            {copyStatus === "copied" ? <path d="m5 12 4 4L19 6" /> : <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></>}
+                                        </svg>
+                                    </button>
+                                    <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all p-3 pr-16 text-[11px] leading-5 text-zinc-500">{rawMetadata}</pre>
+                                </div>
+                            ) : <p className="mt-3 text-zinc-500">{details ? "No embedded metadata could be extracted." : "Embedded metadata is not available."}</p>}
                         </details>
-                    )}
-                    {shot.warnings.map((warning) => (
-                        <p key={warning} className="leading-5 text-amber-300">
-                            {warning}
-                        </p>
-                    ))}
-                </section>
-            )}
+                        {shot.warnings.map((warning) => <p key={warning} className="leading-5 text-amber-300">{warning}</p>)}
+                    </section>
+                )}
             </div>
         </ResizableInspector>
     );

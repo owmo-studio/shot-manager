@@ -1,14 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ImportSource } from "../../shared/desktop";
 import type { ShotCollection, VideoShot } from "../../shared/shots";
-import { sourcePresentation } from "./SourceListItem";
-import { sourceFilePath } from "./mediaInfo";
-
-function durationLabel(seconds: number | null) {
-    if (seconds === null) return "";
-    const rounded = Math.floor(seconds);
-    return `${Math.floor(rounded / 60)}:${String(rounded % 60).padStart(2, "0")}`;
-}
+import { deviceLabel, durationRow, sourceFilePath } from "./mediaInfo";
 
 function ShotCard({ shot, source, selected = false, onInspect }: { shot: VideoShot; source?: ImportSource; selected?: boolean; onInspect: () => void }) {
     const [thumbnail, setThumbnail] = useState<string | null>(null);
@@ -51,26 +44,17 @@ function ShotCard({ shot, source, selected = false, onInspect }: { shot: VideoSh
             className={`shot-card-enter -m-2 min-w-0 rounded-lg p-2 text-left ring-1 transition duration-75 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:cursor-not-allowed ${cardStyle}`}
             title={[sourceFilePath(source?.path, shot.relativePath), ...(unavailable ? ["Source unavailable. Reconnect the source to edit this shot."] : inactive ? ["Source rescan is queued or running. Editing is unavailable until it finishes."] : []), ...shot.warnings].join("\n")}>
             <span className={`relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg border ${unavailable ? "border-red-500/30 bg-red-500/5" : "border-white/8 bg-white/4"}`}>
-                {thumbnail && !failedImage ? <img src={thumbnail} alt="" onError={thumbnailFailed} className="size-full object-cover" /> : (
-                    <span className="text-center text-zinc-600">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true" className="mx-auto size-7"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="m10 9 5 3-5 3V9Z" /></svg>
-                        <span className="mt-2 block text-[11px]">{shot.thumbnailStatus === "pending" ? "Preparing thumbnail…" : "No thumbnail"}</span>
-                    </span>
-                )}
+                {thumbnail && !failedImage ? <img src={thumbnail} alt="" onError={thumbnailFailed} className="size-full object-cover" /> : shot.thumbnailStatus === "pending" && !unavailable ? (
+                    <span aria-hidden="true" className="absolute inset-0 bg-white/4 motion-safe:animate-pulse" />
+                ) : null}
                 {unavailable && <span className="pointer-events-none absolute inset-0 bg-red-950/30">
                     <span aria-hidden="true" className="absolute top-2 left-2 grid size-6 place-items-center rounded-full bg-red-400 font-bold text-[#1b2029]">!</span>
                 </span>}
-                {(shot.hasProxy || shot.hasXml) && (
-                    <span role="img" aria-label="Multiple associated files" title="Multiple associated files — review the Media section in the inspector" className="absolute bottom-1.5 left-1.5 grid size-5 place-items-center rounded bg-black/75 text-zinc-200">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-3.5"><path d="M7 4h13v12" /><rect x="3" y="8" width="13" height="12" rx="1.5" /></svg>
-                    </span>
-                )}
-                {shot.durationSeconds !== null && <span className="absolute right-1.5 bottom-1.5 rounded bg-black/75 px-1.5 py-0.5 text-xs text-zinc-200">{durationLabel(shot.durationSeconds)}</span>}
             </span>
             <span className="mt-2 block truncate text-[13px] text-zinc-200">{shot.filename}</span>
             <span className="mt-0.5 flex items-baseline justify-between gap-2 text-xs text-zinc-500">
-                <span className="min-w-0 truncate">{source ? sourcePresentation(source).name : "Source"}</span>
-                <span className="shrink-0 text-right" title={shot.dateSource === "file-modified" ? "File modification time" : "Recording time"}>{shot.timestamp.slice(11, 19)}{shot.dateSource === "file-modified" ? "*" : ""}</span>
+                <span className="min-w-0 truncate">{deviceLabel(shot.metadata.device) ?? "Video"}</span>
+                <span className="shrink-0 text-right" title="Duration">{durationRow(shot.durationSeconds, shot.metadata).value}</span>
             </span>
             {unavailable && <span className="mt-1 block text-xs font-medium text-red-300">source is unavailable</span>}
             {!unavailable && shot.warnings.length > 0 && <span className="mt-1 block text-xs text-amber-300">Metadata incomplete</span>}
@@ -102,7 +86,7 @@ export function ShotGrid({ collection, title, filterDescription, newestFirst, on
     }
     const busy = collection.scans.some((scan) => scan.state === "queued" || scan.state === "scanning");
     return (
-        <div className="w-full self-stretch p-5 text-left">
+        <div className="w-full self-stretch p-5 pr-8 text-left">
             <header className="mb-6 flex items-center justify-between gap-4">
                 <div className="min-w-0 flex-1">
                     <h2 className="break-words text-lg font-medium">{title}</h2>

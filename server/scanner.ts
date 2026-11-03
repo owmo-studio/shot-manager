@@ -1,9 +1,9 @@
 import { open, realpath, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { basename, isAbsolute, relative } from "node:path";
+import { isAbsolute, relative } from "node:path";
 import type { ImportSource } from "../shared/desktop";
 import type { ShotCollection, ShotDetails, SourceScan } from "../shared/shots";
-import { discoverShots, readSmallFile } from "./discovery";
+import { discoverShots } from "./discovery";
 import type { DiscoveredShot } from "./discovery";
 import { ThumbnailQueue } from "./thumbnails";
 
@@ -97,7 +97,7 @@ export class ShotScanner {
                 const root = await stat(source.path);
                 job.rootIdentity = `${root.dev}:${root.ino}:${root.birthtimeMs}`;
                 await discoverShots(source, job.controller.signal, async (shot) => {
-                    const custom = await this.thumbnailQueue?.customImage(shot.assets.original, job.rootIdentity ?? "");
+                    const custom = await this.thumbnailQueue?.customImage(shot.original, job.rootIdentity ?? "");
                     job.controller.signal.throwIfAborted();
                     shot.shot.hasCustomThumbnail = !!custom;
                     if (custom) shot.shot.hasThumbnail = true;
@@ -120,7 +120,15 @@ export class ShotScanner {
                 if (previous) {
                     if (job.status.warnings.length) throw new Error("Refresh was incomplete");
                     const existing = new Map(previous.shots.map((result) => [result.shot.id, result]));
-                    job.shots = discovered.map((result) => existing.get(result.shot.id) ?? result);
+                    job.shots = discovered.map((result) => {
+                        const old = existing.get(result.shot.id);
+                        if (old) {
+                            result.shot.thumbnailRevision = old.shot.thumbnailRevision ?? 0;
+                            if (old.fileIdentity === result.fileIdentity) result.shot.hasThumbnail ||= old.shot.hasThumbnail;
+                            else result.shot.thumbnailRevision += 1;
+                        }
+                        return result;
+                    });
                 }
                 job.controller.signal.throwIfAborted();
                 job.status.state = "complete";
@@ -178,11 +186,10 @@ export class ShotScanner {
         throw Object.assign(new Error("Clip is no longer available."), { statusCode: 404 });
     }
 
-    private async assetPath(id: string, role: keyof DiscoveredShot["assets"]) {
+    private async videoPath(id: string) {
         const { job, result } = this.findShot(id);
         if (!job.source.available) throw Object.assign(new Error("Source is unavailable."), { statusCode: 409 });
-        const asset = result.assets[role];
-        if (!asset) throw Object.assign(new Error("Requested asset is not available."), { statusCode: 404 });
+        const asset = result.original;
         try {
             const root = await stat(job.source.path);
             if (`${root.dev}:${root.ino}:${root.birthtimeMs}` !== job.rootIdentity) throw new Error("Source changed");
@@ -195,8 +202,8 @@ export class ShotScanner {
         }
     }
 
-    async openVideo(id: string, role: "original" | "proxy") {
-        const asset = await this.assetPath(id, role);
+    async openVideo(id: string) {
+        const asset = await this.videoPath(id);
         let file: FileHandle | undefined;
         try {
             file = await open(asset.path, "r");
@@ -213,18 +220,16 @@ export class ShotScanner {
 
     async details(id: string): Promise<ShotDetails> {
         const { result } = this.findShot(id);
-        const details: ShotDetails = { assets: [], mediaInfo: result.mediaInfo ?? null, cameraXml: null, errors: [] };
-        for (const role of ["original", "proxy", "xml"] as const) {
-            if (!result.assets[role]) continue;
-            try {
-                const asset = await this.assetPath(id, role);
-                const info = await stat(asset.path);
-                details.assets.push({ role, filename: basename(asset.path), path: asset.path, relativePath: relative(asset.job.source.path, asset.path), bytes: info.size });
-                if (role === "xml") details.cameraXml = (await readSmallFile(asset.path, 1024 * 1024)).toString("utf8");
-            } catch {
-                details.errors.push(`The ${role} asset could not be read.`);
-            }
-        }
+        const details: ShotDetails = {
+            file: { filename: result.shot.filename, path: result.original, bytes: result.shot.bytes },
+            metadata: result.shot.metadata, embeddedMetadata: result.embeddedMetadata,
+            mediaInfo: result.mediaInfo ?? null, errors: [],
+        };
+        try {
+            const asset = await this.videoPath(id);
+            details.file.bytes = (await stat(asset.path)).size;
+            details.file.path = asset.path;
+        } catch { details.errors.push("The video file could not be read."); }
         return details;
     }
 
@@ -247,7 +252,7 @@ export class ShotScanner {
                     const withinRoot = relative(job.source.path, path);
                     return !withinRoot.startsWith("..") && !isAbsolute(withinRoot) ? path : null;
                 };
-                const original = await resolveAsset(result.assets.original);
+                const original = await resolveAsset(result.original);
                 if (original && this.thumbnailQueue) {
                     const custom = await this.thumbnailQueue.customImage(original, job.rootIdentity ?? "");
                     if (custom && await valid()) return custom;
@@ -255,11 +260,7 @@ export class ShotScanner {
                 const generated = this.generatedImages.get(id);
                 if (generated) return generated;
                 if (!this.thumbnailQueue) return null;
-                const inputs: string[] = [];
-                for (const asset of [result.assets.proxy, result.assets.original]) {
-                    if (!asset) continue;
-                    try { const path = await resolveAsset(asset); if (path) inputs.push(path); } catch {}
-                }
+                const inputs = original ? [original] : [];
                 if (!await valid()) return null;
                 if (!inputs.length) return null;
                 if (result.shot.thumbnailStatus === "pending" || result.shot.thumbnailStatus === "failed") return null;
@@ -290,12 +291,12 @@ export class ShotScanner {
         if (this.updatingThumbnails.has(id)) throw Object.assign(new Error("Thumbnail update is already in progress."), { statusCode: 409 });
         this.updatingThumbnails.add(id);
         try {
-            const asset = await this.assetPath(id, "original");
+            const asset = await this.videoPath(id);
             if (this.isReconciling(asset.job)) throw Object.assign(new Error("Wait for rescanning to finish."), { statusCode: 409 });
             if (!this.thumbnailQueue) throw new Error("Thumbnail cache is unavailable.");
             const valid = async () => {
                 try {
-                    const current = await this.assetPath(id, "original");
+                    const current = await this.videoPath(id);
                     return current.job === asset.job && current.path === asset.path && !this.isReconciling(asset.job);
                 } catch { return false; }
             };

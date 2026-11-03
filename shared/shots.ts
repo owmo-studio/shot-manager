@@ -1,3 +1,27 @@
+export interface VideoMetadata {
+    device: { manufacturer: string | null; model: string | null; software: string | null; evidence: string | null };
+    codec: { name: string | null; profile: string | null; bitDepth: number | null; chroma: string | null };
+    color: { label: string | null; primaries: string | null; transfer: string | null; matrix: string | null; range: string | null; evidence: string | null; confidence: "declared" | "inferred" | "unknown"; conflicts: string[] };
+    resolution: { width: number | null; height: number | null; rotation: number; displayWidth: number | null; displayHeight: number | null };
+    frameRate: { nominal: number | null; average: number | null; rational: string | null; mode: "constant" | "variable" | "unknown"; evidence: string | null };
+}
+
+export interface EmbeddedMetadata {
+    label: string;
+    format: "xml" | "json" | "text";
+    text: string;
+}
+
+export function emptyVideoMetadata(): VideoMetadata {
+    return {
+        device: { manufacturer: null, model: null, software: null, evidence: null },
+        codec: { name: null, profile: null, bitDepth: null, chroma: null },
+        color: { label: null, primaries: null, transfer: null, matrix: null, range: null, evidence: null, confidence: "unknown", conflicts: [] },
+        resolution: { width: null, height: null, rotation: 0, displayWidth: null, displayHeight: null },
+        frameRate: { nominal: null, average: null, rational: null, mode: "unknown", evidence: null },
+    };
+}
+
 export interface VideoShot {
     id: string;
     sourceId: string;
@@ -6,14 +30,15 @@ export interface VideoShot {
     bytes: number;
     timestamp: string;
     dateSource: "camera" | "embedded" | "file-modified";
+    dateEvidence: string;
+    dateConfidence: "declared" | "uncertain";
     cameraModel: string | null;
     durationSeconds: number | null;
-    hasProxy: boolean;
+    metadata: VideoMetadata;
     hasThumbnail: boolean;
     hasCustomThumbnail?: boolean;
     thumbnailRevision?: number;
     thumbnailStatus?: "pending" | "ready" | "failed";
-    hasXml: boolean;
     warnings: string[];
     available: boolean;
     editable: boolean;
@@ -34,8 +59,9 @@ export interface ShotCollection {
 }
 
 export interface ShotDetails {
-    assets: { role: "original" | "proxy" | "thumbnail" | "xml"; filename: string; path: string; relativePath: string; bytes: number }[];
+    file: { filename: string; path: string; bytes: number };
+    metadata: VideoMetadata;
+    embeddedMetadata: EmbeddedMetadata[];
     mediaInfo: Record<string, unknown> | null;
-    cameraXml: string | null;
     errors: string[];
 }

@@ -38,12 +38,12 @@ export function createServer(token: string, onShotsChanged?: (collection: ShotCo
   server.post<{ Params: { id: string } }>('/api/sources/:id/refresh', (request) => sources.refresh(request.params.id))
   server.get('/api/shots', () => sources.scanner.snapshot())
   server.get<{ Params: { id: string } }>('/api/shots/:id/details', (request) => sources.scanner.details(request.params.id))
-  server.get<{ Params: { id: string; variant: 'original' | 'proxy' } }>('/api/shots/:id/media/:variant', {
-    schema: { params: { type: 'object', required: ['id', 'variant'], properties: {
-      id: { type: 'string', pattern: '^[a-f0-9]{64}$' }, variant: { type: 'string', enum: ['original', 'proxy'] }
+  server.get<{ Params: { id: string } }>('/api/shots/:id/media/original', {
+    schema: { params: { type: 'object', required: ['id'], properties: {
+      id: { type: 'string', pattern: '^[a-f0-9]{64}$' }
     } } }
   }, async (request, reply) => {
-    const asset = await sources.scanner.openVideo(request.params.id, request.params.variant)
+    const asset = await sources.scanner.openVideo(request.params.id)
     return sendVideo(request, reply, asset.file, asset.path)
   })
   server.get<{ Params: { id: string } }>('/api/shots/:id/thumbnail', async (request) => ({

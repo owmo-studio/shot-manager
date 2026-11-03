@@ -1,12 +1,12 @@
-import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { createHash, randomUUID } from "node:crypto";
-import { opendir, readFile, realpath, stat } from "node:fs/promises";
+import { opendir, realpath, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { ImportSource } from "../shared/desktop";
 import { ShotScanner } from "./scanner";
 import { findSonyLayout } from "./sony";
+import { readEmbeddedContainer } from "./embedded";
+import { sonyMetadata } from "./videoMetadata";
 
-const parser = new XMLParser({ ignoreAttributes: false, removeNSPrefix: true, processEntities: false });
 
 export async function inspectSource(path: string) {
     const info = await stat(path);
@@ -21,7 +21,7 @@ export async function inspectSource(path: string) {
         const metadataFiles: string[] = [];
         const directory = await opendir(clipPath);
         for await (const entry of directory) {
-            if (entry.isFile() && !entry.name.startsWith("._") && entry.name.toLowerCase().endsWith(".xml")) {
+            if (entry.isFile() && !entry.name.startsWith(".") && entry.name.toLowerCase().endsWith(".mp4")) {
                 metadataFiles.push(entry.name);
                 if (metadataFiles.length === 8) break;
             }
@@ -29,16 +29,12 @@ export async function inspectSource(path: string) {
         for (const name of metadataFiles.sort()) {
             try {
                 const metadataPath = join(clipPath, name);
-                const metadataInfo = await stat(metadataPath);
-                if (metadataInfo.size > 1024 * 1024) throw new Error("Oversized XML");
-                const xml = await readFile(metadataPath, "utf8");
-                fingerprint.update(name).update(xml);
-                if (/<!DOCTYPE/i.test(xml) || XMLValidator.validate(xml) !== true) throw new Error("Invalid XML");
-                const data = parser.parse(xml);
-                const device = data.NonRealTimeMeta?.Device;
-                if (device?.["@_manufacturer"] === "Sony" && typeof device["@_modelName"] === "string") {
-                    models.add(device["@_modelName"]);
-                }
+                const embedded = await readEmbeddedContainer(metadataPath);
+                fingerprint.update(name);
+                for (const xml of embedded.xml) fingerprint.update(xml);
+                const sony = sonyMetadata(embedded);
+                if (sony?.model) models.add(sony.model);
+                if (embedded.warnings.length) warning = "Some camera metadata could not be read.";
             } catch {
                 warning = "Some camera metadata could not be read.";
             }

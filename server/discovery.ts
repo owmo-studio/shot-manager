@@ -1,28 +1,23 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { open, readdir, stat } from "node:fs/promises";
-import { basename, extname, join, relative } from "node:path";
+import { extname, join, relative } from "node:path";
 import { promisify } from "node:util";
-import { XMLParser, XMLValidator } from "fast-xml-parser";
 import type { ImportSource } from "../shared/desktop";
-import type { VideoShot } from "../shared/shots";
+import type { EmbeddedMetadata, VideoShot } from "../shared/shots";
 import { findSonyLayout } from "./sony";
+import { readEmbeddedContainer } from "./embedded";
+import { normalizeVideoMetadata, sonyMetadata } from "./videoMetadata";
 
 const execute = promisify(execFile);
 const videoExtensions = new Set([".mp4", ".mov", ".mxf", ".m4v", ".mts", ".m2ts", ".avi", ".mkv", ".webm"]);
-const xmlParser = new XMLParser({ ignoreAttributes: false, removeNSPrefix: true, processEntities: false });
-
-export interface ShotAssets {
-    original: string;
-    proxy?: string;
-    thumbnail?: string;
-    xml?: string;
-}
 
 export interface DiscoveredShot {
     shot: VideoShot;
-    assets: ShotAssets;
+    original: string;
     mediaInfo?: Record<string, unknown>;
+    embeddedMetadata: EmbeddedMetadata[];
+    fileIdentity: string;
 }
 
 export async function readSmallFile(path: string, limit: number): Promise<Buffer> {
@@ -43,39 +38,7 @@ export async function readSmallFile(path: string, limit: number): Promise<Buffer
     }
 }
 
-async function directoryFiles(path: string, optional = false): Promise<Map<string, string>> {
-    try {
-        const entries = await readdir(path, { withFileTypes: true });
-        return new Map(entries.filter((entry) => entry.isFile() && !entry.name.startsWith(".")).map((entry) => [entry.name.toLowerCase(), join(path, entry.name)]));
-    } catch (error) {
-        if (optional && ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return new Map();
-        throw error;
-    }
-}
-
-async function* candidates(source: ImportSource, signal: AbortSignal, warn: (message: string) => void): AsyncGenerator<ShotAssets> {
-    if (source.type === "sony") {
-        const layout = await findSonyLayout(source.path);
-        if (!layout) throw new Error("Sony camera structure is no longer available.");
-        const { root } = layout;
-        const originals = await directoryFiles(layout.clips);
-        async function optionalFiles(path: string) {
-            try { return await directoryFiles(path, true); }
-            catch { warn(`Could not read optional assets in ${relative(source.path, path)}.`); return new Map<string, string>(); }
-        }
-        const proxies = await optionalFiles(join(root, "SUB"));
-        for (const path of originals.values()) {
-            signal.throwIfAborted();
-            if (!videoExtensions.has(extname(path).toLowerCase())) continue;
-            const stem = basename(path, extname(path)).toLowerCase();
-            yield {
-                original: path,
-                xml: originals.get(`${stem}m01.xml`),
-                proxy: proxies.get(`${stem}s03.mp4`),
-            };
-        }
-        return;
-    }
+async function* candidates(source: ImportSource, signal: AbortSignal, warn: (message: string) => void): AsyncGenerator<string> {
     const pending = [source.path];
     while (pending.length) {
         signal.throwIfAborted();
@@ -84,85 +47,87 @@ async function* candidates(source: ImportSource, signal: AbortSignal, warn: (mes
         try { entries = await readdir(directory, { withFileTypes: true }); }
         catch (error) {
             if (directory === source.path) throw error;
-            warn(`Could not read folder ${relative(source.path, directory)}.`);
+            warn('Could not read folder ' + relative(source.path, directory) + '.');
             continue;
         }
+        let layout: Awaited<ReturnType<typeof findSonyLayout>> = null;
+        let sonyLayout = false;
+        try {
+            layout = entries.some((entry) => entry.isDirectory() && entry.name === "SUB") ? await findSonyLayout(directory) : null;
+            if (layout) {
+                const clips = await readdir(layout.clips, { withFileTypes: true });
+                for (const clip of clips.filter((entry) => entry.isFile() && !entry.name.startsWith(".") && entry.name.toLowerCase().endsWith(".mp4")).slice(0, 8)) {
+                    signal.throwIfAborted();
+                    try {
+                        if (sonyMetadata(await readEmbeddedContainer(join(layout.clips, clip.name), signal))) { sonyLayout = true; break; }
+                    } catch { signal.throwIfAborted(); }
+                }
+            }
+        } catch { signal.throwIfAborted(); warn('Could not inspect camera structure in ' + relative(source.path, directory) + '.'); }
         for (const entry of entries) {
+            signal.throwIfAborted();
             if (entry.name.startsWith(".")) continue;
             const path = join(directory, entry.name);
-            if (entry.isDirectory()) pending.push(path);
-            else if (entry.isFile() && videoExtensions.has(extname(entry.name).toLowerCase())) yield { original: path };
+            if (entry.isDirectory()) {
+                if (sonyLayout && layout && path === join(layout.root, "SUB")) continue;
+                pending.push(path);
+            } else if (entry.isFile() && videoExtensions.has(extname(entry.name).toLowerCase())) yield path;
         }
     }
 }
 
-function validTimestamp(value: unknown): string | null {
-    return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value) && Number.isFinite(Date.parse(value)) ? value : null;
-}
-
 export async function discoverShots(source: ImportSource, signal: AbortSignal, found: (result: DiscoveredShot) => void | Promise<void>, warn: (message: string) => void): Promise<void> {
-    for await (const assets of candidates(source, signal, warn)) {
+    for await (const original of candidates(source, signal, warn)) {
         signal.throwIfAborted();
         try {
-            const info = await stat(assets.original);
-            const warnings: string[] = [];
-            let timestamp: string | null = null;
-            let dateSource: VideoShot["dateSource"] = "file-modified";
-            let cameraModel: string | null = null;
-            let durationSeconds: number | null = null;
+            const info = await stat(original);
+            const embedded = await readEmbeddedContainer(original, signal);
+            const sony = sonyMetadata(embedded);
+            if (sony?.proxy) continue;
             let mediaInfo: Record<string, unknown> | undefined;
-            if (assets.xml) {
-                try {
-                    const xml = (await readSmallFile(assets.xml, 1024 * 1024)).toString("utf8");
-                    if (/<!DOCTYPE/i.test(xml) || XMLValidator.validate(xml) !== true) throw new Error("Invalid XML");
-                    const metadata = xmlParser.parse(xml).NonRealTimeMeta;
-                    timestamp = validTimestamp(metadata?.CreationDate?.["@_value"]);
-                    if (timestamp) dateSource = "camera";
-                    if (typeof metadata?.Device?.["@_modelName"] === "string") cameraModel = metadata.Device["@_modelName"];
-                } catch { warnings.push("Camera XML could not be read; using available media metadata."); }
-            }
+            const warnings: string[] = [];
             try {
-                const { stdout } = await execute("ffprobe", ["-v", "error", "-protocol_whitelist", "file", "-show_entries", "format=format_name,duration,size,bit_rate:format_tags:stream=codec_type,codec_name,profile,width,height,avg_frame_rate,bit_rate,pix_fmt,color_space,color_transfer,color_primaries,sample_rate,channels,channel_layout:stream_tags", "-of", "json", "-i", assets.original], { timeout: 8000, maxBuffer: 1024 * 1024, signal });
-                const metadata = JSON.parse(stdout);
-                mediaInfo = metadata;
-                const duration = Number(metadata.format?.duration);
-                if (Number.isFinite(duration) && duration >= 0) durationSeconds = duration;
-                if (!timestamp) {
-                    timestamp = validTimestamp(metadata.format?.tags?.creation_time) ?? validTimestamp(metadata.streams?.find((stream: { codec_type?: string }) => stream.codec_type === "video")?.tags?.creation_time);
-                    if (timestamp) dateSource = "embedded";
-                }
-                if (!metadata.streams?.some((stream: { codec_type?: string }) => stream.codec_type === "video")) warnings.push("No video stream was confirmed; inspect this file before ingestion.");
+                const { stdout } = await execute("ffprobe", ["-v", "error", "-protocol_whitelist", "file", "-show_format", "-show_streams", "-of", "json", "-i", original], { timeout: 8000, maxBuffer: 1024 * 1024, signal });
+                const parsed = JSON.parse(stdout);
+                if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid media metadata");
+                mediaInfo = parsed;
             } catch {
                 signal.throwIfAborted();
                 warnings.push("Media metadata unavailable. The file may be unsupported, damaged, or FFprobe unavailable.");
             }
+            const normalized = normalizeVideoMetadata(mediaInfo, embedded, sony);
+            warnings.push(...embedded.warnings);
+            if (mediaInfo && !normalized.hasVideo) warnings.push("No video stream was confirmed; inspect this file before ingestion.");
+            const durationValue = (mediaInfo?.format as { duration?: unknown } | undefined)?.duration;
+            const duration = durationValue === undefined ? NaN : Number(durationValue);
+            const durationSeconds = Number.isFinite(duration) && duration >= 0 ? duration : null;
+            const embeddedMetadata: EmbeddedMetadata[] = embedded.xml.map((xml, index) => ({ label: 'Embedded XML ' + (index + 1), format: "xml", text: xml }));
+            if (embedded.tracks.length) embeddedMetadata.push({ label: "Embedded container declarations and timing", format: "json", text: JSON.stringify(embedded.tracks, null, 2) });
+            if (mediaInfo) embeddedMetadata.push({ label: "Container and stream metadata", format: "json", text: JSON.stringify(mediaInfo, null, 2) });
             signal.throwIfAborted();
-            const current = await stat(assets.original);
-            if (current.size !== info.size || current.mtimeMs !== info.mtimeMs) {
-                warn(`File changed during scanning: ${relative(source.path, assets.original)}. This file was skipped.`);
+            const current = await stat(original);
+            if (current.size !== info.size || current.mtimeMs !== info.mtimeMs || current.ino !== info.ino || current.dev !== info.dev) {
+                warn('File changed during scanning: ' + relative(source.path, original) + '. This file was skipped.');
                 continue;
             }
-            const relativePath = relative(source.path, assets.original);
-            await found({ assets, mediaInfo, shot: {
-                id: createHash("sha256").update(`${source.id}\0${relativePath}`).digest("hex"),
-                sourceId: source.id,
-                filename: basename(assets.original),
-                relativePath,
-                bytes: info.size,
-                timestamp: timestamp ?? info.mtime.toISOString(),
-                dateSource,
-                cameraModel,
-                durationSeconds,
-                hasProxy: !!assets.proxy,
-                hasThumbnail: !!assets.thumbnail,
-                hasXml: !!assets.xml,
-                warnings,
-                available: true,
-                editable: true,
-            } });
+            const relativePath = relative(source.path, original);
+            await found({
+                original, mediaInfo, embeddedMetadata,
+                fileIdentity: [info.dev, info.ino, info.birthtimeMs, info.size, info.mtimeMs].join(":"),
+                shot: {
+                    id: createHash("sha256").update(source.id + "\0" + relativePath).digest("hex"),
+                    sourceId: source.id, filename: original.split("/").pop()!, relativePath, bytes: info.size,
+                    timestamp: normalized.timestamp?.value ?? info.mtime.toISOString(),
+                    dateSource: normalized.timestamp?.capture ? "camera" : normalized.timestamp ? "embedded" : "file-modified",
+                    dateEvidence: normalized.timestamp?.source ?? "File modification time (capture time unknown)",
+                    dateConfidence: normalized.timestamp?.capture && !normalized.timestamp.conflict ? "declared" : "uncertain",
+                    cameraModel: normalized.metadata.device.model, metadata: normalized.metadata, durationSeconds,
+                    hasThumbnail: false, warnings, available: true, editable: true,
+                },
+            });
         } catch (error) {
             signal.throwIfAborted();
-            warn(`Could not inspect ${relative(source.path, assets.original)} (${(error as NodeJS.ErrnoException).code ?? "read error"}).`);
+            warn('Could not inspect ' + relative(source.path, original) + ' (' + ((error as NodeJS.ErrnoException).code ?? "read error") + ').');
         }
     }
 }
