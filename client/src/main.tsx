@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import type { BackendStatus, ImportSource } from "../../shared/desktop";
 import type { ShotCollection } from "../../shared/shots";
 import { ClipInspector } from "./ClipInspector";
+import { deviceLabel } from "./mediaInfo";
 import { RemoveSourceDialog } from "./RemoveSourceDialog";
 import { MIN_INSPECTOR_WIDTH } from "./ResizableInspector";
 import { ShotGrid } from "./ShotGrid";
@@ -18,6 +19,7 @@ function App() {
     const [sources, setSources] = useState<ImportSource[]>([]);
     const [sourcesLoaded, setSourcesLoaded] = useState(false);
     const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
+    const [selectedDevices, setSelectedDevices] = useState<string[]>([]);
     const [newestFirst, setNewestFirst] = useState(true);
     const [inspectedShotId, setInspectedShotId] = useState<string | null>(null);
     const [inspectorWidth, setInspectorWidth] = useState(MIN_INSPECTOR_WIDTH);
@@ -25,22 +27,45 @@ function App() {
     const latestShotRevision = useRef(-1);
     const filteredSources = sources.filter((source) => selectedSourceIds.includes(source.id));
     const filteredIds = new Set(filteredSources.map((source) => source.id));
-    const visibleCollection = filteredIds.size ? {
+    const sourceCollection = filteredIds.size ? {
         ...shotCollection,
         shots: shotCollection.shots.filter((shot) => filteredIds.has(shot.sourceId)),
         scans: shotCollection.scans.filter((scan) => filteredIds.has(scan.sourceId)),
     } : shotCollection;
-    const gridTitle = filteredSources.length === 0 ? "All shots"
+    const deviceCounts = new Map<string, number>();
+    for (const shot of sourceCollection.shots) {
+        const device = deviceLabel(shot.metadata.device) ?? "Video";
+        deviceCounts.set(device, (deviceCounts.get(device) ?? 0) + 1);
+    }
+    const devices = [...deviceCounts].sort(([first], [second]) => first.localeCompare(second));
+    const deviceKeys = JSON.stringify(devices.map(([name]) => name));
+    const activeDevices = selectedDevices.filter((name) => deviceCounts.has(name));
+    const visibleCollection = activeDevices.length ? {
+        ...sourceCollection,
+        shots: sourceCollection.shots.filter((shot) => activeDevices.includes(deviceLabel(shot.metadata.device) ?? "Video")),
+    } : sourceCollection;
+    const sourceTitle = filteredSources.length === 0 ? "All shots"
         : filteredSources.length === 1 ? `${sourcePresentation(filteredSources[0]).name} shots`
         : `Shots from ${filteredSources.length} sources`;
-    const filterDescription = filteredSources.length > 1
-        ? filteredSources.map((source) => sourcePresentation(source).name).join(" · ") : "";
+    const gridTitle = activeDevices.length === 1 ? `${activeDevices[0]} shots`
+        : activeDevices.length > 1 ? `Shots from ${activeDevices.length} devices` : sourceTitle;
+    const filterDescription = [
+        filteredSources.length && (activeDevices.length || filteredSources.length > 1)
+            ? "Sources: " + filteredSources.map((source) => sourcePresentation(source).name).join(" · ") : "",
+        activeDevices.length > 1 ? "Devices: " + activeDevices.join(" · ") : "",
+    ].filter(Boolean).join(" — ");
     const inspectedShot = visibleCollection.shots.find((shot) => shot.id === inspectedShotId);
 
     useEffect(() => {
         setSelectedSourceIds((current) => current.some((id) => !sources.some((source) => source.id === id))
             ? current.filter((id) => sources.some((source) => source.id === id)) : current);
     }, [sources]);
+
+    useEffect(() => {
+        const available = new Set<string>(JSON.parse(deviceKeys));
+        setSelectedDevices((current) => current.some((name) => !available.has(name))
+            ? current.filter((name) => available.has(name)) : current);
+    }, [deviceKeys]);
 
     useEffect(() => {
         if (inspectedShotId && !inspectedShot) setInspectedShotId(null);
@@ -289,6 +314,27 @@ function App() {
                             />
                         ))}
                     </ul>
+                    <section aria-labelledby="device-filters-heading" className="mt-6 border-t border-white/8 pt-4">
+                        <h2 id="device-filters-heading" className="font-medium text-zinc-300">Devices</h2>
+                        <ul aria-label="Device filters" className="mt-3 space-y-1">
+                            {devices.map(([name, count]) => (
+                                <li key={name}>
+                                    <button
+                                        type="button"
+                                        aria-label={`Filter clips by device: ${name}`}
+                                        aria-pressed={activeDevices.includes(name)}
+                                        title={`${name} · ${count} ${count === 1 ? "shot" : "shots"}`}
+                                        onClick={() => setSelectedDevices((current) => current.includes(name)
+                                            ? current.filter((device) => device !== name) : [...current, name])}
+                                        className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition duration-75 focus-visible:outline-2 focus-visible:outline-blue-400 ${activeDevices.includes(name) ? "bg-blue-400/10 ring-1 ring-blue-400/60 hover:bg-blue-400/15" : "hover:bg-white/4"}`}
+                                    >
+                                        <span className="min-w-0 truncate text-[13px] text-zinc-200">{name}</span>
+                                        <span className="shrink-0 text-xs text-zinc-500">{count}</span>
+                                    </button>
+                                </li>
+                            ))}
+                        </ul>
+                    </section>
                 </aside>
                 <section
                     aria-label={gridTitle}
