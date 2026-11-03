@@ -9,6 +9,27 @@ export function deviceLabel(device: VideoMetadata["device"]): string | null {
     return device.model ? models[device.model] ?? device.model : null;
 }
 
+export function quickMediaSummary(metadata: VideoMetadata): string {
+    const codecs: Record<string, string> = {
+        h264: "H264", hevc: "H265", prores: "ProRes", av1: "AV1", vp9: "VP9",
+        vp8: "VP8", mpeg4: "MPEG4", mpeg2video: "MPEG2", mjpeg: "MJPEG", dnxhd: "DNx",
+    };
+    const name = metadata.codec.name?.toLowerCase();
+    const codec = name && name !== "unknown" ? codecs[name] ?? name.toUpperCase() : null;
+    const { color } = metadata;
+    const colorSpace = color.transfer === "apple-log" ? "Apple LOG"
+        : color.transfer?.startsWith("s-log3") ? "SLOG3"
+        : color.label === "Rec.709" ? "Rec709"
+        : color.transfer === "arib-std-b67" ? "HLG"
+        : color.transfer === "smpte2084" ? "PQ"
+        : color.transfer === "iec61966-2-1" ? "sRGB"
+        : color.label && color.label !== "Unknown" ? color.label : null;
+    const fps = metadata.frameRate.nominal ?? metadata.frameRate.average;
+    const frameRate = fps !== null && Number.isFinite(fps) && fps > 0
+        ? `${fps.toLocaleString(undefined, { maximumFractionDigits: 3 })} fps` : null;
+    return [deviceLabel(metadata.device) ?? "Video", codec, colorSpace, frameRate].filter(Boolean).join(" · ");
+}
+
 export function primaryMetadataRows(metadata: VideoMetadata) {
     const { device, codec, color, resolution, frameRate } = metadata;
     const codecs: Record<string, string> = { h264: "H.264 / AVC", hevc: "H.265 / HEVC", prores: "Apple ProRes", av1: "AV1", vp9: "VP9" };

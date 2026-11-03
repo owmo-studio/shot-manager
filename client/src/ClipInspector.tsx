@@ -3,11 +3,10 @@ import type { ImportSource } from "../../shared/desktop";
 import type { ShotDetails, VideoShot } from "../../shared/shots";
 import { emptyVideoMetadata } from "../../shared/shots";
 import { viewingProfile } from "../../shared/viewing";
-import { durationRow, primaryMetadataRows, sourceFilePath } from "./mediaInfo";
+import { durationRow, primaryMetadataRows, quickMediaSummary, sourceFilePath } from "./mediaInfo";
 import { ResizableInspector } from "./ResizableInspector";
 import { PreviewPlayer } from "./PreviewPlayer";
 import type { PreviewHandle } from "./PreviewPlayer";
-import { sourcePresentation } from "./SourceListItem";
 
 function bytesLabel(bytes: number) {
     if (!bytes) return "0 B";
@@ -64,6 +63,7 @@ export function ClipInspector({
     const preview = useRef<PreviewHandle>(null);
     const unavailable = !shot.available || !source?.available;
     const pausedForScan = !unavailable && !shot.editable;
+    const summary = empty ? "" : quickMediaSummary(shot.metadata);
     const rawMetadata =
         details?.embeddedMetadata
             .map((entry) => entry.label + " (" + entry.format.toUpperCase() + ")\n\n" + entry.text)
@@ -139,8 +139,8 @@ export function ClipInspector({
                         >
                             {shot.filename}
                         </h2>
-                        <p className="mt-1 min-h-4 truncate text-xs text-zinc-500">
-                            {empty ? "" : source ? sourcePresentation(source).name : "Source"}
+                        <p className="mt-1 min-h-4 truncate text-xs text-zinc-500" title={summary || undefined}>
+                            {summary}
                         </p>
                     </div>
                     <div className="flex shrink-0 items-center gap-4">
