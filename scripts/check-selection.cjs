@@ -73,6 +73,9 @@ if (!process.versions.electron) {
             }
             const push = async (shots) => { collection = { ...collection, revision: collection.revision + 1, shots }; window.webContents.send('shots:changed', collection); await new Promise((resolve) => setTimeout(resolve, 30)); };
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
+            assert.equal(await js(`document.querySelector('p[aria-label="Total clips"]').textContent.trim()`), '6 clips total');
+            assert.equal(await js(`document.querySelector('button[aria-label="Reverse order"]')`), null);
+            assert.equal(await js(`document.querySelector('main > section header')`), null);
             assert.ok(await js(`document.querySelector('footer').textContent.includes('6 clips to ingest · 0 skipped')`));
             assert.equal(await js(`document.querySelectorAll('[data-shot-card] button').length`), 6);
             assert.equal(await js(`document.querySelectorAll('button[aria-label^="Skip Clip "]').length`), 0);
@@ -93,6 +96,15 @@ if (!process.versions.electron) {
             await arrow('Right'); assert.deepEqual(await selected(), [1]);
             await arrow('Right'); assert.deepEqual(await selected(), [1]);
             await inspect(6); await arrow('Left'); assert.deepEqual(await selected(), [6]);
+            await inspect(5); await arrow('Down'); assert.deepEqual(await selected(), [2]);
+            await arrow('Up'); assert.deepEqual(await selected(), [5]);
+            await arrow('Up'); assert.deepEqual(await selected(), [5]);
+            window.setSize(1400,1080);
+            await wait(`document.querySelector('button[aria-label="Inspect Clip 4.mp4"]').getBoundingClientRect().top>document.querySelector('button[aria-label="Inspect Clip 5.mp4"]').getBoundingClientRect().top+8`);
+            await arrow('Down'); assert.deepEqual(await selected(), [4]);
+            await arrow('Up'); assert.deepEqual(await selected(), [6]);
+            window.setSize(1800,1080);
+            await wait(`Math.abs(document.querySelector('button[aria-label="Inspect Clip 4.mp4"]').getBoundingClientRect().top-document.querySelector('button[aria-label="Inspect Clip 5.mp4"]').getBoundingClientRect().top)<8`);
             await inspect(1);
             await js(`document.querySelector('button[aria-label="Inspect Clip 1.mp4"]').focus()`);
             window.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});
@@ -128,6 +140,7 @@ if (!process.versions.electron) {
             await click('Skip selected clips'); assert.deepEqual(await skipped(), [1]);
             await js(`document.querySelector('input[aria-label="Skip selected clips"]').focus()`);
             await arrow('Left'); assert.deepEqual(await selected(), [2, 3]);
+            await arrow('Down'); assert.deepEqual(await selected(), [2, 3]);
             await js(`document.activeElement.blur()`);
             await click('Skip selected clips'); assert.deepEqual(await skipped(), [1, 2, 3]);
             await click('Skip selected clips'); assert.deepEqual(await skipped(), [1]);
@@ -144,17 +157,22 @@ if (!process.versions.electron) {
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "][aria-pressed="true"]').length===0`); assert.deepEqual(await skipped(), [1]);
             await inspect(1); await click('Filter clips from Source B');
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===3`); assert.deepEqual(await selected(), []);
+            assert.equal(await js(`document.querySelector('p[aria-label="Total clips"]').textContent.trim()`), '6 clips total');
             assert.ok(await js(`document.querySelector('footer').textContent.includes('1 skipped')`));
-            await inspect(5); await arrow('Right'); assert.deepEqual(await selected(), [4]);
+            await inspect(5); await arrow('Down'); assert.deepEqual(await selected(), [5]);
+            await arrow('Right'); assert.deepEqual(await selected(), [4]);
             await arrow('Right'); assert.deepEqual(await selected(), [4]);
             await js(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
             await click('Filter clips from Source B'); await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`); assert.deepEqual(await skipped(), [1]);
             await push(collection.shots.map((shot) => shot.filename==='Clip 2.mp4' ? {...shot,editable:false} : shot));
             await inspect(3); await arrow('Right'); assert.deepEqual(await selected(), [1]);
+            await inspect(5); await arrow('Down'); assert.deepEqual(await selected(), [3]);
             await push(collection.shots.map((shot) => ({...shot,editable:true})));
-            await click('Reverse order'); await inspect(5);
-            await arrow('Left'); assert.deepEqual(await selected(), [4]);
+            await inspect(5);
+            await arrow('Left'); assert.deepEqual(await selected(), [6]);
             await arrow('Right'); assert.deepEqual(await selected(), [5]);
+            await arrow('Down'); assert.deepEqual(await selected(), [2]);
+            await arrow('Up'); assert.deepEqual(await selected(), [5]);
             await inspect(2, { shiftKey: true }); assert.deepEqual(await selected(), [2, 3, 4, 5]);
             await inspect(1); await push(collection.shots.map((shot) => shot.filename === 'Clip 1.mp4' ? { ...shot, available: false, editable: false } : shot));
             assert.equal(await js(`document.querySelector('button[aria-label="Inspect Clip 1.mp4"]').disabled`), true);
@@ -171,9 +189,10 @@ if (!process.versions.electron) {
             assert.deepEqual(await selected(), [2]);
             await js(`Array.from(document.querySelectorAll('[role="alertdialog"] button')).find(b=>b.textContent==='Proceed').click()`);
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===3`);
+            assert.equal(await js(`document.querySelector('p[aria-label="Total clips"]').textContent.trim()`), '3 clips total');
             await wait(`document.querySelector('footer').textContent.includes('0 skipped')`); assert.deepEqual(await selected(), []);
             assert.equal(await js(`Array.from(document.querySelectorAll('footer button')).find(b=>b.textContent==='Review & Ingest').disabled`), true);
-            console.log('PASS: Left/Right navigation across dates and reversed/filtered order, boundaries, locked-clip skipping, multi-selection navigation, control-focus guards, editing/skip selections, modifiers/ranges, bulk skip, background deselection, blocked Tab, Escape, removals, and disabled processing.');
+            console.log('PASS: four-arrow navigation, responsive Up/Down rows and partial rows, date/filter/sort boundaries, locked-clip skipping, multi-selection, input guards, editing/skip selections, bulk skip, background deselection, blocked Tab, Escape, removals, and disabled processing.');
             window.destroy(); await rm(root, { recursive: true, force: true }); clearTimeout(timer); app.exit(0);
         } catch (error) {
             console.error(error); window?.destroy(); if (root) await rm(root, { recursive: true, force: true }); clearTimeout(timer); app.exit(1);

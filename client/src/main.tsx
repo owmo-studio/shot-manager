@@ -12,7 +12,7 @@ import { MIN_INSPECTOR_WIDTH } from "./ResizableInspector";
 import { ShotGrid } from "./ShotGrid";
 import { newlyUnavailableSources } from "./sourceAvailability";
 import { SourceErrorDialog } from "./SourceErrorDialog";
-import { SourceListItem, sourcePresentation } from "./SourceListItem";
+import { SourceListItem } from "./SourceListItem";
 import { SourceUnavailableDialog } from "./SourceUnavailableDialog";
 import "./styles.css";
 
@@ -22,7 +22,7 @@ function App() {
     const [sourcesLoaded, setSourcesLoaded] = useState(false);
     const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
     const [selectedDevices, setSelectedDevices] = useState<string[]>([]);
-    const [newestFirst, setNewestFirst] = useState(true);
+    const newestFirst = true;
     const [inspectorWidth, setInspectorWidth] = useState(MIN_INSPECTOR_WIDTH);
     const [shotCollection, setShotCollection] = useState<ShotCollection>({ revision: 0, shots: [], scans: [] });
     const latestShotRevision = useRef(-1);
@@ -45,16 +45,6 @@ function App() {
         ...sourceCollection,
         shots: sourceCollection.shots.filter((shot) => activeDevices.includes(deviceLabel(shot.metadata.device) ?? "Video")),
     } : sourceCollection;
-    const sourceTitle = filteredSources.length === 0 ? "All shots"
-        : filteredSources.length === 1 ? `${sourcePresentation(filteredSources[0]).name} shots`
-        : `Shots from ${filteredSources.length} sources`;
-    const gridTitle = activeDevices.length === 1 ? `${activeDevices[0]} shots`
-        : activeDevices.length > 1 ? `Shots from ${activeDevices.length} devices` : sourceTitle;
-    const filterDescription = [
-        filteredSources.length && (activeDevices.length || filteredSources.length > 1)
-            ? "Sources: " + filteredSources.map((source) => sourcePresentation(source).name).join(" · ") : "",
-        activeDevices.length > 1 ? "Devices: " + activeDevices.join(" · ") : "",
-    ].filter(Boolean).join(" — ");
     const selection = useShotSelection(shotCollection.shots, visibleCollection.shots);
     const selectedShots = visibleCollection.shots.filter((shot) => selection.editingIds.includes(shot.id));
     const inspectedShot = selectedShots.length === 1 ? selectedShots[0] : undefined;
@@ -113,12 +103,20 @@ function App() {
 
     useEffect(() => {
         const navigate = (event: KeyboardEvent) => {
-            if (!["ArrowLeft", "ArrowRight"].includes(event.key) || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !selection.editingIds.length) return;
+            if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key) || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !selection.editingIds.length) return;
             if (document.querySelector('[aria-modal="true"], dialog[open]')) return;
             if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable], video, audio, .preview-player, [role="separator"], [role="slider"], [role="tab"]')) return;
             event.preventDefault();
             keyboardNavigation.current = true;
-            selection.dispatch({ type: "navigate", direction: event.key === "ArrowLeft" ? -1 : 1, ...JSON.parse(navigationKey) });
+            const navigation: { orderedIds: string[]; selectableIds: string[] } = JSON.parse(navigationKey);
+            const vertical = event.key === "ArrowUp" || event.key === "ArrowDown";
+            const layout = vertical ? navigation.orderedIds.flatMap((id) => {
+                const card = document.getElementById(`shot-${id}`);
+                if (!card) return [];
+                const rect = card.getBoundingClientRect();
+                return [{ id, x: rect.left + rect.width / 2, y: rect.top }];
+            }) : undefined;
+            selection.dispatch({ type: "navigate", direction: event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1, ...navigation, layout });
         };
         window.addEventListener("keydown", navigate);
         return () => window.removeEventListener("keydown", navigate);
@@ -361,7 +359,12 @@ function App() {
             <main className="flex min-h-0 flex-1">
                 <aside className="w-60 shrink-0 overflow-y-auto border-r border-white/8 bg-white/1.5 p-3">
                     <div className="flex items-center justify-between gap-2">
-                        <h2 className="font-medium text-zinc-300">Sources</h2>
+                        <div>
+                            <h2 className="text-lg font-medium text-zinc-300">Sources</h2>
+                            {shotCollection.shots.length > 0 && <p aria-label="Total clips" className="mt-0.5 text-xs text-zinc-500">
+                                {shotCollection.shots.length.toLocaleString()} {shotCollection.shots.length === 1 ? "clip" : "clips"} total
+                            </p>}
+                        </div>
                         <button
                             onClick={() => void addSource()}
                             disabled={!canAddSource}
@@ -389,7 +392,7 @@ function App() {
                         ))}
                     </ul>
                     <section aria-labelledby="device-filters-heading" className="mt-6 border-t border-white/8 pt-4">
-                        <h2 id="device-filters-heading" className="font-medium text-zinc-300">Devices</h2>
+                        <h2 id="device-filters-heading" className="text-lg font-medium text-zinc-300">Devices</h2>
                         <ul aria-label="Device filters" className="mt-3 space-y-1">
                             {devices.map(([name, count]) => (
                                 <li key={name}>
@@ -411,7 +414,7 @@ function App() {
                     </section>
                 </aside>
                 <section
-                    aria-label={gridTitle}
+                    aria-label="Shot cards"
                     onClick={(event) => {
                         if (!(event.target instanceof Element) || event.defaultPrevented) return;
                         if (event.target.closest("[data-shot-card], button, input, label, select, textarea, a, [role='button']")) return;
@@ -433,10 +436,7 @@ function App() {
                     ) : sources.length ? (
                         <ShotGrid
                             collection={visibleCollection}
-                            title={gridTitle}
-                            filterDescription={filterDescription}
                             newestFirst={newestFirst}
-                            onToggleOrder={() => setNewestFirst((current) => !current)}
                             sources={sources}
                             selectedShotIds={selection.editingIds}
                             skippedShotIds={selection.skippedIds}

@@ -71,12 +71,9 @@ function ShotCard({ shot, source, selected, skipped, onSelect }: {
     );
 }
 
-export function ShotGrid({ collection, title, filterDescription, newestFirst, onToggleOrder, sources, selectedShotIds, skippedShotIds, onSelect }: {
+export function ShotGrid({ collection, newestFirst, sources, selectedShotIds, skippedShotIds, onSelect }: {
     collection: ShotCollection;
-    title: string;
-    filterDescription: string;
     newestFirst: boolean;
-    onToggleOrder: () => void;
     sources: ImportSource[];
     selectedShotIds: string[];
     skippedShotIds: string[];
@@ -93,27 +90,6 @@ export function ShotGrid({ collection, title, filterDescription, newestFirst, on
     const busy = collection.scans.some((scan) => scan.state === "queued" || scan.state === "scanning");
     return (
         <div className="w-full self-stretch p-5 pr-8 text-left">
-            <header className="mb-6 flex items-center justify-between gap-4">
-                <div className="min-w-0 flex-1">
-                    <h2 className="break-words text-lg font-medium">{title}</h2>
-                    {filterDescription && <p className="mt-1 break-words text-xs text-zinc-400">{filterDescription}</p>}
-                    <div className="mt-1 flex items-center justify-between gap-2 text-sm text-zinc-500">
-                        <p role="status">{collection.shots.length} clips{busy ? " · Scanning…" : ""}</p>
-                        <button
-                            type="button"
-                            onClick={onToggleOrder}
-                            aria-label="Reverse order"
-                            aria-pressed={!newestFirst}
-                            title={newestFirst ? "Show oldest first" : "Show newest first"}
-                            className={`grid size-8 shrink-0 place-items-center rounded transition duration-75 focus-visible:outline-2 focus-visible:outline-blue-400 ${newestFirst ? "hover:bg-white/8 hover:text-zinc-200" : "bg-blue-400/15 text-blue-300 hover:bg-blue-400/25"}`}
-                        >
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-5">
-                                <path d="M8 20V4m-4 4 4-4 4 4M16 4v16m-4-4 4 4 4-4" />
-                            </svg>
-                        </button>
-                    </div>
-                </div>
-            </header>
             {collection.scans.filter((scan) => scan.error || scan.warnings.length).map((scan) => (
                 <p key={scan.sourceId} role="status" className={`mb-4 rounded-lg border p-3 text-xs ${scan.error ? "border-red-400/25 text-red-300" : "border-amber-400/20 text-amber-300"}`}>
                     {sources.find((source) => source.id === scan.sourceId)?.name}: {scan.error ?? `${scan.warnings.length} scan issue(s). Some files or folders could not be read.`}

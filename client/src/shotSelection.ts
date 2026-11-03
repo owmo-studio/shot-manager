@@ -18,7 +18,7 @@ interface SelectionState {
 type Action =
     | { type: "select"; id: string; orderedIds: string[]; additive: boolean; range: boolean }
     | { type: "skip"; ids: string[]; skipped: boolean }
-    | { type: "navigate"; direction: -1 | 1; orderedIds: string[]; selectableIds: string[] }
+    | { type: "navigate"; direction: -1 | 1; orderedIds: string[]; selectableIds: string[]; layout?: { id: string; x: number; y: number }[] }
     | { type: "clear" }
     | { type: "reconcile"; existingIds: string[]; visibleIds: string[] };
 
@@ -42,6 +42,18 @@ function reducer(state: SelectionState, action: Action): SelectionState {
             const current = action.orderedIds.indexOf(state.activeId);
             if (current < 0) return state;
             const selectable = new Set(action.selectableIds);
+            if (action.layout) {
+                const origin = action.layout.find((card) => card.id === state.activeId);
+                if (!origin) return state;
+                // Tolerate subpixel layout and the small card entrance animation.
+                const rowTolerance = 8;
+                const candidates = action.layout.filter((card) => selectable.has(card.id) && (card.y - origin.y) * action.direction > rowTolerance);
+                if (!candidates.length) return state;
+                const rowDistance = Math.min(...candidates.map((card) => Math.abs(card.y - origin.y)));
+                const target = candidates.filter((card) => Math.abs(Math.abs(card.y - origin.y) - rowDistance) < rowTolerance)
+                    .sort((first, second) => Math.abs(first.x - origin.x) - Math.abs(second.x - origin.x) || first.x - second.x)[0];
+                return { ...state, editingIds: [target.id], anchorId: target.id, activeId: target.id };
+            }
             for (let index = current + action.direction; index >= 0 && index < action.orderedIds.length; index += action.direction) {
                 const id = action.orderedIds[index];
                 if (selectable.has(id)) return { ...state, editingIds: [id], anchorId: id, activeId: id };
