@@ -1,0 +1,23 @@
+import { useEffect, useRef } from "react";
+
+export function SkipSelection({ count, skippedCount, disabled, onChange }: {
+    count: number; skippedCount: number; disabled: boolean; onChange: (skipped: boolean) => void;
+}) {
+    const mixed = skippedCount > 0 && skippedCount < count;
+    const locked = disabled || count === 0;
+    const input = useRef<HTMLInputElement>(null);
+    useEffect(() => { if (input.current) input.current.indeterminate = mixed; }, [mixed]);
+    return <label title={`${skippedCount > 0 ? "Stop skipping selected clips" : "Skip selected clips"}${count > 1 ? ` (${skippedCount} of ${count} skipped)` : ""}`}
+        className={`group/skip relative inline-flex h-7 shrink-0 items-center rounded-md border border-white/15 bg-white/8 px-2 text-[10px] font-medium transition duration-75 has-[:checked]:border-red-500/60 has-[:checked]:bg-red-900 has-[:checked]:ring-1 has-[:checked]:ring-red-500/20 has-[:indeterminate]:border-red-500/60 has-[:indeterminate]:bg-red-900 has-[:indeterminate]:ring-1 has-[:indeterminate]:ring-red-500/20 ${locked ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:border-white/25 hover:bg-white/15"}`}>
+        <input ref={input} type="checkbox" aria-label="Skip selected clips" aria-checked={mixed ? "mixed" : count > 0 && skippedCount === count}
+            checked={count > 0 && skippedCount === count} disabled={locked}
+            onChange={() => onChange(skippedCount === 0)} className="peer absolute inset-0 size-full cursor-[inherit] opacity-0" />
+        <span className="pointer-events-none flex items-center gap-1.5 text-zinc-200 peer-checked:text-red-100 peer-indeterminate:text-red-100 peer-focus-visible:outline-2 peer-focus-visible:outline-offset-4 peer-focus-visible:outline-blue-400">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" className="size-4">
+                {mixed ? <path d="M6 12h12" /> : <path d="m6 6 12 12M18 6 6 18" />}
+            </svg>
+            <span>Skip</span>
+        </span>
+    </label>;
+}
+

@@ -1,9 +1,11 @@
 import type { DragEvent } from "react";
-import { StrictMode, useEffect, useRef, useState } from "react";
+import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { BackendStatus, ImportSource } from "../../shared/desktop";
 import type { ShotCollection } from "../../shared/shots";
 import { ClipInspector } from "./ClipInspector";
+import { MultiClipInspector } from "./MultiClipInspector";
+import { orderedShots, useShotSelection } from "./shotSelection";
 import { deviceLabel } from "./mediaInfo";
 import { RemoveSourceDialog } from "./RemoveSourceDialog";
 import { MIN_INSPECTOR_WIDTH } from "./ResizableInspector";
@@ -21,7 +23,6 @@ function App() {
     const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
     const [selectedDevices, setSelectedDevices] = useState<string[]>([]);
     const [newestFirst, setNewestFirst] = useState(true);
-    const [inspectedShotId, setInspectedShotId] = useState<string | null>(null);
     const [inspectorWidth, setInspectorWidth] = useState(MIN_INSPECTOR_WIDTH);
     const [shotCollection, setShotCollection] = useState<ShotCollection>({ revision: 0, shots: [], scans: [] });
     const latestShotRevision = useRef(-1);
@@ -54,7 +55,83 @@ function App() {
             ? "Sources: " + filteredSources.map((source) => sourcePresentation(source).name).join(" · ") : "",
         activeDevices.length > 1 ? "Devices: " + activeDevices.join(" · ") : "",
     ].filter(Boolean).join(" — ");
-    const inspectedShot = visibleCollection.shots.find((shot) => shot.id === inspectedShotId);
+    const selection = useShotSelection(shotCollection.shots, visibleCollection.shots);
+    const selectedShots = visibleCollection.shots.filter((shot) => selection.editingIds.includes(shot.id));
+    const inspectedShot = selectedShots.length === 1 ? selectedShots[0] : undefined;
+    const availableSourceIds = new Set(sources.filter((source) => source.available).map((source) => source.id));
+    const displayedShots = orderedShots(visibleCollection.shots, newestFirst);
+    const selectableShots = displayedShots
+        .filter((shot) => shot.available && shot.editable && availableSourceIds.has(shot.sourceId));
+    const selectedSkippedCount = selectedShots.filter((shot) => selection.skippedIds.includes(shot.id)).length;
+    const selectedLocked = selectedShots.some((shot) => !shot.available || !shot.editable || !availableSourceIds.has(shot.sourceId));
+    const ingestShots = shotCollection.shots.filter((shot) => !selection.skippedIds.includes(shot.id));
+    const skippedCount = shotCollection.shots.length - ingestShots.length;
+    const blockedIngestCount = ingestShots.filter((shot) => !shot.available || !shot.editable || !availableSourceIds.has(shot.sourceId)).length;
+    const navigationKey = JSON.stringify({ orderedIds: displayedShots.map((shot) => shot.id), selectableIds: selectableShots.map((shot) => shot.id) });
+    const keyboardNavigation = useRef(false);
+
+    const clearEditingSelection = useCallback(() => {
+        keyboardNavigation.current = false;
+        selection.dispatch({ type: "clear" });
+        const focused = document.activeElement;
+        if (focused instanceof HTMLElement && focused.closest("[data-shot-card], #clip-inspector")) focused.blur();
+    }, [selection.dispatch]);
+
+    function selectShot(id: string, modifiers: { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) {
+        keyboardNavigation.current = false;
+        if (!modifiers.ctrlKey && !modifiers.metaKey && !modifiers.shiftKey && selectedShots.length === 1 && selectedShots[0].id === id) {
+            clearEditingSelection();
+            return;
+        }
+        selection.dispatch({ type: "select", id, orderedIds: selectableShots.map((shot) => shot.id),
+            additive: modifiers.ctrlKey || modifiers.metaKey, range: modifiers.shiftKey });
+    }
+
+    function changeSkip(ids: string[], skipped: boolean) {
+        if (ids.some((id) => !shotCollection.shots.some((shot) => shot.id === id && shot.available && shot.editable && availableSourceIds.has(shot.sourceId)))) return;
+        selection.dispatch({ type: "skip", ids, skipped });
+    }
+
+    useEffect(() => {
+        const blockTab = (event: KeyboardEvent) => {
+            if (event.key !== "Tab") return;
+            event.preventDefault();
+            event.stopPropagation();
+        };
+        const escape = (event: KeyboardEvent) => {
+            if (event.key !== "Escape" || event.defaultPrevented || document.querySelector('[aria-modal="true"], dialog[open]')) return;
+            if (event.target instanceof Element && event.target.closest('textarea, select, input:not([type="checkbox"]):not([type="range"]), [contenteditable="true"]')) return;
+            clearEditingSelection();
+        };
+        window.addEventListener("keydown", blockTab, true);
+        window.addEventListener("keydown", escape);
+        return () => {
+            window.removeEventListener("keydown", blockTab, true);
+            window.removeEventListener("keydown", escape);
+        };
+    }, [clearEditingSelection]);
+
+    useEffect(() => {
+        const navigate = (event: KeyboardEvent) => {
+            if (!["ArrowLeft", "ArrowRight"].includes(event.key) || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !selection.editingIds.length) return;
+            if (document.querySelector('[aria-modal="true"], dialog[open]')) return;
+            if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable], video, audio, .preview-player, [role="separator"], [role="slider"], [role="tab"]')) return;
+            event.preventDefault();
+            keyboardNavigation.current = true;
+            selection.dispatch({ type: "navigate", direction: event.key === "ArrowLeft" ? -1 : 1, ...JSON.parse(navigationKey) });
+        };
+        window.addEventListener("keydown", navigate);
+        return () => window.removeEventListener("keydown", navigate);
+    }, [selection.dispatch, selection.editingIds.length, navigationKey]);
+
+    useEffect(() => {
+        if (!keyboardNavigation.current) return;
+        keyboardNavigation.current = false;
+        if (selection.editingIds.length !== 1) return;
+        const card = document.getElementById(`shot-${selection.editingIds[0]}`);
+        card?.scrollIntoView({ block: "nearest", inline: "nearest" });
+        card?.focus({ preventScroll: true });
+    }, [selection.editingIds]);
 
     useEffect(() => {
         setSelectedSourceIds((current) => current.some((id) => !sources.some((source) => source.id === id))
@@ -67,9 +144,6 @@ function App() {
             ? current.filter((name) => available.has(name)) : current);
     }, [deviceKeys]);
 
-    useEffect(() => {
-        if (inspectedShotId && !inspectedShot) setInspectedShotId(null);
-    }, [inspectedShotId, inspectedShot]);
     const [choosingSource, setChoosingSource] = useState(false);
     const [refreshingSourceId, setRefreshingSourceId] = useState<string | null>(null);
     const [sourceError, setSourceError] = useState<string | null>(null);
@@ -338,6 +412,11 @@ function App() {
                 </aside>
                 <section
                     aria-label={gridTitle}
+                    onClick={(event) => {
+                        if (!(event.target instanceof Element) || event.defaultPrevented) return;
+                        if (event.target.closest("[data-shot-card], button, input, label, select, textarea, a, [role='button']")) return;
+                        clearEditingSelection();
+                    }}
                     onDragEnter={dragEnter}
                     onDragLeave={dragLeave}
                     onDragOver={(event) => {
@@ -359,8 +438,9 @@ function App() {
                             newestFirst={newestFirst}
                             onToggleOrder={() => setNewestFirst((current) => !current)}
                             sources={sources}
-                            inspectedShotId={inspectedShotId}
-                            onInspect={(id) => setInspectedShotId((current) => (current === id ? null : id))}
+                            selectedShotIds={selection.editingIds}
+                            skippedShotIds={selection.skippedIds}
+                            onSelect={selectShot}
                         />
                     ) : (
                         <div className="max-w-md p-10">
@@ -380,13 +460,19 @@ function App() {
                         </div>
                     )}
                 </section>
-                    <ClipInspector
+                    {selectedShots.length > 1 ? <MultiClipInspector
+                        shots={orderedShots(selectedShots, newestFirst)} sources={sources} skippedCount={selectedSkippedCount} disabled={selectedLocked}
+                        width={inspectorWidth} onResize={setInspectorWidth}
+                        onSkipChange={(skipped) => changeSkip(selectedShots.map((shot) => shot.id), skipped)}
+                    /> : <ClipInspector
                         key={inspectedShot?.id ?? "empty"}
                         shot={inspectedShot}
                         source={sources.find((source) => source.id === inspectedShot?.sourceId)}
                         width={inspectorWidth}
                         onResize={setInspectorWidth}
-                    />
+                        skipped={selectedSkippedCount === 1}
+                        onSkipChange={(skipped) => changeSkip(selectedShots.map((shot) => shot.id), skipped)}
+                    />}
             </main>
             {removalSource && (
                 <RemoveSourceDialog
@@ -416,7 +502,11 @@ function App() {
                     />
                     {status.state === "connected" ? "Backend connected" : status.message}
                 </div>
-                <span>Read-only · No ingestion operations</span>
+                <div className="flex items-center gap-4">
+                    <span role="status">{ingestShots.length} {ingestShots.length === 1 ? "clip" : "clips"} to ingest · {skippedCount} skipped{blockedIngestCount ? ` · ${blockedIngestCount} temporarily unavailable` : ""}</span>
+                    <button disabled title="Review and ingestion will be implemented next; skipping clips does not start processing"
+                        className="rounded-md border border-white/10 bg-white/4 px-3 py-1.5 text-xs text-zinc-500 disabled:cursor-not-allowed">Review &amp; Ingest</button>
+                </div>
             </footer>
         </div>
     );

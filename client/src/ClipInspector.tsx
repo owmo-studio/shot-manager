@@ -7,6 +7,8 @@ import { durationRow, primaryMetadataRows, quickMediaSummary, sourceFilePath } f
 import { ResizableInspector } from "./ResizableInspector";
 import { PreviewPlayer } from "./PreviewPlayer";
 import type { PreviewHandle } from "./PreviewPlayer";
+import { ContextFields } from "./ContextFields";
+import { SkipSelection } from "./SkipSelection";
 
 function bytesLabel(bytes: number) {
     if (!bytes) return "0 B";
@@ -42,11 +44,15 @@ export function ClipInspector({
     source,
     width,
     onResize,
+    skipped,
+    onSkipChange,
 }: {
     shot?: VideoShot;
     source?: ImportSource;
     width: number;
     onResize: (width: number) => void;
+    skipped: boolean;
+    onSkipChange: (skipped: boolean) => void;
 }) {
     const empty = !selectedShot;
     const shot = selectedShot ?? emptyShot;
@@ -113,6 +119,7 @@ export function ClipInspector({
 
     useEffect(() => {
         let disposed = false;
+        setDetails(null);
         setDetailsError(null);
         if (empty || unavailable || pausedForScan) return;
         window.desktop
@@ -148,7 +155,7 @@ export function ClipInspector({
                             disabled={empty || unavailable || pausedForScan}
                             title={lutEnabled ? "LUT on — view in Rec.709" : "LUT off — view original"}
                             onClick={() => setLutEnabled((enabled) => !enabled)}
-                            className={"flex h-7 items-center gap-1.5 rounded-md border border-white/10 bg-black/30 px-2 text-[10px] font-medium transition duration-75 hover:bg-white/8 disabled:opacity-40 " + (lutEnabled ? "text-zinc-200" : "text-zinc-500")}>
+                            className={"flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] font-medium transition duration-75 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40 " + (lutEnabled ? "border-white/15 bg-white/8 text-zinc-200 hover:border-white/25 hover:bg-white/15 hover:text-white" : "border-white/10 bg-black/30 text-zinc-500 hover:bg-white/8")}>
                             <span aria-hidden="true" className={"size-1.5 rounded-full " + (lutEnabled ? "bg-green-400" : "bg-zinc-600")} />LUT
                         </button>}
                         <button
@@ -175,6 +182,7 @@ export function ClipInspector({
                             </svg>
                             <span>{thumbnailBusy ? "Saving…" : "Set thumbnail"}</span>
                         </button>
+                        <SkipSelection count={empty ? 0 : 1} skippedCount={skipped ? 1 : 0} disabled={empty || unavailable || pausedForScan} onChange={onSkipChange} />
                     </div>
                 </header>
                 {thumbnailError && (
@@ -241,41 +249,7 @@ export function ClipInspector({
                         aria-labelledby="inspector-metadata-tab"
                         className="mt-4 rounded-lg border border-white/8 p-3"
                     >
-                        <fieldset disabled className="space-y-4 text-xs text-zinc-500">
-                            <label className="block">
-                                Identity
-                                <select
-                                    defaultValue=""
-                                    className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2"
-                                >
-                                    <option value="">{empty ? "" : "Not assigned"}</option>
-                                    <option>OWMO</option>
-                                    <option>CMSH</option>
-                                </select>
-                            </label>
-                            <label className="block">
-                                Project
-                                <input
-                                    placeholder={empty ? "" : "Optional project"}
-                                    className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2"
-                                />
-                            </label>
-                            <label className="block">
-                                Tags
-                                <input
-                                    placeholder={empty ? "" : "Add tags…"}
-                                    className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2"
-                                />
-                            </label>
-                            <label className="block">
-                                Notes
-                                <textarea
-                                    rows={4}
-                                    placeholder={empty ? "" : "Optional notes"}
-                                    className="mt-1.5 block w-full resize-none rounded-md border border-white/10 bg-transparent px-3 py-2"
-                                />
-                            </label>
-                        </fieldset>
+                        <ContextFields empty={empty} />
                     </section>
                 ) : (
                     <section

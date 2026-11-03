@@ -1,21 +1,28 @@
 import { useEffect, useRef, useState } from "react";
+import type { MouseEvent } from "react";
 import type { ImportSource } from "../../shared/desktop";
 import type { ShotCollection, VideoShot } from "../../shared/shots";
 import { cardDuration, deviceLabel, sourceFilePath } from "./mediaInfo";
+import { orderedShots } from "./shotSelection";
 
-function ShotCard({ shot, source, selected = false, onInspect }: { shot: VideoShot; source?: ImportSource; selected?: boolean; onInspect: () => void }) {
+function ShotCard({ shot, source, selected, skipped, onSelect }: {
+    shot: VideoShot; source?: ImportSource; selected: boolean; skipped: boolean;
+    onSelect: (event: MouseEvent<HTMLButtonElement>) => void;
+}) {
     const [thumbnail, setThumbnail] = useState<string | null>(null);
     const [failedImage, setFailedImage] = useState(false);
     const card = useRef<HTMLButtonElement>(null);
     const unavailable = !shot.available || !source?.available;
     const inactive = !unavailable && !shot.editable;
     const cardStyle = unavailable
-        ? `${selected ? "ring-red-400" : "ring-red-500/30"} bg-red-500/8 hover:bg-red-500/15 hover:ring-red-400/60`
+        ? `${selected ? "ring-red-400" : "ring-red-500/30"} bg-red-500/8 group-hover/shot:bg-red-500/15 group-hover/shot:ring-red-400/60`
         : inactive
           ? `cursor-not-allowed grayscale opacity-50 ${selected ? "ring-zinc-300" : "ring-transparent"}`
-          : selected
-            ? "bg-blue-400/5 ring-blue-400/80 hover:bg-blue-400/15 hover:ring-blue-300"
-            : "ring-transparent hover:bg-white/10 hover:ring-white/25";
+          : skipped
+            ? `${selected ? "ring-red-400/80 group-hover/shot:ring-red-300" : "ring-transparent group-hover/shot:ring-red-400/35"} bg-red-700/25 group-hover/shot:bg-red-700/35`
+            : selected
+              ? "bg-blue-400/5 ring-blue-400/80 group-hover/shot:bg-blue-400/15 group-hover/shot:ring-blue-300"
+              : "ring-transparent group-hover/shot:bg-white/10 group-hover/shot:ring-white/25";
     useEffect(() => {
         setThumbnail(null);
         setFailedImage(false);
@@ -40,10 +47,11 @@ function ShotCard({ shot, source, selected = false, onInspect }: { shot: VideoSh
     }
 
     return (
-        <button ref={card} type="button" onClick={onInspect} disabled={unavailable || inactive} aria-label={`Inspect ${shot.filename}`} aria-current={selected ? true : undefined} aria-controls="clip-inspector" data-editable={!unavailable && shot.editable}
-            className={`shot-card-enter -m-2 min-w-0 rounded-lg p-2 text-left ring-1 transition duration-75 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:cursor-not-allowed ${cardStyle}`}
+        <div data-shot-card className="shot-card-enter group/shot relative min-w-0">
+        <button id={`shot-${shot.id}`} ref={card} type="button" onClick={onSelect} disabled={unavailable || inactive} aria-label={`Inspect ${shot.filename}`} aria-pressed={selected} aria-controls="clip-inspector" data-editable={!unavailable && shot.editable} data-skipped={skipped}
+            className={`-m-2 w-[calc(100%+16px)] min-w-0 rounded-lg p-2 text-left ring-1 transition duration-75 focus-visible:outline-2 focus-visible:outline-offset-2 ${skipped ? "focus-visible:outline-red-400" : "focus-visible:outline-blue-400"} disabled:cursor-not-allowed ${cardStyle}`}
             title={[sourceFilePath(source?.path, shot.relativePath), ...(unavailable ? ["Source unavailable. Reconnect the source to edit this shot."] : inactive ? ["Source rescan is queued or running. Editing is unavailable until it finishes."] : []), ...shot.warnings].join("\n")}>
-            <span className={`relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg border ${unavailable ? "border-red-500/30 bg-red-500/5" : "border-white/8 bg-white/4"}`}>
+            <span data-shot-thumbnail className={`relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg border transition-opacity duration-150 ${skipped && !inactive ? "opacity-45" : ""} ${unavailable ? "border-red-500/30 bg-red-500/5" : "border-white/8 bg-white/4"}`}>
                 {thumbnail && !failedImage ? <img src={thumbnail} alt="" onError={thumbnailFailed} className="size-full bg-black object-contain" /> : shot.thumbnailStatus === "pending" && !unavailable ? (
                     <span aria-hidden="true" className="absolute inset-0 bg-white/4 motion-safe:animate-pulse" />
                 ) : null}
@@ -59,25 +67,23 @@ function ShotCard({ shot, source, selected = false, onInspect }: { shot: VideoSh
             {unavailable && <span className="mt-1 block text-xs font-medium text-red-300">source is unavailable</span>}
             {!unavailable && shot.warnings.length > 0 && <span className="mt-1 block text-xs text-amber-300">Metadata incomplete</span>}
         </button>
+        </div>
     );
 }
 
-export function ShotGrid({ collection, title, filterDescription, newestFirst, onToggleOrder, sources, inspectedShotId, onInspect }: {
+export function ShotGrid({ collection, title, filterDescription, newestFirst, onToggleOrder, sources, selectedShotIds, skippedShotIds, onSelect }: {
     collection: ShotCollection;
     title: string;
     filterDescription: string;
     newestFirst: boolean;
     onToggleOrder: () => void;
     sources: ImportSource[];
-    inspectedShotId: string | null;
-    onInspect: (id: string) => void;
+    selectedShotIds: string[];
+    skippedShotIds: string[];
+    onSelect: (id: string, event: MouseEvent<HTMLButtonElement>) => void;
 }) {
     const groups = new Map<string, VideoShot[]>();
-    const direction = newestFirst ? -1 : 1;
-    const sortedShots = [...collection.shots].sort((first, second) => direction * (
-        first.timestamp.slice(0, 10).localeCompare(second.timestamp.slice(0, 10)) ||
-        Date.parse(first.timestamp) - Date.parse(second.timestamp)
-    ) || first.id.localeCompare(second.id));
+    const sortedShots = orderedShots(collection.shots, newestFirst);
     for (const shot of sortedShots) {
         const day = shot.timestamp.slice(0, 10);
         const group = groups.get(day) ?? [];
@@ -118,7 +124,9 @@ export function ShotGrid({ collection, title, filterDescription, newestFirst, on
                 <section key={day} aria-label={day} className="mb-8">
                     <h3 className="mb-4 border-b border-white/8 pb-2 text-sm font-medium text-zinc-400">{new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })} <span className="ml-2 font-normal text-zinc-600">{shots.length} clips</span></h3>
                     <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-x-5 gap-y-6">
-                        {shots.map((shot) => <ShotCard key={shot.id} shot={shot} source={sources.find((source) => source.id === shot.sourceId)} selected={shot.id === inspectedShotId} onInspect={() => onInspect(shot.id)} />)}
+                        {shots.map((shot) => <ShotCard key={shot.id} shot={shot} source={sources.find((source) => source.id === shot.sourceId)}
+                            selected={selectedShotIds.includes(shot.id)} skipped={skippedShotIds.includes(shot.id)}
+                            onSelect={(event) => onSelect(shot.id, event)} />)}
                     </div>
                 </section>
             ))}
