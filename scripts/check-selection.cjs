@@ -103,6 +103,15 @@ if (!process.versions.electron) {
             await wait(`document.querySelector('button[aria-label="Inspect Clip 4.mp4"]').getBoundingClientRect().top>document.querySelector('button[aria-label="Inspect Clip 5.mp4"]').getBoundingClientRect().top+8`);
             await arrow('Down'); assert.deepEqual(await selected(), [4]);
             await arrow('Up'); assert.deepEqual(await selected(), [6]);
+            window.setSize(1400,560);
+            await wait(`document.querySelector('[data-shot-scroll]').clientHeight<500`);
+            await inspect(4); await arrow('Down'); assert.deepEqual(await selected(), [3]);
+            assert.ok(await js(`(()=>{const viewport=document.querySelector('[data-shot-scroll]').getBoundingClientRect(),card=document.querySelector('button[aria-label="Inspect Clip 3.mp4"]').getBoundingClientRect();return card.top>=viewport.top+19&&card.bottom<=viewport.bottom-19})()`));
+            await arrow('Up'); assert.deepEqual(await selected(), [4]);
+            await arrow('Up'); assert.deepEqual(await selected(), [6]);
+            assert.ok(await js(`(()=>{const card=document.querySelector('button[aria-label="Inspect Clip 6.mp4"]'),heading=card.closest('[data-shot-day]').querySelector('h3').getBoundingClientRect(),viewport=document.querySelector('[data-shot-scroll]').getBoundingClientRect();return heading.top>=viewport.top+19&&card.getBoundingClientRect().bottom<=viewport.bottom-19})()`));
+            await js(`(()=>{const viewport=document.querySelector('[data-shot-scroll]');viewport.scrollTop=viewport.scrollHeight})()`);
+            assert.ok(await js(`(()=>{const viewport=document.querySelector('[data-shot-scroll]'),cards=document.querySelectorAll('[data-shot-card] > button'),last=cards[cards.length-1].getBoundingClientRect();return viewport.scrollHeight>viewport.clientHeight&&viewport.getBoundingClientRect().bottom-last.bottom>=39})()`), 'Last card should have visible bottom padding when fully scrolled');
             window.setSize(1800,1080);
             await wait(`Math.abs(document.querySelector('button[aria-label="Inspect Clip 4.mp4"]').getBoundingClientRect().top-document.querySelector('button[aria-label="Inspect Clip 5.mp4"]').getBoundingClientRect().top)<8`);
             await inspect(1);

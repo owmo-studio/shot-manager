@@ -89,7 +89,7 @@ export function ShotGrid({ collection, newestFirst, sources, selectedShotIds, sk
     }
     const busy = collection.scans.some((scan) => scan.state === "queued" || scan.state === "scanning");
     return (
-        <div className="w-full self-stretch p-5 pr-8 text-left">
+        <div className="w-full shrink-0 self-start p-5 pr-8 pb-12 text-left">
             {collection.scans.filter((scan) => scan.error || scan.warnings.length).map((scan) => (
                 <p key={scan.sourceId} role="status" className={`mb-4 rounded-lg border p-3 text-xs ${scan.error ? "border-red-400/25 text-red-300" : "border-amber-400/20 text-amber-300"}`}>
                     {sources.find((source) => source.id === scan.sourceId)?.name}: {scan.error ?? `${scan.warnings.length} scan issue(s). Some files or folders could not be read.`}
@@ -97,7 +97,7 @@ export function ShotGrid({ collection, newestFirst, sources, selectedShotIds, sk
             ))}
             {!collection.shots.length && <p className="mt-20 text-center text-sm text-zinc-500">{busy ? "Looking for videos…" : "No videos found in the available sources."}</p>}
             {[...groups].map(([day, shots]) => (
-                <section key={day} aria-label={day} className="mb-8">
+                <section key={day} data-shot-day aria-label={day} className="mb-8 last:mb-0">
                     <h3 className="mb-4 border-b border-white/8 pb-2 text-sm font-medium text-zinc-400">{new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })} <span className="ml-2 font-normal text-zinc-600">{shots.length} clips</span></h3>
                     <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-x-5 gap-y-6">
                         {shots.map((shot) => <ShotCard key={shot.id} shot={shot} source={sources.find((source) => source.id === shot.sourceId)}

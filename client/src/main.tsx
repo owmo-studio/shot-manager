@@ -10,6 +10,7 @@ import { deviceLabel } from "./mediaInfo";
 import { RemoveSourceDialog } from "./RemoveSourceDialog";
 import { MIN_INSPECTOR_WIDTH } from "./ResizableInspector";
 import { ShotGrid } from "./ShotGrid";
+import { scrollShotIntoView } from "./scrollShotIntoView";
 import { newlyUnavailableSources } from "./sourceAvailability";
 import { SourceErrorDialog } from "./SourceErrorDialog";
 import { SourceListItem } from "./SourceListItem";
@@ -127,7 +128,7 @@ function App() {
         keyboardNavigation.current = false;
         if (selection.editingIds.length !== 1) return;
         const card = document.getElementById(`shot-${selection.editingIds[0]}`);
-        card?.scrollIntoView({ block: "nearest", inline: "nearest" });
+        if (card) scrollShotIntoView(card);
         card?.focus({ preventScroll: true });
     }, [selection.editingIds]);
 
@@ -415,6 +416,7 @@ function App() {
                 </aside>
                 <section
                     aria-label="Shot cards"
+                    data-shot-scroll
                     onClick={(event) => {
                         if (!(event.target instanceof Element) || event.defaultPrevented) return;
                         if (event.target.closest("[data-shot-card], button, input, label, select, textarea, a, [role='button']")) return;
