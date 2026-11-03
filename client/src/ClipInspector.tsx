@@ -9,17 +9,38 @@ import { sourcePresentation } from "./SourceListItem";
 function bytesLabel(bytes: number) {
     if (!bytes) return "0 B";
     const unit = Math.min(3, Math.floor(Math.log(bytes) / Math.log(1024)));
-    return (bytes / 1024 ** unit).toLocaleString(undefined, { maximumFractionDigits: 1 }) + " " + ["B", "KB", "MB", "GB"][unit];
+    return (
+        (bytes / 1024 ** unit).toLocaleString(undefined, { maximumFractionDigits: 1 }) +
+        " " +
+        ["B", "KB", "MB", "GB"][unit]
+    );
 }
 
 const emptyShot: VideoShot = {
-    id: "", sourceId: "", filename: "", relativePath: "", bytes: 0, timestamp: "",
-    dateSource: "file-modified", dateEvidence: "", dateConfidence: "uncertain",
-    cameraModel: null, metadata: emptyVideoMetadata(), durationSeconds: null,
-    hasThumbnail: false, warnings: [], available: false, editable: false,
+    id: "",
+    sourceId: "",
+    filename: "",
+    relativePath: "",
+    bytes: 0,
+    timestamp: "",
+    dateSource: "file-modified",
+    dateEvidence: "",
+    dateConfidence: "uncertain",
+    cameraModel: null,
+    metadata: emptyVideoMetadata(),
+    durationSeconds: null,
+    hasThumbnail: false,
+    warnings: [],
+    available: false,
+    editable: false,
 };
 
-export function ClipInspector({ shot: selectedShot, source, width, onResize }: {
+export function ClipInspector({
+    shot: selectedShot,
+    source,
+    width,
+    onResize,
+}: {
     shot?: VideoShot;
     source?: ImportSource;
     width: number;
@@ -38,7 +59,10 @@ export function ClipInspector({ shot: selectedShot, source, width, onResize }: {
     const video = useRef<HTMLVideoElement>(null);
     const unavailable = !shot.available || !source?.available;
     const pausedForScan = !unavailable && !shot.editable;
-    const rawMetadata = details?.embeddedMetadata.map((entry) => entry.label + " (" + entry.format.toUpperCase() + ")\n\n" + entry.text).join("\n\n────────────────────\n\n") ?? "";
+    const rawMetadata =
+        details?.embeddedMetadata
+            .map((entry) => entry.label + " (" + entry.format.toUpperCase() + ")\n\n" + entry.text)
+            .join("\n\n────────────────────\n\n") ?? "";
 
     async function setThumbnail() {
         if (empty || thumbnailBusy) return;
@@ -46,7 +70,8 @@ export function ClipInspector({ shot: selectedShot, source, width, onResize }: {
         setThumbnailError(null);
         try {
             const player = video.current;
-            if (!player || player.readyState < 2 || player.seeking || !player.videoWidth) throw new Error("Wait for a preview frame to load.");
+            if (!player || player.readyState < 2 || player.seeking || !player.videoWidth)
+                throw new Error("Wait for a preview frame to load.");
             const canvas = document.createElement("canvas");
             const scale = Math.min(1, 480 / player.videoWidth, 270 / player.videoHeight);
             canvas.width = Math.max(1, Math.round(player.videoWidth * scale));
@@ -57,7 +82,9 @@ export function ClipInspector({ shot: selectedShot, source, width, onResize }: {
             await window.desktop.setShotThumbnail(shot.id, canvas.toDataURL("image/jpeg", 0.9));
         } catch {
             setThumbnailError("Thumbnail could not be updated. Check the preview and try again.");
-        } finally { setThumbnailBusy(false); }
+        } finally {
+            setThumbnailBusy(false);
+        }
     }
 
     useEffect(() => {
@@ -72,19 +99,26 @@ export function ClipInspector({ shot: selectedShot, source, width, onResize }: {
         try {
             await navigator.clipboard.writeText(rawMetadata);
             setCopyStatus("copied");
-        } catch { setCopyStatus("failed"); }
+        } catch {
+            setCopyStatus("failed");
+        }
     }
 
     useEffect(() => {
         let disposed = false;
         setDetailsError(null);
         if (empty || unavailable || pausedForScan) return;
-        window.desktop.getShotDetails(shot.id).then((data) => {
-            if (!disposed) setDetails(data);
-        }).catch(() => {
-            if (!disposed) setDetailsError("File details could not be loaded. Check that the source is connected.");
-        });
-        return () => { disposed = true; };
+        window.desktop
+            .getShotDetails(shot.id)
+            .then((data) => {
+                if (!disposed) setDetails(data);
+            })
+            .catch(() => {
+                if (!disposed) setDetailsError("File details could not be loaded. Check that the source is connected.");
+            });
+        return () => {
+            disposed = true;
+        };
     }, [shot.id, unavailable, pausedForScan, empty]);
 
     return (
@@ -92,71 +126,188 @@ export function ClipInspector({ shot: selectedShot, source, width, onResize }: {
             <div inert={empty} className={empty ? "opacity-40" : undefined}>
                 <header className="mb-4 flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                        <h2 className="min-h-5 truncate text-sm font-medium" title={empty ? undefined : sourceFilePath(source?.path, shot.relativePath)}>{shot.filename}</h2>
-                        <p className="mt-1 min-h-4 truncate text-xs text-zinc-500">{empty ? "" : source ? sourcePresentation(source).name : "Source"}</p>
+                        <h2
+                            className="min-h-5 truncate text-sm font-medium"
+                            title={empty ? undefined : sourceFilePath(source?.path, shot.relativePath)}
+                        >
+                            {shot.filename}
+                        </h2>
+                        <p className="mt-1 min-h-4 truncate text-xs text-zinc-500">
+                            {empty ? "" : source ? sourcePresentation(source).name : "Source"}
+                        </p>
                     </div>
-                    <button type="button" onClick={() => void setThumbnail()} disabled={thumbnailBusy || unavailable || pausedForScan || !frameReady}
-                        aria-label="Set current frame as thumbnail" title="Set current frame as thumbnail"
-                        className="grid size-7 shrink-0 place-items-center rounded-md text-zinc-500 transition duration-75 hover:bg-white/8 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-4">
-                            <rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8" cy="8" r="1.5" /><path d="m21 15-5-5L5 21" />
+                    <button
+                        type="button"
+                        onClick={() => void setThumbnail()}
+                        disabled={thumbnailBusy || unavailable || pausedForScan || !frameReady}
+                        aria-label="Set current frame as thumbnail"
+                        title="Set current frame as thumbnail"
+                        className="grid size-7 shrink-0 place-items-center rounded-md text-zinc-500 transition duration-75 hover:bg-white/8 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40"
+                    >
+                        <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                            className="size-4"
+                        >
+                            <rect x="3" y="3" width="18" height="18" rx="2" />
+                            <circle cx="8" cy="8" r="1.5" />
+                            <path d="m21 15-5-5L5 21" />
                         </svg>
                     </button>
                 </header>
-                {thumbnailError && <p role="alert" className="mb-3 text-xs text-amber-300">{thumbnailError}</p>}
+                {thumbnailError && (
+                    <p role="alert" className="mb-3 text-xs text-amber-300">
+                        {thumbnailError}
+                    </p>
+                )}
                 <div className="overflow-hidden rounded-lg border border-white/8 bg-black">
-                    {empty ? <div className="aspect-video" aria-label="No clip selected" /> : unavailable || pausedForScan ? (
-                        <div role="status" className={'flex aspect-video items-center justify-center p-5 text-center text-xs ' + (unavailable ? 'text-red-300' : 'text-zinc-500')}>
-                            {unavailable ? "Source is unavailable." : "Preview paused while this source is queued for rescanning or being rescanned."}
+                    {empty ? (
+                        <div className="aspect-video" aria-label="No clip selected" />
+                    ) : unavailable || pausedForScan ? (
+                        <div
+                            role="status"
+                            className={
+                                "flex aspect-video items-center justify-center p-5 text-center text-xs " +
+                                (unavailable ? "text-red-300" : "text-zinc-500")
+                            }
+                        >
+                            {unavailable
+                                ? "Source is unavailable."
+                                : "Preview paused while this source is queued for rescanning or being rescanned."}
                         </div>
                     ) : (
-                        <video ref={video} crossOrigin="anonymous" src={'shot-media://local/shots/' + shot.id + '/original'}
-                            controls controlsList="nodownload noplaybackrate noremoteplayback" disablePictureInPicture disableRemotePlayback playsInline preload="metadata"
-                            aria-label={'Preview ' + shot.filename} className="block aspect-video w-full object-contain"
-                            onError={() => { setFrameReady(false); setPlaybackMessage("This video cannot be played here. Its codec may be unsupported, or the file may be unavailable."); }}
-                            onLoadStart={() => { setFrameReady(false); setPlaybackMessage(null); }}
-                            onLoadedData={() => setFrameReady(true)} onSeeking={() => setFrameReady(false)} onSeeked={() => setFrameReady(true)} onEmptied={() => setFrameReady(false)} />
+                        <video
+                            ref={video}
+                            crossOrigin="anonymous"
+                            src={"shot-media://local/shots/" + shot.id + "/original"}
+                            controls
+                            controlsList="nodownload noplaybackrate noremoteplayback"
+                            disablePictureInPicture
+                            disableRemotePlayback
+                            playsInline
+                            preload="metadata"
+                            aria-label={"Preview " + shot.filename}
+                            className="block aspect-video w-full object-contain"
+                            onError={() => {
+                                setFrameReady(false);
+                                setPlaybackMessage(
+                                    "This video cannot be played here. Its codec may be unsupported, or the file may be unavailable.",
+                                );
+                            }}
+                            onLoadStart={() => {
+                                setFrameReady(false);
+                                setPlaybackMessage(null);
+                            }}
+                            onLoadedData={() => setFrameReady(true)}
+                            onSeeking={() => setFrameReady(false)}
+                            onSeeked={() => setFrameReady(true)}
+                            onEmptied={() => setFrameReady(false)}
+                        />
                     )}
                 </div>
-                {playbackMessage && <p role="status" className="mt-3 text-xs leading-5 text-amber-300">{playbackMessage}</p>}
+                {playbackMessage && (
+                    <p role="status" className="mt-3 text-xs leading-5 text-amber-300">
+                        {playbackMessage}
+                    </p>
+                )}
                 <div role="tablist" aria-label="Clip information" className="mt-5 flex rounded-lg bg-white/4 p-1">
                     {(["metadata", "file"] as const).map((choice) => (
-                        <button key={choice} id={'inspector-' + choice + '-tab'} role="tab" aria-selected={tab === choice} aria-controls={'inspector-' + choice + '-panel'}
-                            tabIndex={tab === choice ? 0 : -1} onClick={() => setTab(choice)}
+                        <button
+                            key={choice}
+                            id={"inspector-" + choice + "-tab"}
+                            role="tab"
+                            aria-selected={tab === choice}
+                            aria-controls={"inspector-" + choice + "-panel"}
+                            tabIndex={tab === choice ? 0 : -1}
+                            onClick={() => setTab(choice)}
                             onKeyDown={(event) => {
                                 if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
                                 event.preventDefault();
-                                const next = event.key === "Home" ? "metadata" : event.key === "End" ? "file" : tab === "metadata" ? "file" : "metadata";
+                                const next =
+                                    event.key === "Home"
+                                        ? "metadata"
+                                        : event.key === "End"
+                                          ? "file"
+                                          : tab === "metadata"
+                                            ? "file"
+                                            : "metadata";
                                 setTab(next);
-                                document.getElementById('inspector-' + next + '-tab')?.focus();
+                                document.getElementById("inspector-" + next + "-tab")?.focus();
                             }}
-                            className={'flex-1 rounded-md px-3 py-2 text-xs ' + (tab === choice ? 'bg-white/10 text-zinc-200' : 'text-zinc-500 hover:text-zinc-300')}>
+                            className={
+                                "flex-1 rounded-md px-3 py-2 text-xs " +
+                                (tab === choice ? "bg-white/10 text-zinc-200" : "text-zinc-500 hover:text-zinc-300")
+                            }
+                        >
                             {choice === "metadata" ? "Context" : "File info"}
                         </button>
                     ))}
                 </div>
                 {tab === "metadata" ? (
-                    <section role="tabpanel" id="inspector-metadata-panel" aria-labelledby="inspector-metadata-tab" className="mt-4 rounded-lg border border-white/8 p-3">
-                        {!empty && <p className="mb-4 text-xs leading-5 text-zinc-500">Identity, project, tags, and notes will be editable here soon. These fields are placeholders.</p>}
+                    <section
+                        role="tabpanel"
+                        id="inspector-metadata-panel"
+                        aria-labelledby="inspector-metadata-tab"
+                        className="mt-4 rounded-lg border border-white/8 p-3"
+                    >
                         <fieldset disabled className="space-y-4 text-xs text-zinc-500">
-                            <label className="block">Identity
-                                <select defaultValue="" className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2">
-                                    <option value="">{empty ? "" : "Not assigned"}</option><option>OWMO</option><option>CMSH</option>
+                            <label className="block">
+                                Identity
+                                <select
+                                    defaultValue=""
+                                    className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2"
+                                >
+                                    <option value="">{empty ? "" : "Not assigned"}</option>
+                                    <option>OWMO</option>
+                                    <option>CMSH</option>
                                 </select>
                             </label>
-                            <label className="block">Project<input placeholder={empty ? "" : "Optional project"} className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2" /></label>
-                            <label className="block">Tags<input placeholder={empty ? "" : "Add tags…"} className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2" /></label>
-                            <label className="block">Notes<textarea rows={4} placeholder={empty ? "" : "Optional notes"} className="mt-1.5 block w-full resize-none rounded-md border border-white/10 bg-transparent px-3 py-2" /></label>
+                            <label className="block">
+                                Project
+                                <input
+                                    placeholder={empty ? "" : "Optional project"}
+                                    className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2"
+                                />
+                            </label>
+                            <label className="block">
+                                Tags
+                                <input
+                                    placeholder={empty ? "" : "Add tags…"}
+                                    className="mt-1.5 block w-full rounded-md border border-white/10 bg-transparent px-3 py-2"
+                                />
+                            </label>
+                            <label className="block">
+                                Notes
+                                <textarea
+                                    rows={4}
+                                    placeholder={empty ? "" : "Optional notes"}
+                                    className="mt-1.5 block w-full resize-none rounded-md border border-white/10 bg-transparent px-3 py-2"
+                                />
+                            </label>
                         </fieldset>
                     </section>
                 ) : (
-                    <section role="tabpanel" id="inspector-file-panel" aria-labelledby="inspector-file-tab" className="mt-4 space-y-5 text-xs">
+                    <section
+                        role="tabpanel"
+                        id="inspector-file-panel"
+                        aria-labelledby="inspector-file-tab"
+                        className="mt-4 space-y-5 text-xs"
+                    >
                         <dl className="space-y-4 text-zinc-400">
                             {[
                                 ...primaryMetadataRows(shot.metadata),
                                 durationRow(shot.durationSeconds, shot.metadata),
                                 { label: "Filename", value: shot.filename, detail: "" },
-                                { label: "File path", value: details?.file.path ?? sourceFilePath(source?.path, shot.relativePath), detail: "" },
+                                {
+                                    label: "File path",
+                                    value: details?.file.path ?? sourceFilePath(source?.path, shot.relativePath),
+                                    detail: "",
+                                },
                                 { label: "Size", value: bytesLabel(details?.file.bytes ?? shot.bytes), detail: "" },
                                 { label: "Date", value: shot.timestamp, detail: "" },
                             ].map((row) => (
@@ -164,32 +315,100 @@ export function ClipInspector({ shot: selectedShot, source, width, onResize }: {
                                     <dt className="text-zinc-500">{row.label}</dt>
                                     <dd className="min-w-0 break-words">
                                         <p className="break-all text-zinc-200">{empty ? "" : row.value}</p>
-                                        {!empty && row.detail && <p className="mt-1 text-[11px] leading-5 text-zinc-500">{row.detail}</p>}
+                                        {!empty && row.detail && (
+                                            <p className="mt-1 text-[11px] leading-5 text-zinc-500">{row.detail}</p>
+                                        )}
                                     </dd>
                                 </div>
                             ))}
                         </dl>
-                        {shot.metadata.color.conflicts.map((message) => <p key={message} className="leading-5 text-amber-300">{message}</p>)}
-                        {detailsError && <p role="status" className="text-amber-300">{detailsError}</p>}
-                        {!details && !detailsError && !unavailable && !pausedForScan && <p className="text-zinc-500">Loading embedded metadata…</p>}
-                        {details?.errors.map((error) => <p key={error} className="text-amber-300">{error}</p>)}
+                        {shot.metadata.color.conflicts.map((message) => (
+                            <p key={message} className="leading-5 text-amber-300">
+                                {message}
+                            </p>
+                        ))}
+                        {detailsError && (
+                            <p role="status" className="text-amber-300">
+                                {detailsError}
+                            </p>
+                        )}
+                        {!details && !detailsError && !unavailable && !pausedForScan && (
+                            <p className="text-zinc-500">Loading embedded metadata…</p>
+                        )}
+                        {details?.errors.map((error) => (
+                            <p key={error} className="text-amber-300">
+                                {error}
+                            </p>
+                        ))}
                         <details className="rounded-lg border border-white/8 p-3">
                             <summary className="cursor-pointer font-medium text-zinc-300">Embedded metadata</summary>
                             {rawMetadata ? (
                                 <div className="relative mt-3 rounded-md bg-black/20">
-                                    <span role="status" className="sr-only">{copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Could not copy. Try again." : ""}</span>
-                                    <button type="button" onClick={() => void copyMetadata()} disabled={copyStatus === "copying"} aria-label="Copy embedded metadata to clipboard"
-                                        title={copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Could not copy. Try again." : "Copy to clipboard"}
-                                        className={'absolute top-2 right-6 z-10 grid size-7 place-items-center rounded border border-white/10 bg-[#181b21]/90 transition duration-75 hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-50 ' + (copyStatus === "copied" ? "text-green-400" : copyStatus === "failed" ? "text-amber-300" : "text-zinc-400 hover:text-zinc-200")}>
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-4">
-                                            {copyStatus === "copied" ? <path d="m5 12 4 4L19 6" /> : <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></>}
+                                    <span role="status" className="sr-only">
+                                        {copyStatus === "copied"
+                                            ? "Copied"
+                                            : copyStatus === "failed"
+                                              ? "Could not copy. Try again."
+                                              : ""}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={() => void copyMetadata()}
+                                        disabled={copyStatus === "copying"}
+                                        aria-label="Copy embedded metadata to clipboard"
+                                        title={
+                                            copyStatus === "copied"
+                                                ? "Copied"
+                                                : copyStatus === "failed"
+                                                  ? "Could not copy. Try again."
+                                                  : "Copy to clipboard"
+                                        }
+                                        className={
+                                            "absolute top-2 right-6 z-10 grid size-7 place-items-center rounded border border-white/10 bg-[#181b21]/90 transition duration-75 hover:bg-zinc-700 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-50 " +
+                                            (copyStatus === "copied"
+                                                ? "text-green-400"
+                                                : copyStatus === "failed"
+                                                  ? "text-amber-300"
+                                                  : "text-zinc-400 hover:text-zinc-200")
+                                        }
+                                    >
+                                        <svg
+                                            viewBox="0 0 24 24"
+                                            fill="none"
+                                            stroke="currentColor"
+                                            strokeWidth="1.5"
+                                            strokeLinecap="round"
+                                            strokeLinejoin="round"
+                                            aria-hidden="true"
+                                            className="size-4"
+                                        >
+                                            {copyStatus === "copied" ? (
+                                                <path d="m5 12 4 4L19 6" />
+                                            ) : (
+                                                <>
+                                                    <rect x="8" y="8" width="12" height="12" rx="2" />
+                                                    <path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" />
+                                                </>
+                                            )}
                                         </svg>
                                     </button>
-                                    <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all p-3 pr-16 text-[11px] leading-5 text-zinc-500">{rawMetadata}</pre>
+                                    <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-all p-3 pr-16 text-[11px] leading-5 text-zinc-500">
+                                        {rawMetadata}
+                                    </pre>
                                 </div>
-                            ) : <p className="mt-3 text-zinc-500">{details ? "No embedded metadata could be extracted." : "Embedded metadata is not available."}</p>}
+                            ) : (
+                                <p className="mt-3 text-zinc-500">
+                                    {details
+                                        ? "No embedded metadata could be extracted."
+                                        : "Embedded metadata is not available."}
+                                </p>
+                            )}
                         </details>
-                        {shot.warnings.map((warning) => <p key={warning} className="leading-5 text-amber-300">{warning}</p>)}
+                        {shot.warnings.map((warning) => (
+                            <p key={warning} className="leading-5 text-amber-300">
+                                {warning}
+                            </p>
+                        ))}
                     </section>
                 )}
             </div>

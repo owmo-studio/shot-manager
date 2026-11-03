@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ImportSource } from "../../shared/desktop";
 import type { ShotCollection, VideoShot } from "../../shared/shots";
-import { deviceLabel, durationRow, sourceFilePath } from "./mediaInfo";
+import { cardDuration, deviceLabel, sourceFilePath } from "./mediaInfo";
 
 function ShotCard({ shot, source, selected = false, onInspect }: { shot: VideoShot; source?: ImportSource; selected?: boolean; onInspect: () => void }) {
     const [thumbnail, setThumbnail] = useState<string | null>(null);
@@ -44,7 +44,7 @@ function ShotCard({ shot, source, selected = false, onInspect }: { shot: VideoSh
             className={`shot-card-enter -m-2 min-w-0 rounded-lg p-2 text-left ring-1 transition duration-75 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:cursor-not-allowed ${cardStyle}`}
             title={[sourceFilePath(source?.path, shot.relativePath), ...(unavailable ? ["Source unavailable. Reconnect the source to edit this shot."] : inactive ? ["Source rescan is queued or running. Editing is unavailable until it finishes."] : []), ...shot.warnings].join("\n")}>
             <span className={`relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg border ${unavailable ? "border-red-500/30 bg-red-500/5" : "border-white/8 bg-white/4"}`}>
-                {thumbnail && !failedImage ? <img src={thumbnail} alt="" onError={thumbnailFailed} className="size-full object-cover" /> : shot.thumbnailStatus === "pending" && !unavailable ? (
+                {thumbnail && !failedImage ? <img src={thumbnail} alt="" onError={thumbnailFailed} className="size-full bg-black object-contain" /> : shot.thumbnailStatus === "pending" && !unavailable ? (
                     <span aria-hidden="true" className="absolute inset-0 bg-white/4 motion-safe:animate-pulse" />
                 ) : null}
                 {unavailable && <span className="pointer-events-none absolute inset-0 bg-red-950/30">
@@ -54,7 +54,7 @@ function ShotCard({ shot, source, selected = false, onInspect }: { shot: VideoSh
             <span className="mt-2 block truncate text-[13px] text-zinc-200">{shot.filename}</span>
             <span className="mt-0.5 flex items-baseline justify-between gap-2 text-xs text-zinc-500">
                 <span className="min-w-0 truncate">{deviceLabel(shot.metadata.device) ?? "Video"}</span>
-                <span className="shrink-0 text-right" title="Duration">{durationRow(shot.durationSeconds, shot.metadata).value}</span>
+                <span className="shrink-0 text-right" title="Duration">{cardDuration(shot.durationSeconds)}</span>
             </span>
             {unavailable && <span className="mt-1 block text-xs font-medium text-red-300">source is unavailable</span>}
             {!unavailable && shot.warnings.length > 0 && <span className="mt-1 block text-xs text-amber-300">Metadata incomplete</span>}

@@ -27,6 +27,14 @@ export function primaryMetadataRows(metadata: VideoMetadata) {
     ];
 }
 
+export function cardDuration(seconds: number | null): string {
+    if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return "Unknown";
+    const total = Math.floor(seconds);
+    const parts = [Math.floor(total / 60) % 60, total % 60];
+    if (total >= 3600) parts.unshift(Math.floor(total / 3600));
+    return parts.map((value) => String(value).padStart(2, "0")).join(":");
+}
+
 export function durationRow(seconds: number | null, metadata: VideoMetadata) {
     if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return { label: "Duration", value: "Unknown", detail: "" };
     const fps = metadata.frameRate.nominal ?? metadata.frameRate.average;
