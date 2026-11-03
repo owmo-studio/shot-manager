@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ImportSource } from "../../shared/desktop";
 import type { ShotDetails, VideoShot } from "../../shared/shots";
 import { emptyVideoMetadata } from "../../shared/shots";
+import { viewingProfile } from "../../shared/viewing";
 import { durationRow, primaryMetadataRows, sourceFilePath } from "./mediaInfo";
 import { ResizableInspector } from "./ResizableInspector";
 import { PreviewPlayer } from "./PreviewPlayer";
@@ -143,13 +144,13 @@ export function ClipInspector({
                         </p>
                     </div>
                     <div className="flex shrink-0 items-center gap-4">
-                        <button type="button" aria-label="Toggle viewing LUT" aria-pressed={lutEnabled}
+                        {viewingProfile(shot.metadata) && <button type="button" aria-label="Toggle viewing LUT" aria-pressed={lutEnabled}
                             disabled={empty || unavailable || pausedForScan}
                             title={lutEnabled ? "LUT on — view in Rec.709" : "LUT off — view original"}
                             onClick={() => setLutEnabled((enabled) => !enabled)}
                             className={"flex h-7 items-center gap-1.5 rounded-md border border-white/10 bg-black/30 px-2 text-[10px] font-medium transition duration-75 hover:bg-white/8 disabled:opacity-40 " + (lutEnabled ? "text-zinc-200" : "text-zinc-500")}>
                             <span aria-hidden="true" className={"size-1.5 rounded-full " + (lutEnabled ? "bg-green-400" : "bg-zinc-600")} />LUT
-                        </button>
+                        </button>}
                         <button
                             type="button"
                             onClick={() => void setThumbnail()}
