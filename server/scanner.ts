@@ -97,7 +97,7 @@ export class ShotScanner {
                 const root = await stat(source.path);
                 job.rootIdentity = `${root.dev}:${root.ino}:${root.birthtimeMs}`;
                 await discoverShots(source, job.controller.signal, async (shot) => {
-                    const custom = await this.thumbnailQueue?.customImage(shot.original, job.rootIdentity ?? "");
+                    const custom = await this.thumbnailQueue?.customImage(shot.original, job.rootIdentity ?? "", shot.shot.metadata);
                     job.controller.signal.throwIfAborted();
                     shot.shot.hasCustomThumbnail = !!custom;
                     if (custom) shot.shot.hasThumbnail = true;
@@ -254,7 +254,7 @@ export class ShotScanner {
                 };
                 const original = await resolveAsset(result.original);
                 if (original && this.thumbnailQueue) {
-                    const custom = await this.thumbnailQueue.customImage(original, job.rootIdentity ?? "");
+                    const custom = await this.thumbnailQueue.customImage(original, job.rootIdentity ?? "", result.shot.metadata);
                     if (custom && await valid()) return custom;
                 }
                 const generated = this.generatedImages.get(id);
@@ -280,7 +280,7 @@ export class ShotScanner {
                         result.shot.hasThumbnail = true;
                     }
                     this.publishProgress();
-                });
+                }, result.shot.metadata);
                 return null;
             } catch { return null; }
         }
@@ -300,7 +300,7 @@ export class ShotScanner {
                     return current.job === asset.job && current.path === asset.path && !this.isReconciling(asset.job);
                 } catch { return false; }
             };
-            await this.thumbnailQueue.setCustomImage(asset.path, asset.job.rootIdentity ?? "", dataUrl, valid);
+            await this.thumbnailQueue.setCustomImage(asset.path, asset.job.rootIdentity ?? "", dataUrl, valid, asset.result.shot.metadata);
             if (!await valid()) throw new Error("Source changed while updating the thumbnail.");
             this.generatedImages.delete(id);
             asset.result.shot.hasCustomThumbnail = true;

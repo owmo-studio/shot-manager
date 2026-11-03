@@ -4,6 +4,8 @@ import type { ShotCollection } from '../shared/shots'
 import { SourceRegistry } from './sources'
 import { pruneThumbnailCache } from './thumbnails'
 import { sendVideo } from './media'
+import { viewingProfile } from '../shared/viewing'
+import { loadViewingLut } from './viewing'
 
 export function createServer(token: string, onShotsChanged?: (collection: ShotCollection) => void, thumbnailCacheDirectory?: string) {
   const server = Fastify({ logger: true })
@@ -37,6 +39,11 @@ export function createServer(token: string, onShotsChanged?: (collection: ShotCo
   server.get('/api/sources', () => sources.list())
   server.post<{ Params: { id: string } }>('/api/sources/:id/refresh', (request) => sources.refresh(request.params.id))
   server.get('/api/shots', () => sources.scanner.snapshot())
+  server.get<{ Params: { id: string } }>('/api/shots/:id/lut', async (request) => {
+    const details = await sources.scanner.details(request.params.id)
+    const profile = viewingProfile(details.metadata)
+    return profile ? loadViewingLut(profile) : null
+  })
   server.get<{ Params: { id: string } }>('/api/shots/:id/details', (request) => sources.scanner.details(request.params.id))
   server.get<{ Params: { id: string } }>('/api/shots/:id/media/original', {
     schema: { params: { type: 'object', required: ['id'], properties: {

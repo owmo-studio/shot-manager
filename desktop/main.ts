@@ -42,7 +42,7 @@ function requireMainWindow(event: IpcMainInvokeEvent): BrowserWindow {
 function startBackend() {
   backend = utilityProcess.fork(join(__dirname, 'backend.cjs'), [], {
     serviceName: 'Shot Manager Backend',
-    env: { ...process.env, SHOT_MANAGER_TOKEN: token, SHOT_MANAGER_THUMBNAIL_CACHE: join(app.getPath('userData'), 'cache', 'thumbnails') }
+    env: { ...process.env, SHOT_MANAGER_TOKEN: token, SHOT_MANAGER_THUMBNAIL_CACHE: join(app.getPath('userData'), 'cache', 'thumbnails'), SHOT_MANAGER_LUT_DIRECTORY: join(app.getAppPath(), 'resources', 'luts') }
   })
   backend.on('message', (message: unknown) => {
     if (typeof message === 'object' && message !== null && 'type' in message &&
@@ -120,6 +120,11 @@ if (!app.requestSingleInstanceLock()) {
         responseHeaders.set('Access-Control-Allow-Origin', '*')
         return new Response(response.body, { status: response.status, headers: responseHeaders })
       } catch { return new Response(null, { status: 503 }) }
+    })
+    ipcMain.handle('shots:lut', async (event, id: unknown) => {
+      requireMainWindow(event)
+      if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid shot ID')
+      return backendRequest(`/api/shots/${id}/lut`)
     })
     ipcMain.handle('shots:details', async (event, id: unknown) => {
       requireMainWindow(event)

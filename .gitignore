@@ -31,6 +31,8 @@ node_modules/
 !.env.*.example
 /local-data/
 /tmp/
+/resources/luts/*.cube
+/resources/luts/*.sha256
 
 # Editor temporary files
 .idea/

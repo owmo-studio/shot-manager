@@ -16,7 +16,8 @@ const desktop: DesktopAPI = {
   },
   getShotThumbnail: (id) => ipcRenderer.invoke('shots:thumbnail', id),
   setShotThumbnail: (id, dataUrl) => ipcRenderer.invoke('shots:set-thumbnail', id, dataUrl),
-  getShotDetails: (id) => ipcRenderer.invoke('shots:details', id)
+  getShotDetails: (id) => ipcRenderer.invoke('shots:details', id),
+  getShotLut: (id) => ipcRenderer.invoke('shots:lut', id)
 }
 
 contextBridge.exposeInMainWorld('desktop', desktop)

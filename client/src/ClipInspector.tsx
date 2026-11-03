@@ -4,6 +4,8 @@ import type { ShotDetails, VideoShot } from "../../shared/shots";
 import { emptyVideoMetadata } from "../../shared/shots";
 import { durationRow, primaryMetadataRows, sourceFilePath } from "./mediaInfo";
 import { ResizableInspector } from "./ResizableInspector";
+import { PreviewPlayer } from "./PreviewPlayer";
+import type { PreviewHandle } from "./PreviewPlayer";
 import { sourcePresentation } from "./SourceListItem";
 
 function bytesLabel(bytes: number) {
@@ -51,12 +53,14 @@ export function ClipInspector({
     const [tab, setTab] = useState<"metadata" | "file">("metadata");
     const [details, setDetails] = useState<ShotDetails | null>(null);
     const [detailsError, setDetailsError] = useState<string | null>(null);
-    const [playbackMessage, setPlaybackMessage] = useState<string | null>(null);
+    const [lutEnabled, setLutEnabled] = useState(true);
     const [thumbnailBusy, setThumbnailBusy] = useState(false);
     const [thumbnailError, setThumbnailError] = useState<string | null>(null);
     const [frameReady, setFrameReady] = useState(false);
+    const [thumbnailReady, setThumbnailReady] = useState(false);
+    const [scrubbing, setScrubbing] = useState(false);
     const [copyStatus, setCopyStatus] = useState<"idle" | "copying" | "copied" | "failed">("idle");
-    const video = useRef<HTMLVideoElement>(null);
+    const preview = useRef<PreviewHandle>(null);
     const unavailable = !shot.available || !source?.available;
     const pausedForScan = !unavailable && !shot.editable;
     const rawMetadata =
@@ -69,23 +73,25 @@ export function ClipInspector({
         setThumbnailBusy(true);
         setThumbnailError(null);
         try {
-            const player = video.current;
-            if (!player || player.readyState < 2 || player.seeking || !player.videoWidth)
-                throw new Error("Wait for a preview frame to load.");
-            const canvas = document.createElement("canvas");
-            const scale = Math.min(1, 480 / player.videoWidth, 270 / player.videoHeight);
-            canvas.width = Math.max(1, Math.round(player.videoWidth * scale));
-            canvas.height = Math.max(1, Math.round(player.videoHeight * scale));
-            const context = canvas.getContext("2d");
-            if (!context) throw new Error("Frame capture is unavailable.");
-            context.drawImage(player, 0, 0, canvas.width, canvas.height);
-            await window.desktop.setShotThumbnail(shot.id, canvas.toDataURL("image/jpeg", 0.9));
+            if (!preview.current) throw new Error("Wait for a preview frame.");
+            await window.desktop.setShotThumbnail(shot.id, preview.current.captureThumbnail());
         } catch {
             setThumbnailError("Thumbnail could not be updated. Check the preview and try again.");
         } finally {
             setThumbnailBusy(false);
         }
     }
+
+    useEffect(() => { setLutEnabled(true); setFrameReady(false); setThumbnailError(null); }, [shot.id]);
+
+    useEffect(() => {
+        if (!frameReady || scrubbing) {
+            setThumbnailReady(false);
+            return;
+        }
+        const timeout = window.setTimeout(() => setThumbnailReady(true), 300);
+        return () => window.clearTimeout(timeout);
+    }, [frameReady, shot.id, scrubbing]);
 
     useEffect(() => {
         if (copyStatus !== "copied" && copyStatus !== "failed") return;
@@ -136,29 +142,39 @@ export function ClipInspector({
                             {empty ? "" : source ? sourcePresentation(source).name : "Source"}
                         </p>
                     </div>
-                    <button
-                        type="button"
-                        onClick={() => void setThumbnail()}
-                        disabled={thumbnailBusy || unavailable || pausedForScan || !frameReady}
-                        aria-label="Set current frame as thumbnail"
-                        title="Set current frame as thumbnail"
-                        className="grid size-7 shrink-0 place-items-center rounded-md text-zinc-500 transition duration-75 hover:bg-white/8 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40"
-                    >
-                        <svg
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            aria-hidden="true"
-                            className="size-4"
+                    <div className="flex shrink-0 items-center gap-4">
+                        <button type="button" aria-label="Toggle viewing LUT" aria-pressed={lutEnabled}
+                            disabled={empty || unavailable || pausedForScan}
+                            title={lutEnabled ? "LUT on — view in Rec.709" : "LUT off — view original"}
+                            onClick={() => setLutEnabled((enabled) => !enabled)}
+                            className={"flex h-7 items-center gap-1.5 rounded-md border border-white/10 bg-black/30 px-2 text-[10px] font-medium transition duration-75 hover:bg-white/8 disabled:opacity-40 " + (lutEnabled ? "text-zinc-200" : "text-zinc-500")}>
+                            <span aria-hidden="true" className={"size-1.5 rounded-full " + (lutEnabled ? "bg-green-400" : "bg-zinc-600")} />LUT
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => void setThumbnail()}
+                            disabled={thumbnailBusy || unavailable || pausedForScan || scrubbing || !frameReady || !thumbnailReady}
+                            aria-label="Set current frame as thumbnail"
+                            title="Set current frame as thumbnail"
+                            className="flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-white/15 bg-white/8 px-2 text-[10px] font-medium text-zinc-200 transition duration-75 hover:border-white/25 hover:bg-white/15 hover:text-white focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40"
                         >
-                            <rect x="3" y="3" width="18" height="18" rx="2" />
-                            <circle cx="8" cy="8" r="1.5" />
-                            <path d="m21 15-5-5L5 21" />
-                        </svg>
-                    </button>
+                            <svg
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.5"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                                className="size-4"
+                            >
+                                <rect x="3" y="3" width="18" height="18" rx="2" />
+                                <circle cx="8" cy="8" r="1.5" />
+                                <path d="m21 15-5-5L5 21" />
+                            </svg>
+                            <span>{thumbnailBusy ? "Saving…" : "Set thumbnail"}</span>
+                        </button>
+                    </div>
                 </header>
                 {thumbnailError && (
                     <p role="alert" className="mb-3 text-xs text-amber-300">
@@ -181,40 +197,9 @@ export function ClipInspector({
                                 : "Preview paused while this source is queued for rescanning or being rescanned."}
                         </div>
                     ) : (
-                        <video
-                            ref={video}
-                            crossOrigin="anonymous"
-                            src={"shot-media://local/shots/" + shot.id + "/original"}
-                            controls
-                            controlsList="nodownload noplaybackrate noremoteplayback"
-                            disablePictureInPicture
-                            disableRemotePlayback
-                            playsInline
-                            preload="metadata"
-                            aria-label={"Preview " + shot.filename}
-                            className="block aspect-video w-full object-contain"
-                            onError={() => {
-                                setFrameReady(false);
-                                setPlaybackMessage(
-                                    "This video cannot be played here. Its codec may be unsupported, or the file may be unavailable.",
-                                );
-                            }}
-                            onLoadStart={() => {
-                                setFrameReady(false);
-                                setPlaybackMessage(null);
-                            }}
-                            onLoadedData={() => setFrameReady(true)}
-                            onSeeking={() => setFrameReady(false)}
-                            onSeeked={() => setFrameReady(true)}
-                            onEmptied={() => setFrameReady(false)}
-                        />
+                        <PreviewPlayer key={shot.id} ref={preview} shot={shot} lutEnabled={lutEnabled} onReady={setFrameReady} onScrubbing={setScrubbing} />
                     )}
                 </div>
-                {playbackMessage && (
-                    <p role="status" className="mt-3 text-xs leading-5 text-amber-300">
-                        {playbackMessage}
-                    </p>
-                )}
                 <div role="tablist" aria-label="Clip information" className="mt-5 flex rounded-lg bg-white/4 p-1">
                     {(["metadata", "file"] as const).map((choice) => (
                         <button

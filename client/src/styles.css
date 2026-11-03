@@ -45,6 +45,17 @@ body {
   background: transparent;
 }
 
+.preview-player:fullscreen {
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-player:fullscreen .preview-image {
+  flex: 1;
+  min-height: 0;
+  aspect-ratio: auto;
+}
+
 #clip-inspector video::-internal-media-controls-overflow-button {
   display: none;
 }

@@ -1,4 +1,5 @@
 import type { ShotCollection, ShotDetails } from './shots'
+import type { ViewingLut } from './viewing'
 
 export interface BackendHealth {
   status: 'ok'
@@ -32,4 +33,5 @@ export interface DesktopAPI {
   getShotThumbnail: (id: string) => Promise<string | null>
   setShotThumbnail: (id: string, dataUrl: string) => Promise<void>
   getShotDetails: (id: string) => Promise<ShotDetails>
+  getShotLut: (id: string) => Promise<ViewingLut | null>
 }

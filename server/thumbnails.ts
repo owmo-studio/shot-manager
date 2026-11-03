@@ -5,6 +5,9 @@ import { lstat, mkdir, readdir, realpath, rename, stat, unlink, writeFile } from
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { readSmallFile } from "./discovery";
+import type { VideoMetadata } from "../shared/shots";
+import { viewingProfile } from "../shared/viewing";
+import { loadViewingLut, viewingLutPath } from "./viewing";
 
 const execute = promisify(execFile);
 const maximumImageBytes = 2 * 1024 * 1024;
@@ -54,22 +57,24 @@ export class ThumbnailQueue {
         this.cacheDirectory = cacheDirectory;
     }
 
-    private async customPath(input: string, sourceIdentity: string) {
+    private async customPath(input: string, sourceIdentity: string, metadata?: VideoMetadata) {
         const info = await stat(input);
         if (!info.isFile()) throw new Error("Original video is unavailable.");
-        const key = createHash("sha256").update(`custom-preview-v1:${sourceIdentity}:${input}:${fileIdentity(info)}`).digest("hex");
+        const profile = metadata ? viewingProfile(metadata) : null;
+        const transform = profile ? (await loadViewingLut(profile)).fingerprint : "passthrough";
+        const key = createHash("sha256").update(`custom-preview-rec709-v2:${transform}:${sourceIdentity}:${input}:${fileIdentity(info)}`).digest("hex");
         return join(this.cacheDirectory, `${key}.jpg`);
     }
 
-    async customImage(input: string, sourceIdentity: string): Promise<string | null> {
+    async customImage(input: string, sourceIdentity: string, metadata?: VideoMetadata): Promise<string | null> {
         try {
-            const bytes = await readSmallFile(await this.customPath(input, sourceIdentity), maximumImageBytes);
+            const bytes = await readSmallFile(await this.customPath(input, sourceIdentity, metadata), maximumImageBytes);
             return isJpeg(bytes) ? `data:image/jpeg;base64,${bytes.toString("base64")}` : null;
         } catch { return null; }
     }
 
-    async setCustomImage(input: string, sourceIdentity: string, dataUrl: string, validate: () => Promise<boolean>) {
-        const path = await this.customPath(input, sourceIdentity);
+    async setCustomImage(input: string, sourceIdentity: string, dataUrl: string, validate: () => Promise<boolean>, metadata?: VideoMetadata) {
+        const path = await this.customPath(input, sourceIdentity, metadata);
         if (!await validate()) throw new Error("Source changed while updating the thumbnail.");
         const match = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl);
         const bytes = match ? Buffer.from(match[1], "base64") : Buffer.alloc(0);
@@ -78,12 +83,12 @@ export class ThumbnailQueue {
         const temporaryPath = path.replace(/\.jpg$/, `.${randomUUID()}.tmp`);
         try {
             await writeFile(temporaryPath, bytes, { mode: 0o600, flush: true });
-            if (!await validate() || await this.customPath(input, sourceIdentity) !== path) throw new Error("Source changed while saving the thumbnail.");
+            if (!await validate() || await this.customPath(input, sourceIdentity, metadata) !== path) throw new Error("Source changed while saving the thumbnail.");
             await rename(temporaryPath, path);
         } finally { await unlink(temporaryPath).catch(() => undefined); }
     }
 
-    enqueue(inputs: string[], sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>, completed: (image: string | null) => void) {
+    enqueue(inputs: string[], sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>, completed: (image: string | null) => void, metadata?: VideoMetadata) {
         const combinedSignal = AbortSignal.any([signal, this.shutdown.signal]);
         this.pending = this.pending.then(async () => {
             let image: string | null = null;
@@ -92,7 +97,7 @@ export class ThumbnailQueue {
                     combinedSignal.throwIfAborted();
                     if (!await validate()) break;
                     try {
-                        image = await this.extract(input, sourceIdentity, combinedSignal, validate);
+                        image = await this.extract(input, sourceIdentity, combinedSignal, validate, metadata);
                         if (image) break;
                     } catch {
                         combinedSignal.throwIfAborted();
@@ -105,22 +110,34 @@ export class ThumbnailQueue {
         }).catch(() => undefined);
     }
 
-    private async extract(input: string, sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>): Promise<string | null> {
+    private async extract(input: string, sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>, metadata?: VideoMetadata): Promise<string | null> {
         if (await realpath(input) !== input) return null;
         const before = await stat(input);
         if (!before.isFile()) return null;
         const identity = fileIdentity(before);
-        const key = createHash("sha256").update(`first-frame-v1:480x270:${sourceIdentity}:${input}:${identity}`).digest("hex");
+        const profile = metadata ? viewingProfile(metadata) : null;
+        const transform = profile ? (await loadViewingLut(profile)).fingerprint : "passthrough";
+        const key = createHash("sha256").update(`first-frame-rec709-v2:${transform}:480x270:${sourceIdentity}:${input}:${identity}`).digest("hex");
         const cachedPath = join(this.cacheDirectory, `${key}.jpg`);
         try {
             const cached = await readSmallFile(cachedPath, maximumImageBytes);
             if (isJpeg(cached) && await validate()) return `data:image/jpeg;base64,${cached.toString("base64")}`;
         } catch {}
 
+        // Escape filter-language characters; execFile still receives an argument array.
+        const lutPath = profile ? viewingLutPath(profile).replace(/[\\':,;\[\]]/g, "\\$&") : null;
+        const matrix = metadata?.color.matrix === "bt2020nc" ? "bt2020" : "bt709";
+        const range = metadata?.color.range === "pc" ? "full" : metadata?.color.range === "tv" ? "limited" : "auto";
+        const filters = lutPath ? [
+            `scale=iw:ih:in_color_matrix=${matrix}:in_range=${range}:out_range=full`,
+            "format=gbrpf32le", `lut3d=file='${lutPath}':interp=trilinear`,
+            "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=full",
+        ] : [];
+        filters.push("scale=480:270:force_original_aspect_ratio=decrease:force_divisible_by=2");
         const { stdout } = await execute("ffmpeg", [
             "-nostdin", "-hide_banner", "-loglevel", "error", "-protocol_whitelist", "file", "-i", input,
             "-map", "0:v:0", "-frames:v", "1", "-an", "-sn", "-filter_threads", "1",
-            "-vf", "scale=480:270:force_original_aspect_ratio=decrease:force_divisible_by=2",
+            "-vf", filters.join(","),
             "-threads", "1", "-q:v", "4", "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1",
         ], { encoding: "buffer", timeout: 12000, killSignal: "SIGKILL", maxBuffer: maximumImageBytes, signal });
         signal.throwIfAborted();
