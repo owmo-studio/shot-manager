@@ -7,9 +7,9 @@ import { sendVideo } from './media'
 import { viewingProfile } from '../shared/viewing'
 import { loadViewingLut } from './viewing'
 
-export function createServer(token: string, onShotsChanged?: (collection: ShotCollection) => void, thumbnailCacheDirectory?: string) {
+export function createServer(token: string, onShotsChanged?: (collection: ShotCollection) => void, thumbnailCacheDirectory?: string, fingerprintDirectory?: string) {
   const server = Fastify({ logger: true })
-  const sources = new SourceRegistry(thumbnailCacheDirectory)
+  const sources = new SourceRegistry(thumbnailCacheDirectory, fingerprintDirectory)
   sources.scanner.onChange = onShotsChanged
 
   if (thumbnailCacheDirectory) {
@@ -37,6 +37,14 @@ export function createServer(token: string, onShotsChanged?: (collection: ShotCo
   }))
 
   server.get('/api/sources', () => sources.list())
+  server.post<{ Params: { id: string }; Body: { path: string } }>('/api/sources/:id/relink', {
+    schema: {
+      params: { type: 'object', required: ['id'], additionalProperties: false, properties: { id: { type: 'string', pattern: '^[a-zA-Z0-9-]+$' } } },
+      body: { type: 'object', required: ['path'], additionalProperties: false, properties: { path: { type: 'string', minLength: 1 } } }
+    }
+  }, (request) => sources.relink(request.params.id, request.body.path))
+  server.get('/api/cache', () => sources.scanner.cacheSummary())
+  server.delete('/api/cache', () => sources.scanner.clearCache())
   server.post<{ Params: { id: string } }>('/api/sources/:id/refresh', (request) => sources.refresh(request.params.id))
   server.get('/api/shots', () => sources.scanner.snapshot())
   server.get<{ Params: { id: string } }>('/api/shots/:id/lut', async (request) => {

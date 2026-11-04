@@ -34,12 +34,32 @@ if (!process.versions.electron) {
             })) };
             ipcMain.handle('fixture:sources', () => sources);
             ipcMain.handle('fixture:shots', () => collection);
+            let cancelRelink = true;
+            let relinkCalls = 0;
+            ipcMain.handle('fixture:relink', (_, id) => {
+                relinkCalls += 1;
+                if (cancelRelink) return null;
+                sources = sources.map(source => source.id === id ? { ...source, path: '/synthetic/relinked', available: true } : source);
+                collection = { ...collection, revision: collection.revision + 1,
+                    scans: collection.scans.map(scan => scan.sourceId === id ? { ...scan, state: 'queued' } : scan),
+                    shots: collection.shots.map(shot => shot.sourceId === id ? { ...shot, available: true, editable: false } : shot) };
+                return { source: sources.find(source => source.id === id), collection };
+            });
+            let configuration = { version: 1, libraryPath: null };
+            let cache = { bytes: 2048, files: 2 };
+            let cancelLibrary = true;
+            ipcMain.handle('fixture:configuration', () => configuration);
+            ipcMain.handle('fixture:choose-library', () => cancelLibrary ? null : (configuration = { version: 1, libraryPath: '/synthetic/library' }));
+            ipcMain.handle('fixture:cache', () => cache);
+            ipcMain.handle('fixture:clear-cache', () => (cache = { bytes: 0, files: 0 }));
             ipcMain.handle('fixture:remove', (_, id) => { sources = sources.filter((source) => source.id !== id); collection = { ...collection, revision: collection.revision + 1, shots: collection.shots.filter((shot) => shot.sourceId !== id) }; });
             await writeFile(join(root, 'preload.cjs'), `const {contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('desktop',{
+                getConfiguration:()=>ipcRenderer.invoke('fixture:configuration'),chooseLibrary:()=>ipcRenderer.invoke('fixture:choose-library'),
+                getCacheSummary:()=>ipcRenderer.invoke('fixture:cache'),clearCache:()=>ipcRenderer.invoke('fixture:clear-cache'),
                 getBackendStatus:async()=>({state:'connected',health:{status:'ok'}}),getSources:()=>ipcRenderer.invoke('fixture:sources'),getShots:()=>ipcRenderer.invoke('fixture:shots'),
                 onShotsChanged:listener=>{const fn=(_,value)=>listener(value);ipcRenderer.on('shots:changed',fn);return()=>ipcRenderer.removeListener('shots:changed',fn)},
                 getShotThumbnail:async()=>null,getShotDetails:async()=>({file:{filename:'fixture',path:'/synthetic/fixture',bytes:100},embeddedMetadata:[],errors:[]}),
-                removeSource:id=>ipcRenderer.invoke('fixture:remove',id)
+                removeSource:id=>ipcRenderer.invoke('fixture:remove',id),relinkSource:id=>ipcRenderer.invoke('fixture:relink',id)
             });`);
             protocol.handle('shot-media', () => new Response(null, { status: 404 }));
             window = new BrowserWindow({ show: false, width: 1800, height: 1080, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, preload: join(root, 'preload.cjs') } });
@@ -72,6 +92,26 @@ if (!process.versions.electron) {
                 for (let i = 0; i < previous.length; i++) await inspect(previous[i], i ? {metaKey:true} : {});
             }
             const push = async (shots) => { collection = { ...collection, revision: collection.revision + 1, shots }; window.webContents.send('shots:changed', collection); await new Promise((resolve) => setTimeout(resolve, 30)); };
+            await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
+            await wait(`document.querySelector('[aria-label="Library location"]').textContent.includes('library needs to be set')`);
+            await click('Configuration');
+            await wait(`document.querySelector('dialog[open] [aria-label="Cache usage"]').textContent.includes('2.0 KB · 2 files')`);
+            if (process.env.SHOT_MANAGER_CONFIGURATION_SCREENSHOT) {
+                await new Promise(resolve => setTimeout(resolve, 150));
+                await writeFile(process.env.SHOT_MANAGER_CONFIGURATION_SCREENSHOT, (await window.webContents.capturePage()).toPNG());
+            }
+            await js(`Array.from(document.querySelectorAll('dialog button')).find(b=>b.textContent==='Set Library location').click()`);
+            await wait(`!Array.from(document.querySelectorAll('dialog button')).some(b=>b.textContent==='Choosing…')`);
+            assert.equal(configuration.libraryPath, null, 'Cancel preserves configuration');
+            cancelLibrary = false;
+            await js(`Array.from(document.querySelectorAll('dialog button')).find(b=>b.textContent==='Set Library location').click()`);
+            await wait(`document.querySelector('[aria-label="Library location"]').textContent==='/synthetic/library'`);
+            await js(`Array.from(document.querySelectorAll('dialog button')).find(b=>b.textContent==='Clear local cache').click()`);
+            await wait(`document.querySelector('[aria-label="Cache usage"]').textContent.includes('0 B · 0 files')`);
+            await click('Close configuration');
+            await wait(`!document.querySelector('dialog[open]')`);
+            await new Promise(resolve => { window.webContents.once('did-finish-load', resolve); window.webContents.reload(); });
+            await wait(`document.querySelector('[aria-label="Library location"]')?.textContent==='/synthetic/library'`);
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
             assert.equal(await js(`document.querySelector('p[aria-label="Total clips"]').textContent.trim()`), '6 clips total');
             assert.equal(await js(`document.querySelector('button[aria-label="Reverse order"]')`), null);
@@ -183,9 +223,16 @@ if (!process.versions.electron) {
             await arrow('Down'); assert.deepEqual(await selected(), [2]);
             await arrow('Up'); assert.deepEqual(await selected(), [5]);
             await inspect(2, { shiftKey: true }); assert.deepEqual(await selected(), [2, 3, 4, 5]);
-            await inspect(1); await push(collection.shots.map((shot) => shot.filename === 'Clip 1.mp4' ? { ...shot, available: false, editable: false } : shot));
-            assert.equal(await js(`document.querySelector('button[aria-label="Inspect Clip 1.mp4"]').disabled`), true);
-            assert.equal(await js(`document.querySelector('input[aria-label="Skip selected clips"]').disabled`), true); assert.deepEqual(await skipped(), [1]);
+            await inspect(1); await push(collection.shots.map((shot) => shot.filename === 'Clip 1.mp4' ? { ...shot, available: false, editable: true } : shot));
+            assert.equal(await js(`document.querySelector('button[aria-label="Inspect Clip 1.mp4"]').disabled`), false);
+            assert.equal(await js(`document.querySelector('input[aria-label="Skip selected clips"]').disabled`), false); assert.deepEqual(await skipped(), [1]);
+            assert.ok(await js(`Array.from(document.querySelectorAll('#clip-inspector [role="status"]')).some(el=>el.textContent.trim()==='source unavailable')`));
+            assert.equal(await js(`document.querySelector('button[aria-label="Set current frame as thumbnail"]').disabled`), true);
+            await inspect(1); await inspect(1); assert.deepEqual(await selected(), [1]);
+            await click('Skip selected clips'); assert.deepEqual(await skipped(), []);
+            await click('Skip selected clips'); assert.deepEqual(await skipped(), [1]);
+            await arrow('Left'); assert.deepEqual(await selected(), [2]);
+            await arrow('Right'); assert.deepEqual(await selected(), [1]);
             await push(collection.shots.map((shot) => ({ ...shot, available: true, editable: true })));
             await push(collection.shots.map((shot) => shot.filename === 'Clip 1.mp4' ? { ...shot, editable: false } : shot));
             assert.equal(await js(`document.querySelector('button[aria-label="Inspect Clip 1.mp4"]').disabled`), true);
@@ -201,6 +248,30 @@ if (!process.versions.electron) {
             assert.equal(await js(`document.querySelector('p[aria-label="Total clips"]').textContent.trim()`), '3 clips total');
             await wait(`document.querySelector('footer').textContent.includes('0 skipped')`); assert.deepEqual(await selected(), []);
             assert.equal(await js(`Array.from(document.querySelectorAll('footer button')).find(b=>b.textContent==='Review & Ingest').disabled`), true);
+            sources = [...sources, { id: 'C', name: 'Source C', path: '/synthetic/C', type: 'folder', cameraModels: [], available: true }]
+                .map(source => ({ ...source, available: false }));
+            collection = { ...collection, revision: collection.revision + 1, shots: collection.shots.map(shot => ({ ...shot, available: false, editable: true })) };
+            await new Promise(resolve => { window.webContents.once('did-finish-load', resolve); window.webContents.reload(); });
+            await wait(`!!document.querySelector('#source-unavailable-title')`);
+            assert.equal(await js(`document.querySelectorAll('[role="alertdialog"]').length`), 1);
+            assert.deepEqual(await js(`Array.from(document.querySelectorAll('ul[aria-label="Unavailable sources"] li')).map(row=>row.querySelector('p').textContent)`), ['Source B', 'Source C']);
+            await js(`Array.from(document.querySelectorAll('dialog button')).find(b=>b.textContent==='Dismiss').click()`);
+            await wait(`!document.querySelector('[role="alertdialog"]')`);
+            assert.equal(await js(`document.querySelector('button[aria-label="Re-link Source B"]').disabled`), false);
+            assert.equal(await js(`document.querySelector('button[aria-label="Refresh Source B"]')`), null);
+            await click('Re-link Source B');
+            await wait(`!document.querySelector('button[aria-label="Re-link Source B"]').disabled`);
+            assert.equal(relinkCalls, 1);
+            assert.equal(sources[0].available, false, 'Cancelled picker retains unavailable source');
+            cancelRelink = false;
+            await click('Re-link Source B');
+            await wait(`!!document.querySelector('button[aria-label="Refresh Source B"]')`);
+            assert.equal(relinkCalls, 2);
+            assert.equal(await js(`document.querySelectorAll('[data-shot-card]').length`), 3);
+            assert.equal(await js(`document.querySelector('button[aria-label="Inspect Clip 4.mp4"]').disabled`), true, 'Relink immediately queues a rescan');
+            collection = { ...collection, scans: collection.scans.map(scan => ({ ...scan, state: 'complete' })) };
+            await push(collection.shots.map(shot => ({ ...shot, editable: true })));
+            await wait(`!document.querySelector('button[aria-label="Inspect Clip 4.mp4"]').disabled`);
             console.log('PASS: four-arrow navigation, responsive Up/Down rows and partial rows, date/filter/sort boundaries, locked-clip skipping, multi-selection, input guards, editing/skip selections, bulk skip, background deselection, blocked Tab, Escape, removals, and disabled processing.');
             window.destroy(); await rm(root, { recursive: true, force: true }); clearTimeout(timer); app.exit(0);
         } catch (error) {

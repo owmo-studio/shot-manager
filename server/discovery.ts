@@ -8,6 +8,7 @@ import type { EmbeddedMetadata, VideoShot } from "../shared/shots";
 import { findSonyLayout } from "./sony";
 import { readEmbeddedContainer } from "./embedded";
 import { normalizeVideoMetadata, sonyMetadata } from "./videoMetadata";
+import type { FingerprintMetadata } from "./fingerprints";
 
 const execute = promisify(execFile);
 const videoExtensions = new Set([".mp4", ".mov", ".mxf", ".m4v", ".mts", ".m2ts", ".avi", ".mkv", ".webm"]);
@@ -18,6 +19,7 @@ export interface DiscoveredShot {
     mediaInfo?: Record<string, unknown>;
     embeddedMetadata: EmbeddedMetadata[];
     fileIdentity: string;
+    fingerprintMetadata?: FingerprintMetadata;
 }
 
 export async function readSmallFile(path: string, limit: number): Promise<Buffer> {

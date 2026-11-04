@@ -6,6 +6,7 @@ import type { ShotCollection, ShotDetails, SourceScan } from "../shared/shots";
 import { discoverShots } from "./discovery";
 import type { DiscoveredShot } from "./discovery";
 import { ThumbnailQueue } from "./thumbnails";
+import { commonFingerprintMetadata, VideoFingerprintStore } from "./fingerprints";
 
 interface ScanJob {
     source: ImportSource;
@@ -23,11 +24,39 @@ export class ShotScanner {
     private progressTimer?: ReturnType<typeof setTimeout>;
     onChange?: (collection: ShotCollection) => void;
     private thumbnailQueue?: ThumbnailQueue;
+    private fingerprints: VideoFingerprintStore;
     private generatedImages = new Map<string, string>();
     private updatingThumbnails = new Set<string>();
+    private clearingCache = false;
 
-    constructor(thumbnailCacheDirectory?: string) {
-        if (thumbnailCacheDirectory) this.thumbnailQueue = new ThumbnailQueue(thumbnailCacheDirectory);
+    async cacheSummary() {
+        return this.thumbnailQueue?.cacheSummary() ?? { bytes: 0, files: 0 };
+    }
+
+    async clearCache() {
+        if (this.clearingCache || this.updatingThumbnails.size) {
+            throw Object.assign(new Error("A thumbnail update is in progress. Try again shortly."), { statusCode: 409 });
+        }
+        this.clearingCache = true;
+        try {
+            await this.thumbnailQueue?.clearCache();
+            return await this.cacheSummary();
+        } finally {
+            this.generatedImages.clear();
+            for (const job of this.jobs.values()) for (const { shot } of job.shots) {
+                shot.hasThumbnail = false;
+                shot.hasCustomThumbnail = false;
+                shot.thumbnailStatus = undefined;
+                shot.thumbnailRevision = (shot.thumbnailRevision ?? 0) + 1;
+            }
+            this.clearingCache = false;
+            this.publish();
+        }
+    }
+
+    constructor(thumbnailCacheDirectory?: string, fingerprintDirectory?: string) {
+        this.fingerprints = new VideoFingerprintStore(fingerprintDirectory);
+        if (thumbnailCacheDirectory) this.thumbnailQueue = new ThumbnailQueue(thumbnailCacheDirectory, this.fingerprints);
     }
 
     private publish() {
@@ -97,10 +126,28 @@ export class ShotScanner {
                 const root = await stat(source.path);
                 job.rootIdentity = `${root.dev}:${root.ino}:${root.birthtimeMs}`;
                 await discoverShots(source, job.controller.signal, async (shot) => {
-                    const custom = await this.thumbnailQueue?.customImage(shot.original, job.rootIdentity ?? "", shot.shot.metadata);
+                    const streams = shot.mediaInfo?.streams as { codec_type?: string; nb_frames?: string }[] | undefined;
+                    shot.fingerprintMetadata = commonFingerprintMetadata(shot.shot.metadata, {
+                        recordingDate: shot.shot.dateSource === "file-modified" ? null : shot.shot.timestamp,
+                        durationSeconds: shot.shot.durationSeconds,
+                        frameCount: Array.isArray(streams) ? streams.find((stream) => stream.codec_type === "video")?.nb_frames : null,
+                    });
+                    try {
+                        shot.shot.fingerprint = await this.fingerprints.identify(shot.original, shot.fingerprintMetadata, job.controller.signal);
+                        const current = await stat(shot.original);
+                        if ([current.dev, current.ino, current.birthtimeMs, current.size, current.mtimeMs].join(":") !== shot.fileIdentity) {
+                            throw new Error("Video changed after metadata discovery.");
+                        }
+                    } catch {
+                        job.controller.signal.throwIfAborted();
+                        shot.shot.fingerprint = undefined;
+                        shot.shot.warnings.push("Video fingerprint unavailable. Refresh this source to retry.");
+                    }
+                    const old = previous?.shots.find((result) => result.shot.id === shot.shot.id);
+                    if (old?.fileIdentity === shot.fileIdentity) {
+                        this.thumbnailQueue?.rememberLegacyLocation(old.fileIdentity, old.original, previous?.rootIdentity ?? "");
+                    }
                     job.controller.signal.throwIfAborted();
-                    shot.shot.hasCustomThumbnail = !!custom;
-                    if (custom) shot.shot.hasThumbnail = true;
                     discovered.push(shot);
                     if (!previous) job.shots.push(shot);
                     job.status.clipCount = discovered.length;
@@ -170,7 +217,7 @@ export class ShotScanner {
             shots: [...this.jobs.values()].flatMap((job) => job.shots.map((result) => ({
                 ...result.shot,
                 available: job.source.available,
-                editable: job.source.available && !this.isReconciling(job),
+                editable: !this.isReconciling(job),
             }))).sort((first, second) =>
                 first.timestamp.slice(0, 10).localeCompare(second.timestamp.slice(0, 10)) ||
                 Date.parse(first.timestamp) - Date.parse(second.timestamp) || first.id.localeCompare(second.id)),
@@ -219,12 +266,13 @@ export class ShotScanner {
     }
 
     async details(id: string): Promise<ShotDetails> {
-        const { result } = this.findShot(id);
+        const { job, result } = this.findShot(id);
         const details: ShotDetails = {
             file: { filename: result.shot.filename, path: result.original, bytes: result.shot.bytes },
-            metadata: result.shot.metadata, embeddedMetadata: result.embeddedMetadata,
+            metadata: result.shot.metadata, fingerprint: result.shot.fingerprint, embeddedMetadata: result.embeddedMetadata,
             mediaInfo: result.mediaInfo ?? null, errors: [],
         };
+        if (!job.source.available) return details;
         try {
             const asset = await this.videoPath(id);
             details.file.bytes = (await stat(asset.path)).size;
@@ -234,12 +282,14 @@ export class ShotScanner {
     }
 
     async thumbnail(id: string): Promise<string | null> {
+        if (this.clearingCache) return null;
         for (const job of this.jobs.values()) {
             if (!job.source.available) continue;
             const result = job.shots.find((item) => item.shot.id === id);
             if (!result) continue;
             try {
                 const valid = async () => {
+                    if (this.clearingCache) return false;
                     if (this.jobs.get(job.source.id) !== job || !job.source.available || job.controller.signal.aborted) return false;
                     try {
                         const info = await stat(job.source.path);
@@ -253,10 +303,6 @@ export class ShotScanner {
                     return !withinRoot.startsWith("..") && !isAbsolute(withinRoot) ? path : null;
                 };
                 const original = await resolveAsset(result.original);
-                if (original && this.thumbnailQueue) {
-                    const custom = await this.thumbnailQueue.customImage(original, job.rootIdentity ?? "", result.shot.metadata);
-                    if (custom && await valid()) return custom;
-                }
                 const generated = this.generatedImages.get(id);
                 if (generated) return generated;
                 if (!this.thumbnailQueue) return null;
@@ -280,7 +326,7 @@ export class ShotScanner {
                         result.shot.hasThumbnail = true;
                     }
                     this.publishProgress();
-                }, result.shot.metadata);
+                }, result.shot.metadata, result.fingerprintMetadata);
                 return null;
             } catch { return null; }
         }
@@ -288,6 +334,7 @@ export class ShotScanner {
     }
 
     async setThumbnail(id: string, dataUrl: string) {
+        if (this.clearingCache) throw Object.assign(new Error("Cache clearing is in progress."), { statusCode: 409 });
         if (this.updatingThumbnails.has(id)) throw Object.assign(new Error("Thumbnail update is already in progress."), { statusCode: 409 });
         this.updatingThumbnails.add(id);
         try {
@@ -300,7 +347,7 @@ export class ShotScanner {
                     return current.job === asset.job && current.path === asset.path && !this.isReconciling(asset.job);
                 } catch { return false; }
             };
-            await this.thumbnailQueue.setCustomImage(asset.path, asset.job.rootIdentity ?? "", dataUrl, valid, asset.result.shot.metadata);
+            await this.thumbnailQueue.setCustomImage(asset.path, asset.job.rootIdentity ?? "", dataUrl, valid, asset.result.shot.metadata, asset.result.fingerprintMetadata);
             if (!await valid()) throw new Error("Source changed while updating the thumbnail.");
             this.generatedImages.delete(id);
             asset.result.shot.hasCustomThumbnail = true;

@@ -51,8 +51,8 @@ export async function inspectSource(path: string) {
 export class SourceRegistry {
     readonly scanner: ShotScanner;
 
-    constructor(thumbnailCacheDirectory?: string) {
-        this.scanner = new ShotScanner(thumbnailCacheDirectory);
+    constructor(thumbnailCacheDirectory?: string, fingerprintDirectory?: string) {
+        this.scanner = new ShotScanner(thumbnailCacheDirectory, fingerprintDirectory);
     }
     private sources = new Map<string, { source: ImportSource; fingerprint: string }>();
     private pending: Promise<unknown> = Promise.resolve();
@@ -145,6 +145,34 @@ export class SourceRegistry {
             if (entry.source.id === id) this.scanner.refresh(entry.source);
             this.scanner.sync([...this.sources.values()].map((item) => item.source));
             return { source: entry.source, collection: this.scanner.snapshot() };
+        });
+    }
+
+    relink(id: string, selectedPath: string) {
+        return this.serialize(async () => {
+            const previous = [...this.sources.values()].find((item) => item.source.id === id);
+            if (!previous) throw Object.assign(new Error("Source not found."), { statusCode: 404 });
+            if (previous.source.available || this.scanner.isBusy(id)) {
+                throw Object.assign(new Error("Only unavailable sources can be re-linked."), { statusCode: 409 });
+            }
+            const path = await realpath(selectedPath);
+            const registered = this.sources.get(path);
+            if (registered && registered !== previous) {
+                throw Object.assign(new Error("This folder is already a source."), { statusCode: 409 });
+            }
+            const inspection = await inspectSource(path);
+            const source: ImportSource = {
+                ...previous.source,
+                id: inspection.fingerprint === previous.fingerprint ? id : randomUUID(),
+                path, name: basename(path) || path, type: inspection.type,
+                cameraModels: inspection.cameraModels, available: true, warning: inspection.warning,
+            };
+            // Replace the map entry in place to preserve the user's source ordering.
+            this.sources = new Map([...this.sources].map(([key, entry]) => entry === previous
+                ? [path, { source, fingerprint: inspection.fingerprint }] : [key, entry]));
+            if (source.id === id) this.scanner.refresh(source);
+            this.scanner.sync([...this.sources.values()].map((item) => item.source));
+            return { source, collection: this.scanner.snapshot() };
         });
     }
 

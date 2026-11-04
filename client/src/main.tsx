@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import type { BackendStatus, ImportSource } from "../../shared/desktop";
 import type { ShotCollection } from "../../shared/shots";
 import { ClipInspector } from "./ClipInspector";
+import { Configuration } from "./Configuration";
 import { MultiClipInspector } from "./MultiClipInspector";
 import { orderedShots, useShotSelection } from "./shotSelection";
 import { deviceLabel } from "./mediaInfo";
@@ -52,9 +53,9 @@ function App() {
     const availableSourceIds = new Set(sources.filter((source) => source.available).map((source) => source.id));
     const displayedShots = orderedShots(visibleCollection.shots, newestFirst);
     const selectableShots = displayedShots
-        .filter((shot) => shot.available && shot.editable && availableSourceIds.has(shot.sourceId));
+        .filter((shot) => shot.editable);
     const selectedSkippedCount = selectedShots.filter((shot) => selection.skippedIds.includes(shot.id)).length;
-    const selectedLocked = selectedShots.some((shot) => !shot.available || !shot.editable || !availableSourceIds.has(shot.sourceId));
+    const selectedLocked = selectedShots.some((shot) => !shot.editable);
     const ingestShots = shotCollection.shots.filter((shot) => !selection.skippedIds.includes(shot.id));
     const skippedCount = shotCollection.shots.length - ingestShots.length;
     const blockedIngestCount = ingestShots.filter((shot) => !shot.available || !shot.editable || !availableSourceIds.has(shot.sourceId)).length;
@@ -79,7 +80,7 @@ function App() {
     }
 
     function changeSkip(ids: string[], skipped: boolean) {
-        if (ids.some((id) => !shotCollection.shots.some((shot) => shot.id === id && shot.available && shot.editable && availableSourceIds.has(shot.sourceId)))) return;
+        if (ids.some((id) => !shotCollection.shots.some((shot) => shot.id === id && shot.editable))) return;
         selection.dispatch({ type: "skip", ids, skipped });
     }
 
@@ -187,6 +188,28 @@ function App() {
         }
     }
 
+    async function relinkSource(id: string) {
+        if (sourceMutation.current) return;
+        sourceMutation.current = true;
+        sourceRevision.current += 1;
+        setRefreshingSourceId(id);
+        setSourceError(null);
+        try {
+            const result = await window.desktop.relinkSource(id);
+            if (!result) return;
+            setSources((current) => current.map((source) => source.id === id ? result.source : source));
+            setSelectedSourceIds((current) => current.map((selected) => selected === id ? result.source.id : selected));
+            setUnavailableSources((current) => current.filter((source) => source.id !== id));
+            receiveShots(result.collection);
+        } catch {
+            setSourceError("Could not re-link this source. Choose a readable folder that has not already been added.");
+        } finally {
+            sourceRevision.current += 1;
+            sourceMutation.current = false;
+            setRefreshingSourceId(null);
+        }
+    }
+
     function rememberSource(source: ImportSource) {
         setSources((current) =>
             current.some((item) => item.path === source.path)
@@ -205,7 +228,7 @@ function App() {
         const additions = newlyUnavailableSources(sources, notifiedUnavailable.current);
         const unavailableIds = new Set(sources.filter((source) => !source.available).map((source) => source.id));
         setUnavailableSources((current) => [
-            ...current.filter((source) => unavailableIds.has(source.id)),
+            ...current.filter((source) => unavailableIds.has(source.id)).map((source) => sources.find((item) => item.id === source.id)!),
             ...additions,
         ]);
     }, [sources]);
@@ -339,7 +362,7 @@ function App() {
 
     return (
         <div className="flex h-screen flex-col bg-[#111318] text-sm text-zinc-200">
-            <header className="flex items-center justify-between border-b border-white/8 px-6 py-4">
+            <header className="grid grid-cols-[1fr_auto_1fr] items-center gap-6 border-b border-white/8 px-6 py-4">
                 <h1 className="font-semibold tracking-tight">
                     OWMO <span className="font-normal text-zinc-400">Shot Manager</span>
                 </h1>
@@ -355,7 +378,7 @@ function App() {
                         Library
                     </button>
                 </nav>
-                <span className="text-xs text-zinc-500">Development</span>
+                <Configuration />
             </header>
             <main className="flex min-h-0 flex-1">
                 <aside className="w-60 shrink-0 overflow-y-auto border-r border-white/8 bg-white/1.5 p-3">
@@ -384,7 +407,7 @@ function App() {
                                     ? current.filter((id) => id !== source.id) : [...current, source.id])}
                                 scan={shotCollection.scans.find((scan) => scan.sourceId === source.id)}
                                 refreshing={refreshingSourceId === source.id}
-                                onRefresh={() => void refreshSource(source.id)}
+                                onRefresh={() => void (source.available ? refreshSource(source.id) : relinkSource(source.id))}
                                 onRemove={() => {
                                     setRemovalError(null);
                                     setRemovalSourceId(source.id);
@@ -490,11 +513,10 @@ function App() {
             {!removalSource && sourceError && (
                 <SourceErrorDialog message={sourceError} onDismiss={() => setSourceError(null)} />
             )}
-            {!removalSource && !sourceError && unavailableSources[0] && (
+            {!removalSource && !sourceError && unavailableSources.length > 0 && (
                 <SourceUnavailableDialog
-                    key={unavailableSources[0].id}
-                    source={unavailableSources[0]}
-                    onDismiss={() => setUnavailableSources((current) => current.slice(1))}
+                    sources={unavailableSources}
+                    onDismiss={() => setUnavailableSources([])}
                 />
             )}
             <footer className="flex items-center justify-between border-t border-white/8 px-5 py-3 text-xs text-zinc-500">

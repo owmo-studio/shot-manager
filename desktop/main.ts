@@ -2,6 +2,8 @@ import { app, BrowserWindow, dialog, ipcMain, protocol, utilityProcess } from 'e
 import type { IpcMainInvokeEvent, UtilityProcess } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { isAbsolute, join } from 'node:path'
+import { realpath, stat } from 'node:fs/promises'
+import { readConfiguration, saveConfiguration } from './configuration'
 import type { BackendHealth, BackendStatus } from '../shared/desktop'
 
 let mainWindow: BrowserWindow | null = null
@@ -12,6 +14,7 @@ let quitting = false
 let shutdownComplete = false
 const token = randomBytes(32).toString('hex')
 let choosingSource = false
+let choosingLibrary = false
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'shot-media', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, corsEnabled: true } }
@@ -42,7 +45,7 @@ function requireMainWindow(event: IpcMainInvokeEvent): BrowserWindow {
 function startBackend() {
   backend = utilityProcess.fork(join(__dirname, 'backend.cjs'), [], {
     serviceName: 'Shot Manager Backend',
-    env: { ...process.env, SHOT_MANAGER_TOKEN: token, SHOT_MANAGER_THUMBNAIL_CACHE: join(app.getPath('userData'), 'cache', 'thumbnails'), SHOT_MANAGER_LUT_DIRECTORY: join(app.getAppPath(), 'resources', 'luts') }
+    env: { ...process.env, SHOT_MANAGER_TOKEN: token, SHOT_MANAGER_THUMBNAIL_CACHE: join(app.getPath('userData'), 'cache', 'thumbnails'), SHOT_MANAGER_FINGERPRINT_DIRECTORY: join(app.getPath('userData'), 'fingerprints'), SHOT_MANAGER_LUT_DIRECTORY: join(app.getAppPath(), 'resources', 'luts') }
   })
   backend.on('message', (message: unknown) => {
     if (typeof message === 'object' && message !== null && 'type' in message &&
@@ -104,6 +107,38 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(() => {
+    const configurationPath = join(app.getPath('userData'), 'configuration.json')
+    ipcMain.handle('configuration:get', (event) => {
+      requireMainWindow(event)
+      return readConfiguration(configurationPath)
+    })
+    ipcMain.handle('configuration:choose-library', async (event) => {
+      const owner = requireMainWindow(event)
+      if (choosingLibrary) return null
+      choosingLibrary = true
+      try {
+        const current = await readConfiguration(configurationPath)
+        const result = await dialog.showOpenDialog(owner, {
+          title: 'Set Library Location', buttonLabel: 'Set Library',
+          ...(current.libraryPath ? { defaultPath: current.libraryPath } : {}),
+          properties: ['openDirectory']
+        })
+        if (result.canceled || !result.filePaths[0]) return null
+        const libraryPath = await realpath(result.filePaths[0])
+        if (!(await stat(libraryPath)).isDirectory()) throw new Error('Choose a folder')
+        const next = { ...current, libraryPath }
+        await saveConfiguration(configurationPath, next)
+        return next
+      } finally { choosingLibrary = false }
+    })
+    ipcMain.handle('cache:summary', (event) => {
+      requireMainWindow(event)
+      return backendRequest('/api/cache')
+    })
+    ipcMain.handle('cache:clear', (event) => {
+      requireMainWindow(event)
+      return backendRequest('/api/cache', { method: 'DELETE' })
+    })
     protocol.handle('shot-media', async (request) => {
       const url = new URL(request.url)
       const match = /^\/shots\/([a-f0-9]{64})\/original$/.exec(url.pathname)
@@ -151,6 +186,21 @@ if (!app.requestSingleInstanceLock()) {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Invalid source ID')
       return backendRequest(`/api/sources/${encodeURIComponent(id)}/refresh`, { method: 'POST' })
+    })
+    ipcMain.handle('sources:relink', async (event, id: unknown) => {
+      const owner = requireMainWindow(event)
+      if (typeof id !== 'string' || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Invalid source ID')
+      if (choosingSource) return null
+      choosingSource = true
+      try {
+        const result = await dialog.showOpenDialog(owner, {
+          title: 'Re-link Source', buttonLabel: 'Re-link Source', properties: ['openDirectory']
+        })
+        if (result.canceled || !result.filePaths[0]) return null
+        return await backendRequest(`/api/sources/${encodeURIComponent(id)}/relink`, {
+          method: 'POST', body: JSON.stringify({ path: result.filePaths[0] })
+        })
+      } finally { choosingSource = false }
     })
     ipcMain.handle('sources:list', async (event) => {
       requireMainWindow(event)

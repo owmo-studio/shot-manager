@@ -22,6 +22,15 @@ export function emptyVideoMetadata(): VideoMetadata {
     };
 }
 
+export interface VideoFingerprint {
+    algorithm: 'sha256';
+    scheme: 'sampled-sha256-v1';
+    value: string;
+    fileSize: number;
+    sampleBytes: number;
+    sampledBytes: number;
+}
+
 export interface VideoShot {
     id: string;
     sourceId: string;
@@ -35,12 +44,14 @@ export interface VideoShot {
     cameraModel: string | null;
     durationSeconds: number | null;
     metadata: VideoMetadata;
+    fingerprint?: VideoFingerprint;
     hasThumbnail: boolean;
     hasCustomThumbnail?: boolean;
     thumbnailRevision?: number;
     thumbnailStatus?: "pending" | "ready" | "failed";
     warnings: string[];
     available: boolean;
+    // Draft-edit eligibility is independent of source availability; rescans/queue locks block edits.
     editable: boolean;
 }
 
@@ -61,6 +72,7 @@ export interface ShotCollection {
 export interface ShotDetails {
     file: { filename: string; path: string; bytes: number };
     metadata: VideoMetadata;
+    fingerprint?: VideoFingerprint;
     embeddedMetadata: EmbeddedMetadata[];
     mediaInfo: Record<string, unknown> | null;
     errors: string[];

@@ -10,7 +10,8 @@
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && electron-vite build",
-    "check:selection": "npm run build && node scripts/check-selection.cjs"
+    "check:selection": "npm run build && node scripts/check-selection.cjs",
+    "check:configuration": "node scripts/check-configuration.cjs"
   },
   "engines": {
     "node": ">=22.12.0"

@@ -115,7 +115,7 @@ export function SourceListItem({
                         className={`mt-0.5 block truncate text-xs ${unavailable ? "font-medium text-red-300" : scanning ? "font-medium text-blue-300" : "text-zinc-500"}`}
                     >
                         {unavailable
-                            ? "source is unavailable"
+                            ? "source unavailable"
                             : scanning
                               ? scan!.clipCount > 0 ? `Scanning... ${scan!.clipCount} clips found` : "Scanning..."
                               : queued
@@ -130,14 +130,18 @@ export function SourceListItem({
             <div className={`absolute top-1/2 right-2 flex -translate-y-1/2 gap-1 opacity-0 transition duration-75 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100 ${inProgress ? "invisible" : ""}`}>
             <button
                 onClick={onRefresh}
-                disabled={inProgress || unavailable}
-                aria-label={`Refresh ${presentation.name}`}
-                title={unavailable ? "Reconnect this source before refreshing" : inProgress ? "Wait for scanning to finish" : "Refresh source"}
+                disabled={inProgress || refreshing}
+                aria-label={`${unavailable ? "Re-link" : "Refresh"} ${presentation.name}`}
+                title={unavailable ? "Re-link source and rescan" : inProgress ? "Wait for scanning to finish" : "Refresh source"}
                 className="grid size-7 place-items-center rounded-md text-zinc-400 transition duration-75 hover:bg-white/10 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
             >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-4">
-                    <path d="M20 7v5h-5M4 17v-5h5" />
-                    <path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 17.9 17" />
+                    {unavailable ? <>
+                        <path d="m10 13 4-4M8 15l-1 1a3.5 3.5 0 0 1-5-5l4-4a3.5 3.5 0 0 1 5 0M13 9l1-1a3.5 3.5 0 0 1 5 5l-4 4a3.5 3.5 0 0 1-5 0" />
+                    </> : <>
+                        <path d="M20 7v5h-5M4 17v-5h5" />
+                        <path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 17.9 17" />
+                    </>}
                 </svg>
             </button>
             <button

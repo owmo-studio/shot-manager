@@ -1,10 +1,12 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
-import { lstat, mkdir, readdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, readdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { readSmallFile } from "./discovery";
+import { commonFingerprintMetadata, VideoFingerprintStore } from "./fingerprints";
+import type { FingerprintMetadata } from "./fingerprints";
 import type { VideoMetadata } from "../shared/shots";
 import { viewingProfile } from "../shared/viewing";
 import { loadViewingLut, viewingLutPath } from "./viewing";
@@ -12,6 +14,30 @@ import { loadViewingLut, viewingLutPath } from "./viewing";
 const execute = promisify(execFile);
 const maximumImageBytes = 2 * 1024 * 1024;
 export const DEFAULT_THUMBNAIL_CACHE_EXPIRY_DAYS = 30;
+const cacheFilename = /^[a-f0-9]{64}(?:\.jpg|\.[a-f0-9-]{36}\.tmp)$/;
+
+export async function inspectThumbnailCache(directory: string, clear = false) {
+    const summary = { bytes: 0, files: 0 };
+    let entries;
+    try { entries = await readdir(directory, { withFileTypes: true }); }
+    catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return summary;
+        throw error;
+    }
+    for (const entry of entries) {
+        if (!entry.isFile() || !cacheFilename.test(entry.name)) continue;
+        const path = join(directory, entry.name);
+        try {
+            const info = await lstat(path);
+            if (!info.isFile()) continue;
+            if (clear) await unlink(path);
+            else { summary.bytes += info.size; summary.files += 1; }
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+    }
+    return summary;
+}
 
 export async function pruneThumbnailCache(cacheDirectory: string, expiryDays = DEFAULT_THUMBNAIL_CACHE_EXPIRY_DAYS, now = Date.now()) {
     if (!Number.isFinite(expiryDays) || expiryDays <= 0) throw new Error("Cache expiry must be a positive number of days");
@@ -52,29 +78,80 @@ export class ThumbnailQueue {
     private pending: Promise<void> = Promise.resolve();
     private shutdown = new AbortController();
     private cacheDirectory: string;
+    private legacyLocations = new Map<string, { input: string; sourceIdentity: string }[]>();
 
-    constructor(cacheDirectory: string) {
+    constructor(cacheDirectory: string, private fingerprints = new VideoFingerprintStore()) {
         this.cacheDirectory = cacheDirectory;
     }
 
-    private async customPath(input: string, sourceIdentity: string, metadata?: VideoMetadata) {
-        const info = await stat(input);
-        if (!info.isFile()) throw new Error("Original video is unavailable.");
-        const profile = metadata ? viewingProfile(metadata) : null;
-        const transform = profile ? (await loadViewingLut(profile)).fingerprint : "passthrough";
-        const key = createHash("sha256").update(`custom-preview-rec709-v2:${transform}:${sourceIdentity}:${input}:${fileIdentity(info)}`).digest("hex");
-        return join(this.cacheDirectory, `${key}.jpg`);
+    async clearCache() {
+        this.shutdown.abort();
+        await this.pending;
+        try { return await inspectThumbnailCache(this.cacheDirectory, true); }
+        finally { this.shutdown = new AbortController(); }
     }
 
-    async customImage(input: string, sourceIdentity: string, metadata?: VideoMetadata): Promise<string | null> {
+    cacheSummary() { return inspectThumbnailCache(this.cacheDirectory); }
+
+    rememberLegacyLocation(identity: string, input: string, sourceIdentity: string) {
+        const locations = this.legacyLocations.get(identity) ?? [];
+        if (!locations.some((location) => location.input === input && location.sourceIdentity === sourceIdentity)) {
+            locations.push({ input, sourceIdentity });
+            this.legacyLocations.set(identity, locations.slice(-8));
+        }
+        if (this.legacyLocations.size > 1024) this.legacyLocations.delete(this.legacyLocations.keys().next().value!);
+    }
+
+    private async cachePaths(input: string, sourceIdentity: string, metadata: VideoMetadata | undefined, signal: AbortSignal, fingerprintMetadata?: FingerprintMetadata) {
+        const info = await stat(input);
+        if (!info.isFile()) throw new Error("Original video is unavailable.");
+        const fingerprint = await this.fingerprints.identify(input, fingerprintMetadata ?? commonFingerprintMetadata(metadata), signal);
+        const digest = fingerprint.value;
+        const profile = metadata ? viewingProfile(metadata) : null;
+        const transform = profile ? (await loadViewingLut(profile)).fingerprint : "passthrough";
+        const filename = (key: string) => join(this.cacheDirectory, `${createHash("sha256").update(key).digest("hex")}.jpg`);
+        const identity = fileIdentity(info);
+        const legacy = [{ input, sourceIdentity }, ...(this.legacyLocations.get(identity) ?? [])];
+        return {
+            identity,
+            fingerprint,
+            ctimeMs: info.ctimeMs,
+            custom: filename(`custom-preview-rec709-sampled-v4:${transform}:${digest}`),
+            generated: filename(`first-frame-rec709-sampled-v4:${transform}:480x270:${digest}`),
+            legacyCustom: legacy.map((location) => filename(`custom-preview-rec709-v2:${transform}:${location.sourceIdentity}:${location.input}:${identity}`)),
+            legacyGenerated: legacy.map((location) => filename(`first-frame-rec709-v2:${transform}:480x270:${location.sourceIdentity}:${location.input}:${identity}`)),
+        };
+    }
+
+    private async cachedImage(path: string, legacy: string[]) {
+        for (const candidate of [path, ...legacy]) {
+            try {
+                const bytes = await readSmallFile(candidate, maximumImageBytes);
+                if (!isJpeg(bytes)) continue;
+                // Promote old cache entries without replacing an existing content-based capture.
+                if (candidate !== path) await link(candidate, path).catch(() => undefined);
+                return bytes;
+            } catch {}
+        }
+        return null;
+    }
+
+    private async customPath(input: string, sourceIdentity: string, metadata?: VideoMetadata, fingerprintMetadata?: FingerprintMetadata) {
+        return (await this.cachePaths(input, sourceIdentity, metadata, this.shutdown.signal, fingerprintMetadata)).custom;
+    }
+
+    async customImage(input: string, sourceIdentity: string, metadata?: VideoMetadata, fingerprintMetadata?: FingerprintMetadata): Promise<string | null> {
         try {
-            const bytes = await readSmallFile(await this.customPath(input, sourceIdentity, metadata), maximumImageBytes);
-            return isJpeg(bytes) ? `data:image/jpeg;base64,${bytes.toString("base64")}` : null;
+            const paths = await this.cachePaths(input, sourceIdentity, metadata, this.shutdown.signal, fingerprintMetadata);
+            const bytes = await this.cachedImage(paths.custom, paths.legacyCustom);
+            const current = await stat(input);
+            if (fileIdentity(current) !== paths.identity || current.ctimeMs !== paths.ctimeMs) return null;
+            return bytes ? `data:image/jpeg;base64,${bytes.toString("base64")}` : null;
         } catch { return null; }
     }
 
-    async setCustomImage(input: string, sourceIdentity: string, dataUrl: string, validate: () => Promise<boolean>, metadata?: VideoMetadata) {
-        const path = await this.customPath(input, sourceIdentity, metadata);
+    async setCustomImage(input: string, sourceIdentity: string, dataUrl: string, validate: () => Promise<boolean>, metadata?: VideoMetadata, fingerprintMetadata?: FingerprintMetadata) {
+        const path = await this.customPath(input, sourceIdentity, metadata, fingerprintMetadata);
         if (!await validate()) throw new Error("Source changed while updating the thumbnail.");
         const match = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl);
         const bytes = match ? Buffer.from(match[1], "base64") : Buffer.alloc(0);
@@ -83,12 +160,12 @@ export class ThumbnailQueue {
         const temporaryPath = path.replace(/\.jpg$/, `.${randomUUID()}.tmp`);
         try {
             await writeFile(temporaryPath, bytes, { mode: 0o600, flush: true });
-            if (!await validate() || await this.customPath(input, sourceIdentity, metadata) !== path) throw new Error("Source changed while saving the thumbnail.");
+            if (!await validate() || await this.customPath(input, sourceIdentity, metadata, fingerprintMetadata) !== path) throw new Error("Source changed while saving the thumbnail.");
             await rename(temporaryPath, path);
         } finally { await unlink(temporaryPath).catch(() => undefined); }
     }
 
-    enqueue(inputs: string[], sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>, completed: (image: string | null) => void, metadata?: VideoMetadata) {
+    enqueue(inputs: string[], sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>, completed: (image: string | null) => void, metadata?: VideoMetadata, fingerprintMetadata?: FingerprintMetadata) {
         const combinedSignal = AbortSignal.any([signal, this.shutdown.signal]);
         this.pending = this.pending.then(async () => {
             let image: string | null = null;
@@ -97,7 +174,7 @@ export class ThumbnailQueue {
                     combinedSignal.throwIfAborted();
                     if (!await validate()) break;
                     try {
-                        image = await this.extract(input, sourceIdentity, combinedSignal, validate, metadata);
+                        image = await this.extract(input, sourceIdentity, combinedSignal, validate, metadata, fingerprintMetadata);
                         if (image) break;
                     } catch {
                         combinedSignal.throwIfAborted();
@@ -110,19 +187,17 @@ export class ThumbnailQueue {
         }).catch(() => undefined);
     }
 
-    private async extract(input: string, sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>, metadata?: VideoMetadata): Promise<string | null> {
+    private async extract(input: string, sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>, metadata?: VideoMetadata, fingerprintMetadata?: FingerprintMetadata): Promise<string | null> {
         if (await realpath(input) !== input) return null;
-        const before = await stat(input);
-        if (!before.isFile()) return null;
-        const identity = fileIdentity(before);
+        const paths = await this.cachePaths(input, sourceIdentity, metadata, signal, fingerprintMetadata);
+        const identity = paths.identity;
         const profile = metadata ? viewingProfile(metadata) : null;
-        const transform = profile ? (await loadViewingLut(profile)).fingerprint : "passthrough";
-        const key = createHash("sha256").update(`first-frame-rec709-v2:${transform}:480x270:${sourceIdentity}:${input}:${identity}`).digest("hex");
-        const cachedPath = join(this.cacheDirectory, `${key}.jpg`);
-        try {
-            const cached = await readSmallFile(cachedPath, maximumImageBytes);
-            if (isJpeg(cached) && await validate()) return `data:image/jpeg;base64,${cached.toString("base64")}`;
-        } catch {}
+        const cachedPath = paths.generated;
+        const cached = await this.cachedImage(paths.custom, paths.legacyCustom) ?? await this.cachedImage(cachedPath, paths.legacyGenerated);
+        signal.throwIfAborted();
+        const current = await stat(input);
+        if (fileIdentity(current) !== identity || current.ctimeMs !== paths.ctimeMs) return null;
+        if (cached && await validate()) return `data:image/jpeg;base64,${cached.toString("base64")}`;
 
         // Escape filter-language characters; execFile still receives an argument array.
         const lutPath = profile ? viewingLutPath(profile).replace(/[\\':,;\[\]]/g, "\\$&") : null;
@@ -146,7 +221,7 @@ export class ThumbnailQueue {
         let temporaryPath: string | undefined;
         try {
             await mkdir(this.cacheDirectory, { recursive: true, mode: 0o700 });
-            temporaryPath = join(this.cacheDirectory, `${key}.${randomUUID()}.tmp`);
+            temporaryPath = cachedPath.replace(/\.jpg$/, `.${randomUUID()}.tmp`);
             await writeFile(temporaryPath, stdout, { mode: 0o600, flush: true });
             signal.throwIfAborted();
             if (!await validate()) return null;

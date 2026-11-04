@@ -48,15 +48,16 @@ function ShotCard({ shot, source, selected, skipped, onSelect }: {
 
     return (
         <div data-shot-card className="shot-card-enter group/shot relative min-w-0">
-        <button id={`shot-${shot.id}`} ref={card} type="button" onClick={onSelect} disabled={unavailable || inactive} aria-label={`Inspect ${shot.filename}`} aria-pressed={selected} aria-controls="clip-inspector" data-editable={!unavailable && shot.editable} data-skipped={skipped}
+        <button id={`shot-${shot.id}`} ref={card} type="button" onClick={onSelect} disabled={!shot.editable} aria-label={`Inspect ${shot.filename}`} aria-pressed={selected} aria-controls="clip-inspector" data-editable={shot.editable} data-skipped={skipped}
             className={`-m-2 w-[calc(100%+16px)] min-w-0 rounded-lg p-2 text-left ring-1 transition duration-75 focus-visible:outline-2 focus-visible:outline-offset-2 ${skipped ? "focus-visible:outline-red-400" : "focus-visible:outline-blue-400"} disabled:cursor-not-allowed ${cardStyle}`}
-            title={[sourceFilePath(source?.path, shot.relativePath), ...(unavailable ? ["Source unavailable. Reconnect the source to edit this shot."] : inactive ? ["Source rescan is queued or running. Editing is unavailable until it finishes."] : []), ...shot.warnings].join("\n")}>
+            title={[sourceFilePath(source?.path, shot.relativePath), ...(unavailable ? ["Source unavailable. Context and cached file information remain accessible."] : inactive ? ["Source rescan is queued or running. Editing is unavailable until it finishes."] : []), ...shot.warnings].join("\n")}>
             <span data-shot-thumbnail className={`relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg border transition-opacity duration-150 ${skipped && !inactive ? "opacity-45" : ""} ${unavailable ? "border-red-500/30 bg-red-500/5" : "border-white/8 bg-white/4"}`}>
-                {thumbnail && !failedImage ? <img src={thumbnail} alt="" onError={thumbnailFailed} className="size-full bg-black object-contain" /> : shot.thumbnailStatus === "pending" && !unavailable ? (
-                    <span aria-hidden="true" className="absolute inset-0 bg-white/4 motion-safe:animate-pulse" />
+                {thumbnail && !failedImage ? <img src={thumbnail} alt="" onError={thumbnailFailed} className="size-full bg-black object-contain" /> : shot.thumbnailStatus !== "failed" && !failedImage && !unavailable ? (
+                    <span aria-hidden="true" className="absolute inset-0 bg-linear-to-r from-transparent via-white/8 to-transparent bg-[length:200%_100%] motion-safe:animate-[thumbnail-shimmer_1.8s_linear_infinite]" />
                 ) : null}
-                {unavailable && <span className="pointer-events-none absolute inset-0 bg-red-950/30">
+                {unavailable && <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-red-950/30">
                     <span aria-hidden="true" className="absolute top-2 left-2 grid size-6 place-items-center rounded-full bg-red-400 font-bold text-[#1b2029]">!</span>
+                    <span className="rounded-md bg-[#111318]/80 px-3 py-1.5 text-center text-xs font-medium text-red-300">source unavailable</span>
                 </span>}
             </span>
             <span className="mt-2 block truncate text-[13px] text-zinc-200">{shot.filename}</span>
@@ -64,7 +65,6 @@ function ShotCard({ shot, source, selected, skipped, onSelect }: {
                 <span className="min-w-0 truncate">{deviceLabel(shot.metadata.device) ?? "Video"}</span>
                 <span className="shrink-0 text-right" title="Duration">{cardDuration(shot.durationSeconds)}</span>
             </span>
-            {unavailable && <span className="mt-1 block text-xs font-medium text-red-300">source is unavailable</span>}
             {!unavailable && shot.warnings.length > 0 && <span className="mt-1 block text-xs text-amber-300">Metadata incomplete</span>}
         </button>
         </div>

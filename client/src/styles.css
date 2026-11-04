@@ -31,6 +31,11 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes thumbnail-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
 .shot-card-enter {
   animation: shot-card-enter 180ms ease-out;
 }

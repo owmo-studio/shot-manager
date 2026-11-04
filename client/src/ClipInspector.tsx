@@ -68,7 +68,7 @@ export function ClipInspector({
     const [copyStatus, setCopyStatus] = useState<"idle" | "copying" | "copied" | "failed">("idle");
     const preview = useRef<PreviewHandle>(null);
     const unavailable = !shot.available || !source?.available;
-    const pausedForScan = !unavailable && !shot.editable;
+    const pausedForScan = !shot.editable;
     const summary = empty ? "" : quickMediaSummary(shot.metadata);
     const rawMetadata =
         details?.embeddedMetadata
@@ -121,7 +121,7 @@ export function ClipInspector({
         let disposed = false;
         setDetails(null);
         setDetailsError(null);
-        if (empty || unavailable || pausedForScan) return;
+        if (empty || pausedForScan) return;
         window.desktop
             .getShotDetails(shot.id)
             .then((data) => {
@@ -182,7 +182,7 @@ export function ClipInspector({
                             </svg>
                             <span>{thumbnailBusy ? "Saving…" : "Set thumbnail"}</span>
                         </button>
-                        <SkipSelection count={empty ? 0 : 1} skippedCount={skipped ? 1 : 0} disabled={empty || unavailable || pausedForScan} onChange={onSkipChange} />
+                        <SkipSelection count={empty ? 0 : 1} skippedCount={skipped ? 1 : 0} disabled={empty || pausedForScan} onChange={onSkipChange} />
                     </div>
                 </header>
                 {thumbnailError && (
@@ -190,7 +190,7 @@ export function ClipInspector({
                         {thumbnailError}
                     </p>
                 )}
-                <div className="overflow-hidden rounded-lg border border-white/8 bg-black">
+                <div className={`overflow-hidden rounded-lg border ${!empty && unavailable ? "border-red-500/30 bg-red-500/8" : "border-white/8 bg-black"}`}>
                     {empty ? (
                         <div className="aspect-video" aria-label="No clip selected" />
                     ) : unavailable || pausedForScan ? (
@@ -202,7 +202,7 @@ export function ClipInspector({
                             }
                         >
                             {unavailable
-                                ? "Source is unavailable."
+                                ? "source unavailable"
                                 : "Preview paused while this source is queued for rescanning or being rescanned."}
                         </div>
                     ) : (
