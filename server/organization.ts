@@ -6,7 +6,7 @@ import type { OptionRemovalPlan, OrganizationAction, ShotOrganization, TagVocabu
 import type { VideoFingerprint } from '../shared/shots';
 
 interface DraftRecord { data: ShotOrganization; lastScannedAt: number; lastEditedAt: number; previousProjects?: string[]; clip?: { name: string; path: string } }
-interface OrganizationState { version: 1 | 2 | 3; vocabulary: TagVocabulary; drafts: Record<string, DraftRecord> }
+interface OrganizationState { version: 1 | 2 | 3 | 4; vocabulary: TagVocabulary; drafts: Record<string, DraftRecord> }
 
 export class OrganizationStore {
     private state?: OrganizationState;
@@ -21,11 +21,11 @@ export class OrganizationStore {
 
     private async load() {
         if (this.state) return this.state;
-        let state: OrganizationState = { version: 3, vocabulary: emptyVocabulary(), drafts: {} };
+        let state: OrganizationState = { version: 4, vocabulary: emptyVocabulary(), drafts: {} };
         if (this.path) {
             try {
                 state = JSON.parse(await readFile(this.path, 'utf8'));
-                if (![1, 2, 3].includes(state.version) || !state.vocabulary || !state.drafts || typeof state.drafts !== 'object' || Array.isArray(state.drafts)) throw new Error('Invalid state');
+                if (![1, 2, 3, 4].includes(state.version) || !state.vocabulary || !state.drafts || typeof state.drafts !== 'object' || Array.isArray(state.drafts)) throw new Error('Invalid state');
                 for (const field of TAG_FIELDS) {
                     if (!Array.isArray(state.vocabulary[field]) || state.vocabulary[field].some(value => typeof value !== 'string' || (field === 'context' ? normalizeTag(value) : normalizeOption(value)) !== value)) throw new Error('Invalid vocabulary');
                 }
@@ -39,8 +39,8 @@ export class OrganizationStore {
                         if (!Array.isArray(data[field]) || data[field].some(value => typeof value !== 'string' || (field === 'context' ? normalizeTag(value) : normalizeOption(value)) !== value)) throw new Error('Invalid draft');
                     }
                 }
-                let migrated = state.version !== 3 || Object.hasOwn(state.vocabulary, 'colors') || Object.hasOwn(state.vocabulary, 'colorVersion');
-                state.vocabulary = { identity: state.vocabulary.identity, projects: state.vocabulary.projects, context: state.vocabulary.context };
+                let migrated = state.version !== 4 || Object.hasOwn(state.vocabulary, 'colors') || Object.hasOwn(state.vocabulary, 'colorVersion');
+                state.vocabulary = { identity: state.vocabulary.identity, projects: state.vocabulary.projects, context: [] };
                 for (const record of Object.values(state.drafts)) {
                     if (record.data.projects.length > 1) {
                         record.previousProjects ??= [...record.data.projects];
@@ -48,7 +48,7 @@ export class OrganizationStore {
                         migrated = true;
                     }
                 }
-                if (migrated) { state.version = 3; await this.save(state); }
+                if (migrated) { state.version = 4; await this.save(state); }
             } catch (error) {
                 if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Could not read saved tags. Existing data has been preserved.');
             }
@@ -59,6 +59,7 @@ export class OrganizationStore {
 
     private async save(next: OrganizationState, validate: () => boolean = () => true) {
         if (!validate()) throw new Error('Selected clips are now locked.');
+        next.vocabulary.context = [];
         if (this.path) {
             await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
             const temporary = `${this.path}.${randomUUID()}.tmp`;
@@ -71,12 +72,18 @@ export class OrganizationStore {
         this.state = next;
     }
 
-    vocabulary() { return this.serialize(async () => structuredClone((await this.load()).vocabulary)); }
+    private options(state: OrganizationState): TagVocabulary {
+        return { ...structuredClone(state.vocabulary), context: [] };
+    }
+
+    vocabulary() { return this.serialize(async () => this.options(await this.load())); }
 
     recordCount() { return this.serialize(async () => Object.keys((await this.load()).drafts).length); }
 
     reset() {
-        return this.serialize(() => this.save({ version: 3, vocabulary: emptyVocabulary(), drafts: {} }));
+        return this.serialize(async () => {
+            await this.save({ version: 4, vocabulary: emptyVocabulary(), drafts: {} });
+        });
     }
 
     scanned(fingerprint: VideoFingerprint, signal: AbortSignal, clip?: { name: string; path: string }) {
@@ -125,7 +132,7 @@ export class OrganizationStore {
                 next.vocabulary[action.field] = [...new Set([...next.vocabulary[action.field], action.value])].sort();
             }
             await this.save(next, validate);
-            return { drafts: Object.fromEntries(keys.map(key => [key, structuredClone(next.drafts[key].data)])), vocabulary: structuredClone(next.vocabulary) };
+            return { drafts: Object.fromEntries(keys.map(key => [key, structuredClone(next.drafts[key].data)])), vocabulary: this.options(next) };
         });
     }
 
@@ -137,7 +144,7 @@ export class OrganizationStore {
         });
     }
 
-    private removalPlan(state: OrganizationState, removals: TagVocabulary): OptionRemovalPlan {
+    private removalPlan(state: OrganizationState, removals: TagVocabulary, active: Set<string>): OptionRemovalPlan {
         const clips: OptionRemovalPlan['clips'] = [];
         const versions: unknown[] = [];
         for (const [key, record] of Object.entries(state.drafts).sort(([a], [b]) => a.localeCompare(b))) {
@@ -146,21 +153,21 @@ export class OrganizationStore {
             removed.projects = [...new Set([...record.data.projects, ...(record.previousProjects ?? [])])].filter(value => removals.projects.includes(value));
             removed.context = record.data.context.filter(value => removals.context.includes(value));
             if (!TAG_FIELDS.some(field => removed[field].length)) continue;
-            clips.push({ key, name: record.clip?.name ?? `Saved clip ${key.slice(-12)}`, path: record.clip?.path, removals: removed });
+            clips.push({ key, name: record.clip?.name ?? `Saved clip ${key.slice(-12)}`, path: record.clip?.path, status: active.has(key) ? 'active' : 'saved', removals: removed });
             versions.push([key, record.data, record.previousProjects, record.clip]);
         }
-        return { clips, reviewToken: createHash('sha256').update(JSON.stringify([removals, versions])).digest('hex') };
+        return { clips, reviewToken: createHash('sha256').update(JSON.stringify([removals, versions, clips.map(clip => clip.status)])).digest('hex') };
     }
 
-    previewOptions(value: unknown) {
-        return this.serialize(async () => this.removalPlan(await this.load(), validateOptionRemovals(value)));
+    previewOptions(value: unknown, active = new Set<string>()) {
+        return this.serialize(async () => this.removalPlan(await this.load(), validateOptionRemovals(value), active));
     }
 
-    removeOptions(value: unknown, reviewToken: string, validate: () => boolean = () => true) {
+    removeOptions(value: unknown, reviewToken: string, validate: () => boolean = () => true, active = new Set<string>()) {
         return this.serialize(async () => {
             const removals = validateOptionRemovals(value);
             const next = structuredClone(await this.load());
-            const plan = this.removalPlan(next, removals);
+            const plan = this.removalPlan(next, removals, active);
             if (plan.reviewToken !== reviewToken) throw Object.assign(new Error('Affected clips changed. Review the removal again.'), { statusCode: 409 });
             for (const field of TAG_FIELDS) {
                 const deleted = new Set(removals[field]);
@@ -175,7 +182,7 @@ export class OrganizationStore {
                 record.lastEditedAt = this.now();
             }
             await this.save(next, validate);
-            return { vocabulary: structuredClone(next.vocabulary), drafts: Object.fromEntries(Object.entries(next.drafts).map(([key, record]) => [key, structuredClone(record.data)])) };
+            return { vocabulary: this.options(next), drafts: Object.fromEntries(Object.entries(next.drafts).map(([key, record]) => [key, structuredClone(record.data)])) };
         });
     }
 

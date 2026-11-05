@@ -241,7 +241,7 @@ export function ClipInspector({
                                 (tab === choice ? "bg-white/10 text-zinc-200" : "text-zinc-500 hover:text-zinc-300")
                             }
                         >
-                            {choice === "metadata" ? "Metadata" : "File info"}
+                            {choice === "metadata" ? "Attributes" : "File info"}
                         </button>
                     ))}
                 </div>

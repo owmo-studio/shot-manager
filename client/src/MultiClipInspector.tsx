@@ -26,7 +26,7 @@ export function MultiClipInspector({ shots, sources, skippedCount, disabled, wid
         </ul>
         {disabled && <p role="status" className="mb-4 text-xs text-amber-300">Some selected clips are rescanning. Skip choices are temporarily locked.</p>}
         <div role="tablist" aria-label="Clip information" className="mt-5 flex rounded-lg bg-white/4 p-1">
-            <button role="tab" aria-selected="true" aria-controls="multi-context-panel" id="multi-context-tab" className="flex-1 rounded-md bg-white/10 px-3 py-2 text-xs text-zinc-200">Metadata</button>
+            <button role="tab" aria-selected="true" aria-controls="multi-context-panel" id="multi-context-tab" className="flex-1 rounded-md bg-white/10 px-3 py-2 text-xs text-zinc-200">Attributes</button>
             <button role="tab" aria-selected="false" disabled title="Select one clip to view its file information" className="flex-1 rounded-md px-3 py-2 text-xs text-zinc-600">File info</button>
         </div>
         <section role="tabpanel" id="multi-context-panel" aria-labelledby="multi-context-tab" className="mt-4 flex flex-1 flex-col">

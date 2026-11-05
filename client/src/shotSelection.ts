@@ -1,6 +1,20 @@
 import { useEffect, useReducer } from "react";
 import type { VideoShot } from "../../shared/shots";
 
+export function clipIdentity(shot: VideoShot): string {
+    return shot.fingerprint ? `${shot.fingerprint.scheme}:${shot.fingerprint.value}` : `shot:${shot.id}`;
+}
+
+export function uniqueShots(shots: VideoShot[]): VideoShot[] {
+    const seen = new Set<string>();
+    return shots.filter(shot => {
+        const key = clipIdentity(shot);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
 export function orderedShots(shots: VideoShot[], newestFirst: boolean) {
     const direction = newestFirst ? -1 : 1;
     return [...shots].sort((first, second) => direction * (

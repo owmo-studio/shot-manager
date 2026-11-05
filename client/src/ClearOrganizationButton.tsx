@@ -34,9 +34,9 @@ export function ClearOrganizationButton({ shots, onUpdated }: { shots: VideoShot
         {targets && <dialog ref={dialog} role="alertdialog" aria-labelledby="clear-organization-title" aria-describedby="clear-organization-description"
             onCancel={event => { event.preventDefault(); if (!busy) setTargets(null); }}
             className="m-auto w-full max-w-md rounded-2xl border border-white/10 bg-[#1b2029] p-6 text-zinc-200 shadow-2xl backdrop:bg-black/60">
-            <h2 id="clear-organization-title" className="text-lg font-medium">Clear metadata?</h2>
+            <h2 id="clear-organization-title" className="text-lg font-medium">Clear attributes?</h2>
             <p id="clear-organization-description" className="mt-3 text-sm leading-6 text-zinc-400">
-                Metadata will be cleared for {targets.length} selected {targets.length === 1 ? 'clip' : 'clips'}.
+                Attributes will be cleared for {targets.length} selected {targets.length === 1 ? 'clip' : 'clips'}.
             </p>
             {error && <p role="alert" className="mt-3 text-xs text-red-300">{error}</p>}
             <div className="mt-6 flex justify-end gap-3">

@@ -1,5 +1,6 @@
 export const DRAFT_RETENTION_DAYS = 90;
 export const TAG_FIELDS = ['identity', 'projects', 'context'] as const;
+export const OPTION_FIELDS = ['identity', 'projects'] as const;
 export type TagField = typeof TAG_FIELDS[number];
 export interface ShotOrganization {
     identity: string | null;
@@ -10,7 +11,7 @@ export interface ShotOrganization {
 export type TagVocabulary = Record<TagField, string[]>;
 export interface OptionRemovalPlan {
     reviewToken: string;
-    clips: { key: string; name: string; path?: string; removals: TagVocabulary }[];
+    clips: { key: string; name: string; path?: string; status: 'active' | 'saved'; removals: TagVocabulary }[];
 }
 export type OrganizationAction =
     | { field: TagField; operation: 'add' | 'remove'; value: string }
@@ -28,6 +29,7 @@ export function validateOptionRemovals(value: unknown): TagVocabulary {
         if (!Array.isArray(entries) || entries.length > 1000 || entries.some(entry => typeof entry !== 'string')) throw new Error('Invalid option lists.');
         result[field] = [...new Set(entries.map(entry => field === 'context' ? normalizeTag(entry) : normalizeOption(entry)))];
     }
+    if (result.context.length) throw new Error('Context suggestions are session-only.');
     return result;
 }
 

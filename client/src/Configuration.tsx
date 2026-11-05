@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { AppConfiguration } from '../../shared/desktop';
-import { emptyVocabulary, TAG_FIELDS } from '../../shared/organization';
+import { emptyVocabulary, OPTION_FIELDS } from '../../shared/organization';
 import type { OptionRemovalPlan, TagField, TagVocabulary } from '../../shared/organization';
 import { RemoveOptionsDialog } from './RemoveOptionsDialog';
 
@@ -19,7 +19,7 @@ export function Configuration({ onLocalDataReset }: { onLocalDataReset: (collect
     const dialog = useRef<HTMLDialogElement>(null);
     const mutation = useRef(false);
     const requestVersion = useRef(0);
-    const hasChanges = TAG_FIELDS.some(field => removals[field].length > 0);
+    const hasChanges = OPTION_FIELDS.some(field => removals[field].length > 0);
 
     function showConfiguration() {
         setVocabulary(null); setRemovals(emptyVocabulary()); setOptionsError(null); setOpen(true);
@@ -132,10 +132,10 @@ export function Configuration({ onLocalDataReset }: { onLocalDataReset: (collect
                 </p>
             </div>
             <div className="mt-6 grid grid-cols-2 gap-4">
-                {TAG_FIELDS.map(field => <section key={field} aria-labelledby={`options-${field}-title`} className={field === 'context' ? 'col-span-2 min-w-0' : 'min-w-0'}>
+                {OPTION_FIELDS.map(field => <section key={field} aria-labelledby={`options-${field}-title`} className="min-w-0">
                     <h3 id={`options-${field}-title`} className="mb-2 text-xs font-medium text-zinc-400">{{ identity: 'Identity', projects: 'Project', context: 'Tags' }[field]}</h3>
                     <ul aria-label={`${{ identity: 'Identity', projects: 'Project', context: 'Tags' }[field]} options`}
-                        className={`${field === 'context' ? 'max-h-64 min-h-32' : 'max-h-48 min-h-24'} overflow-y-auto rounded-lg border border-white/10 bg-black/10 py-1`}>
+                        className="h-48 overflow-y-auto rounded-lg border border-white/10 bg-black/10 py-1">
                         {vocabulary?.[field].filter(value => !removals[field].includes(value)).map(value => <li key={value} className="flex items-start gap-2 px-2 py-1.5 text-xs">
                             <span className="min-w-0 flex-1 break-all py-0.5 text-zinc-300">{value}</span>
                             <button type="button" aria-label={`Delete ${field === 'projects' ? 'Project' : field === 'identity' ? 'Identity' : 'Tag'} option ${value}`}
@@ -162,7 +162,8 @@ export function Configuration({ onLocalDataReset }: { onLocalDataReset: (collect
                 </button>
             </div>
             {removalPlan && <RemoveOptionsDialog plan={removalPlan} busy={busy === 'save'} onCancel={() => {
-                setRemovalPlan(null); mutation.current = false; setBusy(null);
+                setRemovalPlan(null); setRemovals(emptyVocabulary()); setOptionsError(null);
+                mutation.current = false; setBusy(null);
             }} onConfirm={() => void saveOptions(removalPlan.reviewToken)} />}
         </dialog>}
     </>;

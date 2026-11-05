@@ -30,7 +30,7 @@ export function RemoveSourceDialog({ source, removing, scanning, error, onCancel
             <h2 id="remove-source-title" className="text-lg font-medium">Remove source?</h2>
             <p className="mt-4 font-medium">{sourcePresentation(source).name}</p>
             <p id="remove-source-description" className="mt-2 text-sm leading-6 text-zinc-400">
-                Removing this source will remove all of its clips and metadata from the current workspace. Files on disk will not be deleted.
+                Removing this source will remove all of its clips and attributes from the current workspace. Files on disk will not be deleted.
             </p>
             {scanning && <p className="mt-3 text-xs text-blue-300">Wait for scanning to finish before removing this source.</p>}
             {error && <p role="alert" className="mt-3 text-sm text-red-300">{error}</p>}

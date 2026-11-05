@@ -43,7 +43,7 @@ if (!process.versions.electron) {
             const previewOptions = removals => ({reviewToken:'a'.repeat(64), clips:collection.shots.flatMap(shot=>{
                 const data=shot.organization;
                 const removed={identity:data.identity && removals.identity.includes(data.identity)?[data.identity]:[],projects:data.projects.filter(value=>removals.projects.includes(value)),context:data.context.filter(value=>removals.context.includes(value))};
-                return Object.values(removed).some(values=>values.length)?[{key:shot.id,name:shot.filename,path:'/synthetic/'+shot.filename,removals:removed}]:[];
+                return Object.values(removed).some(values=>values.length)?[{key:shot.id,name:shot.filename,path:'/synthetic/'+shot.filename,status:'active',removals:removed}]:[];
             })});
             ipcMain.handle('fixture:preview-options', (_, removals) => previewOptions(removals));
             ipcMain.handle('fixture:save-options', (_, removals) => {
@@ -57,7 +57,8 @@ if (!process.versions.electron) {
                 for (const field of ['identity', 'projects', 'context']) vocabulary[field] = vocabulary[field].filter(value => !removals[field].includes(value));
                 return { vocabulary, collection };
             });
-            ipcMain.handle('fixture:vocabulary', () => vocabulary);
+            const currentVocabulary = () => ({...vocabulary,context:[...new Set(collection.shots.flatMap(shot=>shot.organization.context))].sort()});
+            ipcMain.handle('fixture:vocabulary', () => currentVocabulary());
             ipcMain.handle('fixture:organization', (_, ids, action) => {
                 if (failOrganizationSave) { failOrganizationSave = false; throw new Error('Synthetic save failure'); }
                 if (['identity', 'projects'].includes(action.field)) action = { ...action, value: vocabulary[action.field].find(value=>value.toLowerCase()===action.value.toLowerCase()) ?? action.value };
@@ -72,7 +73,7 @@ if (!process.versions.electron) {
                     return { ...shot, organization: data };
                 }) };
                 if (action.field !== 'notes' && action.operation === 'add' && !vocabulary[action.field].includes(action.value)) vocabulary[action.field].push(action.value);
-                return { collection, vocabulary };
+                return { collection, vocabulary: currentVocabulary() };
             });
             let cancelRelink = true;
             let relinkCalls = 0;
@@ -149,11 +150,29 @@ if (!process.versions.electron) {
             }
             const push = async (shots) => { collection = { ...collection, revision: collection.revision + 1, shots }; window.webContents.send('shots:changed', collection); await new Promise((resolve) => setTimeout(resolve, 30)); };
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
+            const originals=structuredClone(collection.shots);
+            const duplicate={...structuredClone(originals[0]),id:'d'.repeat(64),sourceId:'B',filename:'Copied Clip.mp4'};
+            await push([...originals,duplicate]);
+            await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
+            assert.equal(await js(`document.querySelector('[aria-label="Total clips"]').textContent.trim()`),'6 clips total','Duplicate hashes do not increase the total');
+            await click('Filter clips from Source B');
+            await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===4`);
+            assert.ok(await js(`!!document.querySelector('[aria-label="Inspect Copied Clip.mp4"]')`),'Filtering retains the occurrence belonging to that source');
+            await click('Filter clips from Source B');
+            await push([...originals.slice(1),duplicate]);
+            await wait(`!!document.querySelector('[aria-label="Inspect Copied Clip.mp4"]')`);
+            assert.equal(await js(`document.querySelectorAll('button[aria-label^="Inspect "]').length`),6,'Removing one occurrence retains the other');
+            const unidentified={...duplicate,id:'e'.repeat(64),filename:'Unidentified.mp4'}; delete unidentified.fingerprint;
+            await push([...originals,duplicate,unidentified]);
+            await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===7`);
+            await push(originals);
+            await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
             await wait(`document.querySelector('[aria-label="Library location"]').textContent.includes('library needs to be set')`);
             await click('Configuration');
             await wait(`!!document.querySelector('dialog[open] [aria-label="Identity options"]')`);
             await wait(`!!document.querySelector('[aria-label="Delete Identity option cmsh"]')`);
-            assert.deepEqual(await js(`Array.from(document.querySelectorAll('dialog h3')).map(e=>e.textContent)`), ['Identity','Project','Tags']);
+            assert.deepEqual(await js(`Array.from(document.querySelectorAll('dialog h3')).map(e=>e.textContent)`), ['Identity','Project']);
+            assert.equal(await js(`getComputedStyle(document.querySelector('[aria-label="Identity options"]')).height`),'192px');
             assert.ok(await js(`document.querySelector('[aria-label="Configured Library location"]').getBoundingClientRect().left > Array.from(document.querySelectorAll('dialog button')).find(b=>b.textContent==='Set Library location').getBoundingClientRect().right`));
             await click('Delete Identity option cmsh');
             assert.ok(vocabulary.identity.includes('cmsh'), 'Deletion is staged until Save');
@@ -163,7 +182,6 @@ if (!process.versions.electron) {
             await wait(`!!document.querySelector('[aria-label="Delete Identity option cmsh"]')`);
             await click('Delete Identity option cmsh');
             await click('Delete Project option crystal-brigade');
-            await click('Delete Tag option topic-00');
             const organizationBeforeSave = collection.shots.map(shot=>structuredClone(shot.organization));
             failOptionsSave = true;
             await click('Save configuration');
@@ -174,33 +192,38 @@ if (!process.versions.electron) {
             assert.equal(optionSaves, 1);
             assert.ok(!vocabulary.identity.includes('cmsh'));
             assert.ok(!vocabulary.projects.includes('crystal-brigade'));
-            assert.ok(!vocabulary.context.includes('topic-00'));
+            assert.ok(vocabulary.context.includes('topic-00'));
             assert.deepEqual(collection.shots.map(shot=>shot.organization), organizationBeforeSave, 'Configuration never changes clip information');
             await click('Configuration');
             await wait(`!!document.querySelector('[aria-label="Delete Identity option owmo"]')`);
             collection={...collection,revision:collection.revision+1,shots:collection.shots.map((shot,index)=>index<2?{...shot,organization:{...shot.organization,identity:'owmo',context:['music','studio'],notes:'Keep notes'}}:shot)};
             const affectedBefore=structuredClone(collection.shots.map(shot=>shot.organization));
             await click('Delete Identity option owmo');
-            await click('Delete Tag option music');
             await click('Save configuration');
             await wait(`document.querySelector('[role="alertdialog"]')?.textContent.includes('2 clips will be affected')`);
             assert.equal(await js(`document.querySelectorAll('[aria-label="Clips affected by removal"] tbody tr').length`),2);
             assert.ok(await js(`document.querySelector('[aria-label="Clips affected by removal"]').textContent.includes('Identity: owmo')`));
-            assert.ok(await js(`document.querySelector('[aria-label="Clips affected by removal"]').textContent.includes('Context: music')`));
+            assert.equal(await js(`document.querySelectorAll('[aria-label="Active clip"]').length`),2);
+            assert.equal(await js(`document.querySelector('#remove-options-title').textContent`),'Removing Clip Attributes');
+            assert.ok(await js(`(()=>{const cols=document.querySelectorAll('[aria-label="Clips affected by removal"] th');return cols[1].textContent==='Metadata to Remove'&&Math.abs(cols[0].getBoundingClientRect().width-cols[1].getBoundingClientRect().width)<1})()`));
             await js(`document.querySelector('[role="alertdialog"] button').click()`);
             await wait(`!document.querySelector('[role="alertdialog"]')`);
             assert.deepEqual(collection.shots.map(shot=>shot.organization),affectedBefore,'Cancel preserves all assignments');
+            await wait(`!!document.querySelector('[aria-label="Delete Identity option owmo"]')`);
+            assert.equal(await js(`document.querySelector('[aria-label="Save configuration"]').disabled`),true,'Cancel restores the list and clears staged changes');
+            await click('Delete Identity option owmo');
             await click('Save configuration');
             await wait(`!!document.querySelector('[aria-label="Clips affected by removal"]')`);
             if(process.env.SHOT_MANAGER_OPTIONS_SCREENSHOT) await writeFile(process.env.SHOT_MANAGER_OPTIONS_SCREENSHOT,(await window.webContents.capturePage()).toPNG());
             await click('Confirm remove saved values');
             await wait(`!document.querySelector('dialog[open]')`);
             assert.equal(collection.shots[0].organization.identity,null);
-            assert.deepEqual(collection.shots[0].organization.context,['studio']);
+            assert.deepEqual(collection.shots[0].organization.context,['music','studio']);
             assert.equal(collection.shots[0].organization.notes,'Keep notes');
             assert.ok(!vocabulary.identity.includes('owmo'));
             await click('Configuration');
-            await wait(`!!document.querySelector('[aria-label="Tags options"]')`);
+            await wait(`!!document.querySelector('[aria-label="Identity options"]')`);
+            assert.equal(await js(`!!document.querySelector('[aria-label="Tags options"]')`),false);
             if (process.env.SHOT_MANAGER_CONFIGURATION_SCREENSHOT) {
                 await new Promise(resolve => setTimeout(resolve, 150));
                 await writeFile(process.env.SHOT_MANAGER_CONFIGURATION_SCREENSHOT, (await window.webContents.capturePage()).toPNG());
@@ -376,6 +399,7 @@ if (!process.versions.electron) {
             await wait(`document.querySelector('footer').textContent.includes('0 skipped')`); assert.deepEqual(await selected(), []);
             assert.equal(await js(`Array.from(document.querySelectorAll('footer button')).find(b=>b.textContent==='Review & Ingest').disabled`), true);
             Object.assign(vocabulary, { identity:['cmsh','owmo'], projects:['crystal-brigade'], context:['music','music/edm','music/rock','studio',...Array.from({length:20},(_,i)=>`topic-${String(i).padStart(2,'0')}`)] });
+            await push(collection.shots.map(shot=>shot.filename==='Clip 6.mp4'?{...shot,organization:{...shot.organization,context:[...vocabulary.context]}}:shot));
             const fill = async (label, value) => {
                 const field = ['Project', 'Identity'].includes(label) ? label : null;
                 if (field && !await js(`!!document.querySelector('input[aria-label=${JSON.stringify(label)}]')`)) await click(`${field} selection`);
@@ -394,7 +418,7 @@ if (!process.versions.electron) {
             await wait(`!!document.querySelector('[role="listbox"][aria-label="Project suggestions"]')`);
             assert.ok(await js(`document.querySelector('[role="listbox"][aria-label="Project suggestions"]').textContent.includes('crystal-brigade')`));
             if (process.env.SHOT_MANAGER_DROPDOWN_SCREENSHOT) await writeFile(process.env.SHOT_MANAGER_DROPDOWN_SCREENSHOT, (await window.webContents.capturePage()).toPNG());
-            assert.ok(await js(`document.querySelector('[role="tab"][aria-selected="true"]').textContent==='Metadata'`));
+            assert.ok(await js(`document.querySelector('[role="tab"][aria-selected="true"]').textContent==='Attributes'`));
             await fill('Project', 'Alpha Project');
             assert.equal(await js(`document.querySelector('input[aria-label="Project"]').value`), 'Alpha Project');
             await js(`document.querySelector('input[aria-label="Project"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))`);
@@ -412,6 +436,14 @@ if (!process.versions.electron) {
             await tag('Identity', 'OWMO');
             await tag('Identity', 'CMSH');
             assert.equal(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.identity, 'cmsh');
+            await fill('Context tags', 'topic-1');
+            await js(`document.querySelector('[aria-label="Context tags"]').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))`);
+            const highlighted = await js(`document.getElementById(document.querySelector('[aria-label="Context tags"]').getAttribute('aria-activedescendant')).textContent.trim()`);
+            assert.equal(highlighted,'topic-11');
+            await js(`document.querySelector('[aria-label="Context tags"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))`);
+            await wait(`!!document.querySelector('[data-field="context"][data-tag="topic-11"]')`);
+            assert.ok(!collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.context.includes('topic-1'),'Enter adds the highlighted suggestion rather than the typed prefix');
+            await click('Remove Context tag topic-11');
             await tag('Context tags', 'music/r', 'Tab');
             await wait(`!!document.querySelector('[data-field="context"][data-tag="music/rock"]')`);
             assert.equal(await js(`document.activeElement.getAttribute('aria-label')`), 'Context tags');
@@ -437,11 +469,17 @@ if (!process.versions.electron) {
             await tag('Context tags', 'studio');
             await wait(`!!document.querySelector('[data-tag="studio"][data-shared="true"]')`);
             await fill('Context tags', '');
+            assert.equal(await js(`!!document.querySelector('[aria-label="Context suggestions"]')`), false, 'Empty focused tag input has no dropdown');
+            await fill('Context tags', 't');
             await wait(`!!document.querySelector('[aria-label="Context suggestions"]')`);
-            assert.equal(await js(`document.querySelectorAll('[aria-label="Context suggestions"] [role="option"]').length`), vocabulary.context.length);
+            assert.ok(await js(`Array.from(document.querySelectorAll('[aria-label="Context suggestions"] [role="option"]')).every(node=>node.textContent.startsWith('topic-')||node.textContent.startsWith('Add'))`), 'First character filters suggestions');
             assert.ok(await js(`(()=>{const list=document.querySelector('[aria-label="Context suggestions"]');return list.scrollHeight>list.clientHeight&&getComputedStyle(list).overflowY==='auto'})()`));
             await js(`Array.from(document.querySelectorAll('[aria-label="Context suggestions"] button')).find(b=>b.textContent.includes('topic-19')).click()`);
             await wait(`!!document.querySelector('[data-tag="topic-19"]')`);
+            assert.equal(await js(`!!document.querySelector('[aria-label="Context suggestions"]')`), false, 'Adding a tag closes suggestions');
+            await tag('Context tags','z-last');
+            await tag('Context tags','a-after');
+            assert.deepEqual(await js(`Array.from(document.querySelectorAll('[data-field="context"]')).map(node=>node.dataset.tag).filter(tag=>['z-last','a-after'].includes(tag))`), ['z-last','a-after'], 'Tags retain insertion order rather than sorting');
             if (process.env.SHOT_MANAGER_ORGANIZATION_SCREENSHOT) {
                 await writeFile(process.env.SHOT_MANAGER_ORGANIZATION_SCREENSHOT, (await window.webContents.capturePage()).toPNG());
             }
@@ -463,10 +501,10 @@ if (!process.versions.electron) {
             await wait(`!document.querySelector('#clear-organization-title')`);
             assert.deepEqual(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization, beforeClipClear);
             await inspect(5, {metaKey:true});
-            assert.ok(await js(`(()=>{const button=document.querySelector('[aria-label="Clear selected clip information"]'),viewport=document.querySelector('#clip-inspector-content'),bounds=button.getBoundingClientRect(),panel=viewport.getBoundingClientRect();return !!button.closest('[role="tabpanel"]')&&!button.closest('header')&&Math.abs(bounds.right-(panel.right-16))<25&&Math.abs(bounds.bottom-(panel.bottom-16))<3})()`), 'Clear stays at the bottom right of the Metadata panel');
+            assert.ok(await js(`(()=>{const button=document.querySelector('[aria-label="Clear selected clip information"]'),viewport=document.querySelector('#clip-inspector-content'),bounds=button.getBoundingClientRect(),panel=viewport.getBoundingClientRect();return !!button.closest('[role="tabpanel"]')&&!button.closest('header')&&Math.abs(bounds.right-(panel.right-16))<25&&Math.abs(bounds.bottom-(panel.bottom-16))<3})()`), 'Clear stays at the bottom right of the Attributes panel');
             await click('Clear selected clip information');
             await wait(`document.querySelector('#clear-organization-description').textContent.includes('2 selected clips')`);
-            assert.equal(await js(`document.querySelector('#clear-organization-description').textContent.trim()`), 'Metadata will be cleared for 2 selected clips.');
+            assert.equal(await js(`document.querySelector('#clear-organization-description').textContent.trim()`), 'Attributes will be cleared for 2 selected clips.');
             assert.equal(await js(`document.querySelector('#clear-organization-description').nextElementSibling?.textContent.includes('thumbnail')??false`), false);
             if (process.env.SHOT_MANAGER_CLEAR_SCREENSHOT) await writeFile(process.env.SHOT_MANAGER_CLEAR_SCREENSHOT, (await window.webContents.capturePage()).toPNG());
             await click('Confirm clear clip information');

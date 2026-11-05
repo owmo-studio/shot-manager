@@ -37,9 +37,17 @@ export class ShotScanner {
         return this.thumbnailQueue?.cacheSummary() ?? { bytes: 0, files: 0 };
     }
 
+    async vocabulary(): Promise<TagVocabulary> {
+        const options = await this.organization.vocabulary();
+        // Only loaded clips contribute suggestions, including temporarily unavailable sources.
+        options.context = [...new Set([...this.jobs.values()].flatMap(job =>
+            job.shots.flatMap(({ shot }) => shot.organization?.context ?? [])))].sort();
+        return options;
+    }
+
     async localDataSummary() {
         const cache = await this.cacheSummary();
-        const lists = await this.organization.vocabulary();
+        const lists = await this.vocabulary();
         return { ...cache, options: lists.identity.length + lists.projects.length + lists.context.length,
             identities: lists.identity.length, projects: lists.projects.length, tags: lists.context.length,
             records: await this.organization.recordCount(), fingerprints: await this.fingerprints.recordCount(),
@@ -253,19 +261,24 @@ export class ShotScanner {
             }
         }
         this.publish();
-        return { collection: this.snapshot(), vocabulary: changed.vocabulary };
+        return { collection: this.snapshot(), vocabulary: await this.vocabulary() };
     }
 
     private optionsEditable = () => ![...this.jobs.keys()].some(id => this.isBusy(id)) && !this.clearingCache;
 
+    private activeDraftKeys() {
+        return new Set([...this.jobs.values()].flatMap(job => job.shots.flatMap(({ shot }) =>
+            shot.fingerprint ? [organizationKey(shot.fingerprint)] : [])));
+    }
+
     previewOptions(removals: TagVocabulary) {
         if (!this.optionsEditable()) throw Object.assign(new Error("Wait for scanning to finish, then save again."), { statusCode: 409 });
-        return this.organization.previewOptions(removals);
+        return this.organization.previewOptions(removals, this.activeDraftKeys());
     }
 
     async removeOptions(removals: TagVocabulary, reviewToken: string) {
         if (!this.optionsEditable()) throw Object.assign(new Error("Wait for scanning to finish, then save again."), { statusCode: 409 });
-        const changed = await this.organization.removeOptions(removals, reviewToken, this.optionsEditable);
+        const changed = await this.organization.removeOptions(removals, reviewToken, this.optionsEditable, this.activeDraftKeys());
         for (const job of this.jobs.values()) for (const { shot } of job.shots) {
             if (shot.fingerprint) {
                 const data = changed.drafts[organizationKey(shot.fingerprint)];
@@ -273,7 +286,7 @@ export class ShotScanner {
             }
         }
         this.publish();
-        return { vocabulary: changed.vocabulary, collection: this.snapshot() };
+        return { vocabulary: await this.vocabulary(), collection: this.snapshot() };
     }
 
     private isReconciling(job: ScanJob): boolean {

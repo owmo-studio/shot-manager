@@ -54,7 +54,7 @@ export function ResetLocalDataButton({ disabled, onBusyChange, onReset }: {
             <p id="reset-local-data-description" className="mt-3 text-sm leading-6 text-zinc-300">Local data will be permanently deleted.</p>
             {summary ? <ul aria-label="Local data to reset" className="mt-3 space-y-2 text-sm text-zinc-400">
                 <li>{summary.files.toLocaleString()} thumbnails · {(summary.bytes / 1024 / 1024).toFixed(1)} MB</li>
-                <li>{summary.identities.toLocaleString()} identities · {summary.projects.toLocaleString()} projects · {summary.tags.toLocaleString()} tags</li>
+                <li>{summary.identities.toLocaleString()} identities · {summary.projects.toLocaleString()} projects</li>
                 <li>{summary.records.toLocaleString()} clip records</li>
                 <li>{summary.fingerprints.toLocaleString()} fingerprints</li>
                 <li>{summary.sources.toLocaleString()} sources · {summary.clips.toLocaleString()} workspace clips</li>

@@ -6,7 +6,7 @@ import type { ShotCollection } from "../../shared/shots";
 import { ClipInspector } from "./ClipInspector";
 import { Configuration } from "./Configuration";
 import { MultiClipInspector } from "./MultiClipInspector";
-import { orderedShots, useShotSelection } from "./shotSelection";
+import { clipIdentity, uniqueShots, orderedShots, useShotSelection } from "./shotSelection";
 import { deviceLabel } from "./mediaInfo";
 import { RemoveSourceDialog } from "./RemoveSourceDialog";
 import { MIN_INSPECTOR_WIDTH } from "./ResizableInspector";
@@ -30,11 +30,12 @@ function App() {
     const latestShotRevision = useRef(-1);
     const filteredSources = sources.filter((source) => selectedSourceIds.includes(source.id));
     const filteredIds = new Set(filteredSources.map((source) => source.id));
-    const sourceCollection = filteredIds.size ? {
+    const allUniqueShots = uniqueShots(shotCollection.shots);
+    const sourceCollection = {
         ...shotCollection,
-        shots: shotCollection.shots.filter((shot) => filteredIds.has(shot.sourceId)),
-        scans: shotCollection.scans.filter((scan) => filteredIds.has(scan.sourceId)),
-    } : shotCollection;
+        shots: uniqueShots(shotCollection.shots.filter((shot) => !filteredIds.size || filteredIds.has(shot.sourceId))),
+        scans: shotCollection.scans.filter((scan) => !filteredIds.size || filteredIds.has(scan.sourceId)),
+    };
     const deviceCounts = new Map<string, number>();
     for (const shot of sourceCollection.shots) {
         const device = deviceLabel(shot.metadata.device) ?? "Video";
@@ -54,10 +55,12 @@ function App() {
     const displayedShots = orderedShots(visibleCollection.shots, newestFirst);
     const selectableShots = displayedShots
         .filter((shot) => shot.editable);
-    const selectedSkippedCount = selectedShots.filter((shot) => selection.skippedIds.includes(shot.id)).length;
     const selectedLocked = selectedShots.some((shot) => !shot.editable);
-    const ingestShots = shotCollection.shots.filter((shot) => !selection.skippedIds.includes(shot.id));
-    const skippedCount = shotCollection.shots.length - ingestShots.length;
+    const skippedKeys = new Set(shotCollection.shots.filter(shot => selection.skippedIds.includes(shot.id)).map(clipIdentity));
+    const skippedShotIds = shotCollection.shots.filter(shot => skippedKeys.has(clipIdentity(shot))).map(shot => shot.id);
+    const selectedSkippedCount = selectedShots.filter(shot => skippedKeys.has(clipIdentity(shot))).length;
+    const ingestShots = allUniqueShots.filter(shot => !skippedKeys.has(clipIdentity(shot)));
+    const skippedCount = allUniqueShots.length - ingestShots.length;
     const blockedIngestCount = ingestShots.filter((shot) => !shot.available || !shot.editable || !availableSourceIds.has(shot.sourceId)).length;
     const navigationKey = JSON.stringify({ orderedIds: displayedShots.map((shot) => shot.id), selectableIds: selectableShots.map((shot) => shot.id) });
     const keyboardNavigation = useRef(false);
@@ -81,7 +84,8 @@ function App() {
 
     function changeSkip(ids: string[], skipped: boolean) {
         if (ids.some((id) => !shotCollection.shots.some((shot) => shot.id === id && shot.editable))) return;
-        selection.dispatch({ type: "skip", ids, skipped });
+        const keys = new Set(shotCollection.shots.filter(shot => ids.includes(shot.id)).map(clipIdentity));
+        selection.dispatch({ type: "skip", ids: shotCollection.shots.filter(shot => keys.has(clipIdentity(shot))).map(shot => shot.id), skipped });
     }
 
     useEffect(() => {
@@ -393,8 +397,8 @@ function App() {
                     <div className="flex items-center justify-between gap-2">
                         <div>
                             <h2 className="text-lg font-medium text-zinc-300">Sources</h2>
-                            {shotCollection.shots.length > 0 && <p aria-label="Total clips" className="mt-0.5 text-xs text-zinc-500">
-                                {shotCollection.shots.length.toLocaleString()} {shotCollection.shots.length === 1 ? "clip" : "clips"} total
+                            {allUniqueShots.length > 0 && <p aria-label="Total clips" className="mt-0.5 text-xs text-zinc-500">
+                                {allUniqueShots.length.toLocaleString()} {allUniqueShots.length === 1 ? "clip" : "clips"} total
                             </p>}
                         </div>
                         <button
@@ -472,7 +476,7 @@ function App() {
                             newestFirst={newestFirst}
                             sources={sources}
                             selectedShotIds={selection.editingIds}
-                            skippedShotIds={selection.skippedIds}
+                            skippedShotIds={skippedShotIds}
                             onSelect={selectShot}
                         />
                     ) : (

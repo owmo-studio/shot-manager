@@ -39,7 +39,7 @@ export function createServer(token: string, onShotsChanged?: (collection: ShotCo
   }))
 
   server.get('/api/sources', () => sources.list())
-  server.get('/api/organization/vocabulary', () => sources.scanner.organization.vocabulary())
+  server.get('/api/organization/vocabulary', () => sources.scanner.vocabulary())
   const optionProperties = Object.fromEntries(['identity', 'projects', 'context'].map(field => [field, {
     type: 'array', maxItems: 1000, items: { type: 'string', maxLength: 128 }
   }]))

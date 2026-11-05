@@ -13,6 +13,7 @@ function TagFieldInput({ field, shots, vocabulary, disabled, submit }: {
     const [query, setQuery] = useState('');
     const [focused, setFocused] = useState(false);
     const [highlight, setHighlight] = useState(0);
+    const [optionChosen, setOptionChosen] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const id = useId();
     const input = useRef<HTMLInputElement>(null);
@@ -26,7 +27,7 @@ function TagFieldInput({ field, shots, vocabulary, disabled, submit }: {
     if (query && !vocabulary.some(value => value.toLocaleLowerCase() === query.toLocaleLowerCase())) {
         try { options.push({ tag: single ? normalizeOption(query) : normalizeTag(query), create: true }); } catch {}
     }
-    const showSuggestions = focused && !disabled;
+    const showSuggestions = focused && !disabled && (single || query.length > 0);
     const active = Math.min(highlight, Math.max(0, options.length - 1));
     useEffect(() => { if (focused) input.current?.focus(); }, [focused]);
     useEffect(() => {
@@ -39,11 +40,11 @@ function TagFieldInput({ field, shots, vocabulary, disabled, submit }: {
             const tag = single ? normalizeOption(value) : normalizeTag(value);
             const remove = !single && fromOption && counts.get(tag) === shots.length;
             submit({ field, operation: remove ? 'remove' : 'add', value: tag });
-            setQuery(''); setHighlight(0); setError(null);
+            setQuery(''); setHighlight(0); setOptionChosen(false); setError(null);
             if (single) setFocused(false);
         } catch (failure) { setError((failure as Error).message); }
     }
-    const chips = [...counts].sort(([a], [b]) => a.localeCompare(b)).map(([tag, count]) => {
+    const chips = [...counts].map(([tag, count]) => {
         const partial = count !== shots.length;
         return <span key={tag} data-tag={tag} data-field={field} data-shared={!partial}
             title={partial ? `${count} of ${shots.length} selected clips` : 'Shared by all selected clips'}
@@ -62,16 +63,18 @@ function TagFieldInput({ field, shots, vocabulary, disabled, submit }: {
         placeholder={single ? 'Search or add…' : shots.length ? 'Choose or add tags…' : ''} maxLength={single ? 128 : 64}
         title={single ? 'Select an existing value or type a new name; Enter saves and Tab completes.' : 'Space/Enter adds a tag; Tab completes. Use / for hierarchy.'}
         onFocus={() => setFocused(true)} onClick={() => setFocused(true)}
-        onChange={event => { setQuery(single ? event.target.value.normalize('NFC') : event.target.value.normalize('NFC').toLowerCase()); setHighlight(0); setFocused(true); setError(null); }}
+        onChange={event => { setQuery(single ? event.target.value.normalize('NFC') : event.target.value.normalize('NFC').toLowerCase()); setHighlight(0); setOptionChosen(false); setFocused(true); setError(null); }}
         onKeyDown={event => {
             if (event.nativeEvent.isComposing) return;
             if (event.key === 'Tab' && event.shiftKey) { event.preventDefault(); return; }
             if ((single ? ['Tab', 'Enter'] : ['Tab', ' ', 'Enter']).includes(event.key)) {
                 event.preventDefault(); event.stopPropagation();
-                const useOption = event.key === 'Tab' || (!query && event.key === 'Enter');
+                if (!single && !query) return;
+                const useOption = event.key === 'Tab' || (event.key === 'Enter' && showSuggestions && (optionChosen || !query));
                 commit(useOption && options.length ? options[active].tag : query, event.key === 'Enter' && !query);
             } else if (showSuggestions && ['ArrowUp', 'ArrowDown'].includes(event.key)) {
                 event.preventDefault(); event.stopPropagation();
+                setOptionChosen(true);
                 setHighlight((active + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % Math.max(1, options.length));
             } else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setFocused(false); }
         }}
@@ -82,7 +85,7 @@ function TagFieldInput({ field, shots, vocabulary, disabled, submit }: {
         {single ? <div className="mt-1.5 flex min-h-10 items-center rounded-lg border border-white/10 bg-black/10 focus-within:border-blue-400/50">
             <button type="button" id={`${id}-trigger`} disabled={disabled} aria-label={`${labels[field]} selection`}
                 aria-haspopup="listbox" aria-expanded={showSuggestions} aria-controls={`${id}-options`}
-                onClick={() => { setQuery(''); setHighlight(0); setFocused(!focused); }}
+                onClick={() => { setQuery(''); setHighlight(0); setOptionChosen(false); setFocused(!focused); }}
                 className="flex min-h-10 min-w-0 flex-1 items-center justify-between gap-2 px-2 py-1.5 text-left hover:bg-white/4">
                 <span className="flex min-w-0 flex-wrap gap-1.5">{chips.length ? chips : <span className="px-1 text-xs text-zinc-600">{shots.length ? 'Not assigned' : ''}</span>}</span>
                 <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" className="size-4 shrink-0 text-zinc-500" aria-hidden="true"><path d="m5 7 5 5 5-5" strokeWidth="1.5" /></svg>
@@ -101,7 +104,7 @@ function TagFieldInput({ field, shots, vocabulary, disabled, submit }: {
                 className="max-h-48 overflow-y-auto overscroll-contain">
                 {options.map((option, index) => <li key={option.tag} id={`${id}-option-${index}`} role="option" aria-selected={counts.get(option.tag) === shots.length}>
                     <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => commit(option.tag, true)}
-                        onMouseEnter={() => setHighlight(index)}
+                        onMouseEnter={() => { setHighlight(index); setOptionChosen(true); }}
                         className={`flex w-full items-center gap-2 rounded px-2 py-2 text-left text-xs text-zinc-300 ${index === active ? 'bg-white/10' : 'hover:bg-white/5'}`}>
                         <span className="min-w-0 flex-1 break-all">{option.create ? `Add “${option.tag}”` : option.tag}</span>
                         {counts.get(option.tag) === shots.length ? <span aria-hidden="true" className="text-zinc-400">✓</span> : counts.has(option.tag) ? <span className="text-[10px] text-zinc-500">{counts.get(option.tag)}/{shots.length}</span> : null}
@@ -139,12 +142,15 @@ function OrganizeFields({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: (
         const cleared = (event: Event) => {
             const ids = (event as CustomEvent<string[]>).detail;
             if (shots.some(shot => ids.includes(shot.id))) setNotes('');
+            reload();
         };
         reload();
+        const unsubscribe = window.desktop.onShotsChanged(reload);
         window.addEventListener('organization-options-changed', reload);
         window.addEventListener('organization-cleared', cleared);
         return () => {
             disposed = true; mounted.current = false;
+            unsubscribe();
             void window.desktop.flushNotes().catch(() => undefined);
             window.removeEventListener('organization-options-changed', reload);
             window.removeEventListener('organization-cleared', cleared);
