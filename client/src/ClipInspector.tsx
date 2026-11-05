@@ -8,7 +8,7 @@ import { durationRow, primaryMetadataRows, quickMediaSummary, sourceFilePath } f
 import { ResizableInspector } from "./ResizableInspector";
 import { PreviewPlayer } from "./PreviewPlayer";
 import type { PreviewHandle } from "./PreviewPlayer";
-import { ContextFields } from "./ContextFields";
+import { AttributeFields } from "./AttributeFields";
 import { SkipSelection } from "./SkipSelection";
 import { ClearOrganizationButton } from "./ClearOrganizationButton";
 
@@ -141,8 +141,8 @@ export function ClipInspector({
 
     return (
         <ResizableInspector width={width} onResize={onResize}>
-            <div inert={empty} className={`flex min-h-full flex-col ${empty ? "opacity-40" : ""}`}>
-                <header className="mb-4 flex items-start justify-between gap-3">
+            <div inert={empty} className={`single-clip-inspector flex h-full min-h-0 flex-col ${empty ? "opacity-40" : ""}`}>
+                <header className="inspector-heading mb-3 flex shrink-0 items-start justify-between gap-3">
                     <div className="min-w-0">
                         <h2
                             className="min-h-5 truncate text-sm font-medium"
@@ -194,7 +194,7 @@ export function ClipInspector({
                         {thumbnailError}
                     </p>
                 )}
-                <div className={`overflow-hidden rounded-lg border ${!empty && unavailable ? "border-red-500/30 bg-red-500/8" : "border-white/8 bg-black"}`}>
+                <div data-inspector-preview className={`shrink-0 overflow-hidden rounded-lg border ${!empty && unavailable ? "border-red-500/30 bg-red-500/8" : "border-white/8 bg-black"}`}>
                     {empty ? (
                         <div className="aspect-video" aria-label="No clip selected" />
                     ) : unavailable || pausedForScan ? (
@@ -213,7 +213,7 @@ export function ClipInspector({
                         <PreviewPlayer key={shot.id} ref={preview} shot={shot} lutEnabled={lutEnabled} onReady={setFrameReady} onScrubbing={setScrubbing} />
                     )}
                 </div>
-                <div role="tablist" aria-label="Clip information" className="mt-5 flex rounded-lg bg-white/4 p-1">
+                <div role="tablist" aria-label="Clip information" className="mt-3 flex shrink-0 rounded-lg bg-white/4 p-1">
                     {(["metadata", "file"] as const).map((choice) => (
                         <button
                             key={choice}
@@ -251,10 +251,10 @@ export function ClipInspector({
                         role="tabpanel"
                         id="inspector-metadata-panel"
                         aria-labelledby="inspector-metadata-tab"
-                        className="mt-4 flex flex-1 flex-col"
+                        className="attribute-panel mt-3 flex flex-1 flex-col"
                     >
-                        <ContextFields shots={selectedShot ? [selectedShot] : []} onUpdated={onOrganizationUpdated} />
-                        <div className="mt-auto flex justify-end pt-5">
+                        <AttributeFields shots={selectedShot ? [selectedShot] : []} onUpdated={onOrganizationUpdated} />
+                        <div className="attribute-clear mt-auto flex justify-end pt-3">
                             <ClearOrganizationButton shots={selectedShot ? [selectedShot] : []} onUpdated={onOrganizationUpdated} />
                         </div>
                     </section>

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { DRAFT_RETENTION_DAYS, emptyOrganization, emptyVocabulary, normalizeOption, normalizeTag, organizationKey, TAG_FIELDS, validateOptionRemovals, validateOrganizationAction } from '../shared/organization';
+import { DRAFT_RETENTION_DAYS, emptyAttributes, emptyOrganization, emptyVocabulary, normalizeOption, normalizeScene, normalizeTag, organizationKey, TAG_FIELDS, validateOptionRemovals, validateOrganizationAction } from '../shared/organization';
 import type { OptionRemovalPlan, OrganizationAction, ShotOrganization, TagVocabulary } from '../shared/organization';
 import { VIDEO_SAMPLE_SCHEME } from '../shared/shots';
 import type { VideoFingerprint } from '../shared/shots';
@@ -9,7 +9,15 @@ import type { VideoFingerprint } from '../shared/shots';
 const draftKeyPattern = new RegExp(`^${VIDEO_SAMPLE_SCHEME}:[a-f0-9]{64}$`);
 
 interface DraftRecord { data: ShotOrganization; lastScannedAt: number; lastEditedAt: number; previousProjects?: string[]; clip?: { name: string; path: string } }
-interface OrganizationState { version: 1 | 2 | 3 | 4 | 5; vocabulary: TagVocabulary; drafts: Record<string, DraftRecord> }
+interface OrganizationState { version: 1 | 2 | 3 | 4 | 5 | 6 | 7; vocabulary: TagVocabulary; drafts: Record<string, DraftRecord> }
+
+function migrateKey(value: object, oldKey: string, newKey: string) {
+    const record = value as Record<string, unknown>;
+    if (!Object.hasOwn(record, oldKey)) return;
+    if (Object.hasOwn(record, newKey) && JSON.stringify(record[newKey]) !== JSON.stringify(record[oldKey])) throw new Error('Conflicting saved attribute keys');
+    record[newKey] = record[oldKey];
+    delete record[oldKey];
+}
 
 export class OrganizationStore {
     private state?: OrganizationState;
@@ -28,41 +36,56 @@ export class OrganizationStore {
 
     private async load() {
         if (this.state) return this.state;
-        let state: OrganizationState = { version: 5, vocabulary: emptyVocabulary(), drafts: {} };
+        let state: OrganizationState = { version: 7, vocabulary: emptyVocabulary(), drafts: {} };
         if (this.path) {
             try {
                 state = JSON.parse(await readFile(this.path, 'utf8'));
-                if (![1, 2, 3, 4, 5].includes(state.version) || !state.vocabulary || !state.drafts || typeof state.drafts !== 'object' || Array.isArray(state.drafts)) throw new Error('Invalid state');
+                if (![1, 2, 3, 4, 5, 6, 7].includes(state.version) || !state.vocabulary || !state.drafts || typeof state.drafts !== 'object' || Array.isArray(state.drafts)) throw new Error('Invalid state');
+                if (state.version < 7) {
+                    migrateKey(state.vocabulary, 'context', 'tags');
+                    migrateKey(state.vocabulary, 'projects', 'project');
+                }
                 for (const field of TAG_FIELDS) {
-                    if (!Array.isArray(state.vocabulary[field]) || state.vocabulary[field].some(value => typeof value !== 'string' || (field === 'context' ? normalizeTag(value) : normalizeOption(value)) !== value)) throw new Error('Invalid vocabulary');
+                    if (!Array.isArray(state.vocabulary[field]) || state.vocabulary[field].some(value => typeof value !== 'string' || (field === 'tags' ? normalizeTag(value) : normalizeOption(value)) !== value)) throw new Error('Invalid vocabulary');
                 }
                 for (const [key, record] of Object.entries(state.drafts)) {
                     if (!draftKeyPattern.test(key) || !record || !Number.isFinite(record.lastScannedAt) || !Number.isFinite(record.lastEditedAt)) throw new Error('Invalid draft');
                     const data = record.data;
+                    if (record.previousProjects !== undefined && (!Array.isArray(record.previousProjects) ||
+                        record.previousProjects.some(value => typeof value !== 'string' || normalizeOption(value) !== value))) throw new Error('Invalid retained projects');
+                    if (state.version < 7 && data) {
+                        migrateKey(data, 'context', 'tags');
+                        const legacy = data as unknown as Record<string, unknown>;
+                        if (Object.hasOwn(legacy, 'projects')) {
+                            const projects = legacy.projects;
+                            if (!Array.isArray(projects) || projects.some(value => typeof value !== 'string' || normalizeOption(value) !== value)) throw new Error('Invalid legacy project');
+                            const project = projects[0] ?? null;
+                            if (Object.hasOwn(legacy, 'project') && legacy.project !== project) throw new Error('Conflicting project assignments');
+                            if (projects.length > 1) record.previousProjects = [...new Set([...(record.previousProjects ?? []), ...projects])];
+                            data.project = project;
+                            delete legacy.projects;
+                        }
+                    }
                     if (state.version < 5 && data && !Object.hasOwn(data, 'skipped')) data.skipped = false;
+                    if (state.version < 6 && data && !Object.hasOwn(data, 'scene')) data.scene = '';
                     if (record.clip && (typeof record.clip.name !== 'string' || typeof record.clip.path !== 'string')) throw new Error('Invalid clip reference');
                     if (!data || !(data.identity === null || (typeof data.identity === 'string' && normalizeOption(data.identity) === data.identity)) ||
-                        typeof data.skipped !== 'boolean' || typeof data.notes !== 'string' || data.notes.length > 10000) throw new Error('Invalid draft');
-                    for (const field of ['projects', 'context'] as const) {
-                        if (!Array.isArray(data[field]) || data[field].some(value => typeof value !== 'string' || (field === 'context' ? normalizeTag(value) : normalizeOption(value)) !== value)) throw new Error('Invalid draft');
+                        typeof data.skipped !== 'boolean' || typeof data.notes !== 'string' || data.notes.length > 10000 ||
+                        typeof data.scene !== 'string' || normalizeScene(data.scene) !== data.scene ||
+                        !(data.project === null || (typeof data.project === 'string' && normalizeOption(data.project) === data.project))) throw new Error('Invalid draft');
+                    for (const field of ['tags'] as const) {
+                        if (!Array.isArray(data[field]) || data[field].some(value => typeof value !== 'string' || (field === 'tags' ? normalizeTag(value) : normalizeOption(value)) !== value)) throw new Error('Invalid draft');
                     }
                 }
-                let migrated = state.version !== 5 || Object.hasOwn(state.vocabulary, 'colors') || Object.hasOwn(state.vocabulary, 'colorVersion');
-                state.vocabulary = { identity: state.vocabulary.identity, projects: state.vocabulary.projects, context: [] };
-                for (const record of Object.values(state.drafts)) {
-                    if (record.data.projects.length > 1) {
-                        record.previousProjects ??= [...record.data.projects];
-                        record.data.projects = record.data.projects.slice(0, 1);
-                        migrated = true;
-                    }
-                }
-                if (migrated) { state.version = 5; await this.save(state); }
+                const migrated = state.version !== 7 || Object.hasOwn(state.vocabulary, 'colors') || Object.hasOwn(state.vocabulary, 'colorVersion');
+                state.vocabulary = { identity: state.vocabulary.identity, project: state.vocabulary.project, tags: [] };
+                if (migrated) { state.version = 7; await this.save(state); }
             } catch (error) {
                 if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Could not read saved tags. Existing data has been preserved.');
             }
         }
         this.state = state;
-        this.vocabularyKey = JSON.stringify([state.vocabulary.identity, state.vocabulary.projects]);
+        this.vocabularyKey = JSON.stringify([state.vocabulary.identity, state.vocabulary.project]);
         return state;
     }
 
@@ -85,7 +108,7 @@ export class OrganizationStore {
 
     private async save(next: OrganizationState, validate: () => boolean = () => true) {
         if (!validate()) throw new Error('Selected clips are now locked.');
-        next.vocabulary.context = [];
+        next.vocabulary.tags = [];
         if (this.path) {
             await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
             const temporary = `${this.path}.${randomUUID()}.tmp`;
@@ -97,12 +120,12 @@ export class OrganizationStore {
         }
         this.state = next;
         this.scanTouches.clear();
-        const key = JSON.stringify([next.vocabulary.identity, next.vocabulary.projects]);
+        const key = JSON.stringify([next.vocabulary.identity, next.vocabulary.project]);
         if (key !== this.vocabularyKey) { this.vocabularyKey = key; this.optionsRevision++; }
     }
 
     private options(state: OrganizationState): TagVocabulary {
-        return { ...structuredClone(state.vocabulary), context: [] };
+        return { ...structuredClone(state.vocabulary), tags: [] };
     }
 
     vocabulary() { return this.serialize(async () => this.options(await this.load())); }
@@ -111,7 +134,7 @@ export class OrganizationStore {
 
     reset() {
         return this.serialize(async () => {
-            await this.save({ version: 5, vocabulary: emptyVocabulary(), drafts: {} });
+            await this.save({ version: 7, vocabulary: emptyVocabulary(), drafts: {} });
         });
     }
 
@@ -124,7 +147,7 @@ export class OrganizationStore {
             const data = state.drafts[key]?.data ?? emptyOrganization();
             this.scanTouches.set(key, { scannedAt: this.now(), clip });
             const missingOptions = (data.identity && !state.vocabulary.identity.includes(data.identity)) ||
-                data.projects.some(project => !state.vocabulary.projects.includes(project));
+                (data.project && !state.vocabulary.project.includes(data.project));
             if (this.scanTouches.size >= 64 || missingOptions) {
                 const next = await this.nextState();
                 this.collectOptions(next.vocabulary, data);
@@ -138,7 +161,7 @@ export class OrganizationStore {
         return this.serialize(async () => {
             let action = validateOrganizationAction(change);
             const next = await this.nextState();
-            if (action.field === 'identity' || action.field === 'projects') {
+            if (action.field === 'identity' || action.field === 'project') {
                 const existing = next.vocabulary[action.field].find(value => value.toLocaleLowerCase() === action.value.toLocaleLowerCase());
                 if (existing) action = { ...action, value: existing };
             }
@@ -149,13 +172,11 @@ export class OrganizationStore {
                 const record = next.drafts[key];
                 if (!record) throw new Error('Draft unavailable. Refresh the source to retry.');
                 if (action.field === 'skip') record.data.skipped = action.value === 'true';
-                else if (action.field === 'all') { record.data = { ...emptyOrganization(), skipped: record.data.skipped }; delete record.previousProjects; }
-                else if (action.field === 'notes') record.data.notes = action.value;
-                else if (action.field === 'identity') {
-                    if (action.operation === 'add') record.data.identity = action.value;
-                    else if (record.data.identity === action.value) record.data.identity = null;
-                } else if (action.field === 'projects') {
-                    record.data.projects = action.operation === 'add' ? [action.value] : record.data.projects.filter(tag => tag !== action.value);
+                else if (action.field === 'all') { record.data = { ...emptyAttributes(), skipped: record.data.skipped }; delete record.previousProjects; }
+                else if (action.field === 'notes' || action.field === 'scene') record.data[action.field] = action.value;
+                else if (action.field === 'identity' || action.field === 'project') {
+                    if (action.operation === 'add') record.data[action.field] = action.value;
+                    else if (record.data[action.field] === action.value) record.data[action.field] = null;
                 } else {
                     record.data[action.field] = action.operation === 'add'
                         ? [...new Set([...record.data[action.field], action.value])]
@@ -163,7 +184,7 @@ export class OrganizationStore {
                 }
                 record.lastEditedAt = this.now();
             }
-            if (action.field !== 'notes' && action.field !== 'all' && action.field !== 'skip' && action.operation === 'add') {
+            if (action.field !== 'notes' && action.field !== 'scene' && action.field !== 'all' && action.field !== 'skip' && action.operation === 'add') {
                 next.vocabulary[action.field] = [...new Set([...next.vocabulary[action.field], action.value])].sort();
             }
             await this.save(next, validate);
@@ -185,8 +206,8 @@ export class OrganizationStore {
         for (const [key, record] of Object.entries(state.drafts).sort(([a], [b]) => a.localeCompare(b))) {
             const removed = emptyVocabulary();
             removed.identity = record.data.identity && removals.identity.includes(record.data.identity) ? [record.data.identity] : [];
-            removed.projects = [...new Set([...record.data.projects, ...(record.previousProjects ?? [])])].filter(value => removals.projects.includes(value));
-            removed.context = record.data.context.filter(value => removals.context.includes(value));
+            removed.project = [...new Set([...(record.data.project ? [record.data.project] : []), ...(record.previousProjects ?? [])])].filter(value => removals.project.includes(value));
+            removed.tags = record.data.tags.filter(value => removals.tags.includes(value));
             if (!TAG_FIELDS.some(field => removed[field].length)) continue;
             clips.push({ key, name: record.clip?.name ?? `Saved clip ${key.slice(-12)}`, path: record.clip?.path, status: active.has(key) ? 'active' : 'saved', removals: removed });
             versions.push([key, record.data, record.previousProjects, record.clip]);
@@ -211,9 +232,9 @@ export class OrganizationStore {
             for (const { key } of plan.clips) {
                 const record = next.drafts[key];
                 if (record.data.identity && removals.identity.includes(record.data.identity)) record.data.identity = null;
-                record.data.projects = record.data.projects.filter(value => !removals.projects.includes(value));
-                record.data.context = record.data.context.filter(value => !removals.context.includes(value));
-                if (record.previousProjects) record.previousProjects = record.previousProjects.filter(value => !removals.projects.includes(value));
+                if (record.data.project && removals.project.includes(record.data.project)) record.data.project = null;
+                record.data.tags = record.data.tags.filter(value => !removals.tags.includes(value));
+                if (record.previousProjects) record.previousProjects = record.previousProjects.filter(value => !removals.project.includes(value));
                 record.lastEditedAt = this.now();
             }
             await this.save(next, validate);
@@ -223,7 +244,7 @@ export class OrganizationStore {
 
     private collectOptions(vocabulary: TagVocabulary, data: ShotOrganization) {
         for (const field of TAG_FIELDS) {
-            const values = field === 'identity' ? data.identity ? [data.identity] : [] : data[field];
+            const values = field === 'tags' ? data.tags : data[field] ? [data[field]] : [];
             vocabulary[field] = [...new Set([...vocabulary[field], ...values])].sort();
         }
     }

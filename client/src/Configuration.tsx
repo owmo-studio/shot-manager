@@ -134,12 +134,12 @@ export function Configuration({ onLocalDataReset }: { onLocalDataReset: (collect
             </div>
             <div className="mt-6 grid grid-cols-2 gap-4">
                 {OPTION_FIELDS.map(field => <section key={field} aria-labelledby={`options-${field}-title`} className="min-w-0">
-                    <h3 id={`options-${field}-title`} className="mb-2 text-xs font-medium text-zinc-400">{{ identity: 'Identity', projects: 'Project', context: 'Tags' }[field]}</h3>
-                    <ul aria-label={`${{ identity: 'Identity', projects: 'Project', context: 'Tags' }[field]} options`}
+                    <h3 id={`options-${field}-title`} className="mb-2 text-xs font-medium text-zinc-400">{{ identity: 'Identity', project: 'Project', tags: 'Tags' }[field]}</h3>
+                    <ul aria-label={`${{ identity: 'Identity', project: 'Project', tags: 'Tags' }[field]} options`}
                         className="h-48 overflow-y-auto rounded-lg border border-white/10 bg-black/10 py-1">
                         {vocabulary?.[field].filter(value => !removals[field].includes(value)).map(value => <li key={value} className="flex items-start gap-2 px-2 py-1.5 text-xs">
                             <span className="min-w-0 flex-1 break-all py-0.5 text-zinc-300">{value}</span>
-                            <button type="button" aria-label={`Delete ${field === 'projects' ? 'Project' : field === 'identity' ? 'Identity' : 'Tag'} option ${value}`}
+                            <button type="button" aria-label={`Delete ${field === 'project' ? 'Project' : field === 'identity' ? 'Identity' : 'Tag'} option ${value}`}
                                 disabled={!!busy} onClick={() => removeOption(field, value)}
                                 className="grid size-5 shrink-0 place-items-center rounded text-base text-zinc-500 hover:bg-red-500/10 hover:text-red-300 disabled:opacity-40">×</button>
                         </li>)}

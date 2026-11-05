@@ -73,3 +73,26 @@ textarea,
   user-select: text;
   -webkit-user-select: text;
 }
+
+/* Keep the default inspector's preview compact enough to show every attribute. */
+[data-inspector-preview] {
+  height: 288px;
+}
+
+[data-inspector-preview] > .preview-player {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+}
+
+[data-inspector-preview] .preview-image {
+  flex: 1;
+  min-height: 0;
+  aspect-ratio: auto;
+}
+
+[data-inspector-preview] > [aria-label="No clip selected"],
+[data-inspector-preview] > [role="status"] {
+  height: 100%;
+  aspect-ratio: auto;
+}

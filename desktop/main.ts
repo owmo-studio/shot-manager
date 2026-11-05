@@ -24,7 +24,7 @@ let choosingSource = false
 let choosingLibrary = false
 const organizationWrites = new WriteQueue()
 const draftWrites = new RetainedWrites(organizationWrites, publishSaveStatus)
-const noteWrites = new DebouncedWrites(draftWrites, 500)
+const textWrites = new DebouncedWrites(draftWrites, 500)
 let backendStopping = false
 
 function publishSaveStatus() {
@@ -34,7 +34,7 @@ function publishSaveStatus() {
 }
 
 async function flushDrafts() {
-  await noteWrites.flush()
+  await textWrites.flush()
   await draftWrites.drain()
 }
 const pendingIPC = new Set<Promise<unknown>>()
@@ -148,7 +148,7 @@ if (!app.requestSingleInstanceLock()) {
     handle('organization:save-status', event => { requireMainWindow(event); return { ...draftWrites.status(), closing: quitting } })
     handle('organization:retry-saves', async event => {
       requireMainWindow(event)
-      await noteWrites.flush().catch(() => undefined)
+      await textWrites.flush().catch(() => undefined)
       await draftWrites.retry()
     })
     handle('configuration:preview-options', async (event, value: unknown) => {
@@ -175,9 +175,9 @@ if (!app.requestSingleInstanceLock()) {
       await flushDrafts()
       return organizationWrites.run(() => backendRequest('/api/local-data', { method: 'DELETE', body: JSON.stringify({ confirm: true }) }))
     })
-    handle('organization:flush-notes', event => {
+    handle('organization:flush-text', event => {
       requireMainWindow(event)
-      return noteWrites.flush()
+      return textWrites.flush()
     })
     handle('organization:vocabulary', (event) => {
       requireMainWindow(event)
@@ -190,8 +190,8 @@ if (!app.requestSingleInstanceLock()) {
       const operation = () => backendRequest('/api/organization', {
         method: 'PATCH', body: JSON.stringify({ shotIds, action: normalized })
       })
-      if (normalized.field === 'notes') return noteWrites.schedule([...new Set(shotIds)].sort().join(','), operation)
-      void noteWrites.flush().catch(() => undefined)
+      if (normalized.field === 'notes' || normalized.field === 'scene') return textWrites.schedule(`${normalized.field}:${[...new Set(shotIds)].sort().join(',')}`, operation)
+      void textWrites.flush().catch(() => undefined)
       return draftWrites.run(operation)
     })
     const configurationPath = join(app.getPath('userData'), 'configuration.json')
@@ -358,7 +358,7 @@ if (!app.requestSingleInstanceLock()) {
     quitting = true
     publishSaveStatus()
     void (async () => {
-      await noteWrites.flush().catch(() => undefined)
+      await textWrites.flush().catch(() => undefined)
       await Promise.allSettled([...pendingIPC])
       await organizationWrites.drain()
       while (draftWrites.status().failed) {

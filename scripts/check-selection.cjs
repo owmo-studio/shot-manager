@@ -32,17 +32,17 @@ if (!process.versions.electron) {
                 timestamp: `2026-11-0${i < 3 ? 1 : 2}T12:00:0${i}Z`, dateSource: 'embedded', dateEvidence: '', dateConfidence: 'declared',
                 metadata, cameraModel: 'ILME-FX30', bytes: 100, durationSeconds: 3, hasThumbnail: false, warnings: [], available: true, editable: true,
                 fingerprint: { algorithm: 'sha256', scheme: 'sampled-sha256-v2', value: String(i + 1).padStart(64, '0'), fileSize: 100, sampleBytes: 262144, sampledBytes: 100 },
-                organization: { identity: null, projects: [], context: [], notes: '', skipped: false },
+                organization: { identity: null, project: null, scene: '', tags: [], notes: '', skipped: false },
             })) };
             ipcMain.handle('fixture:sources', () => sources);
             ipcMain.handle('fixture:shots', () => collection);
-            const vocabulary = { identity: ['cmsh', 'owmo'], projects: ['crystal-brigade'], context: ['music', 'music/edm', 'music/rock', 'studio', ...Array.from({length: 20}, (_, i) => `topic-${String(i).padStart(2, '0')}`)] };
+            const vocabulary = { identity: ['cmsh', 'owmo'], project: ['crystal-brigade'], tags: ['music', 'music/edm', 'music/rock', 'studio', ...Array.from({length: 20}, (_, i) => `topic-${String(i).padStart(2, '0')}`)] };
             let failOrganizationSave = false;
             let optionSaves = 0;
             let failOptionsSave = false;
             const previewOptions = removals => ({reviewToken:'a'.repeat(64), clips:collection.shots.flatMap(shot=>{
                 const data=shot.organization;
-                const removed={identity:data.identity && removals.identity.includes(data.identity)?[data.identity]:[],projects:data.projects.filter(value=>removals.projects.includes(value)),context:data.context.filter(value=>removals.context.includes(value))};
+                const removed={identity:data.identity && removals.identity.includes(data.identity)?[data.identity]:[],project:data.project && removals.project.includes(data.project)?[data.project]:[],tags:data.tags.filter(value=>removals.tags.includes(value))};
                 return Object.values(removed).some(values=>values.length)?[{key:shot.id,name:shot.filename,path:'/synthetic/'+shot.filename,status:'active',removals:removed}]:[];
             })});
             ipcMain.handle('fixture:preview-options', (_, removals) => previewOptions(removals));
@@ -51,27 +51,27 @@ if (!process.versions.electron) {
                 optionSaves++;
                 collection={...collection,revision:collection.revision+1,shots:collection.shots.map(shot=>({...shot,organization:{...shot.organization,
                     identity:removals.identity.includes(shot.organization.identity)?null:shot.organization.identity,
-                    projects:shot.organization.projects.filter(value=>!removals.projects.includes(value)),
-                    context:shot.organization.context.filter(value=>!removals.context.includes(value))}}))};
+                    project:removals.project.includes(shot.organization.project)?null:shot.organization.project,
+                    tags:shot.organization.tags.filter(value=>!removals.tags.includes(value))}}))};
                 window.webContents.send('shots:changed',{revision:collection.revision,vocabularyRevision:collection.revision});
-                for (const field of ['identity', 'projects', 'context']) vocabulary[field] = vocabulary[field].filter(value => !removals[field].includes(value));
+                for (const field of ['identity', 'project', 'tags']) vocabulary[field] = vocabulary[field].filter(value => !removals[field].includes(value));
                 return { vocabulary, collection };
             });
-            const currentVocabulary = () => ({...vocabulary,context:[...new Set(collection.shots.flatMap(shot=>shot.organization.context))].sort()});
+            const currentVocabulary = () => ({...vocabulary,tags:[...new Set(collection.shots.flatMap(shot=>shot.organization.tags))].sort()});
             ipcMain.handle('fixture:vocabulary', () => currentVocabulary());
             let failedEdit;
             const organize = (_, ids, action) => {
                 if (failOrganizationSave) { failOrganizationSave = false; failedEdit = {ids, action}; throw new Error('Synthetic save failure'); }
-                if (['identity', 'projects'].includes(action.field)) action = { ...action, value: vocabulary[action.field].find(value=>value.toLowerCase()===action.value.toLowerCase()) ?? action.value };
+                if (['identity', 'project'].includes(action.field)) action = { ...action, value: vocabulary[action.field].find(value=>value.toLowerCase()===action.value.toLowerCase()) ?? action.value };
                 collection = { ...collection, revision: collection.revision + 1, shots: collection.shots.map(shot => {
                     if (!ids.includes(shot.id)) return shot;
                     if (!shot.editable) throw new Error('Locked');
                     const data = structuredClone(shot.organization);
                     if (action.field === 'skip') data.skipped = action.value === 'true';
-                    else if (action.field === 'all') Object.assign(data, { identity: null, projects: [], context: [], notes: '' });
-                    else if (action.field === 'notes') data.notes = action.value;
-                    else if (action.field === 'identity') { if (action.operation === 'add') data.identity = action.value; else if (data.identity === action.value) data.identity = null; }
-                    else data[action.field] = action.operation === 'add' ? action.field === 'projects' ? [action.value] : [...new Set([...data[action.field], action.value])] : data[action.field].filter(tag => tag !== action.value);
+                    else if (action.field === 'all') Object.assign(data, { identity: null, project: null, scene: '', tags: [], notes: '' });
+                    else if (action.field === 'notes' || action.field === 'scene') data[action.field] = action.value;
+                    else if (action.field === 'identity' || action.field === 'project') { if (action.operation === 'add') data[action.field] = action.value; else if (data[action.field] === action.value) data[action.field] = null; }
+                    else data[action.field] = action.operation === 'add' ? [...new Set([...data[action.field], action.value])] : data[action.field].filter(tag => tag !== action.value);
                     return { ...shot, organization: data };
                 }) };
                 if (action.field !== 'notes' && action.operation === 'add' && !vocabulary[action.field].includes(action.value)) vocabulary[action.field].push(action.value);
@@ -99,14 +99,14 @@ if (!process.versions.electron) {
             ipcMain.handle('fixture:choose-library', () => cancelLibrary ? null : (configuration = { version: 1, libraryPath: '/synthetic/library' }));
             let resetCalls = 0;
             let failReset = false;
-            const localSummary = () => ({...cache, options: vocabulary.identity.length + vocabulary.projects.length + vocabulary.context.length,
-                identities:vocabulary.identity.length, projects:vocabulary.projects.length, tags:vocabulary.context.length,
+            const localSummary = () => ({...cache, options: vocabulary.identity.length + vocabulary.project.length + vocabulary.tags.length,
+                identities:vocabulary.identity.length, projects:vocabulary.project.length, tags:vocabulary.tags.length,
                 records:6, fingerprints:6, sources:sources.length, clips:collection.shots.length});
             ipcMain.handle('fixture:local-summary', localSummary);
             ipcMain.handle('fixture:local-clear', () => {
                 if(failReset) {failReset=false; throw new Error('Synthetic reset failure');}
                 resetCalls++; cache={bytes:0,files:0}; sources=[];
-                for(const field of ['identity','projects','context']) vocabulary[field]=[];
+                for(const field of ['identity','project','tags']) vocabulary[field]=[];
                 collection={revision:collection.revision+1,shots:[],scans:[]};
                 return {summary:localSummary(),collection};
             });
@@ -114,7 +114,7 @@ if (!process.versions.electron) {
             ipcMain.handle('fixture:clear-cache', () => (cache = { bytes: 0, files: 0 }));
             ipcMain.handle('fixture:remove', (_, id) => { sources = sources.filter((source) => source.id !== id); collection = { ...collection, revision: collection.revision + 1, shots: collection.shots.filter((shot) => shot.sourceId !== id) }; });
             await writeFile(join(root, 'preload.cjs'), `const {contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('desktop',{
-                flushNotes:async()=>{},getSaveStatus:async()=>({pending:0,failed:0}),onSaveStatusChanged:()=>()=>{},retryOrganizationSaves:()=>ipcRenderer.invoke('fixture:retry-saves'),
+                flushOrganizationText:async()=>{},getSaveStatus:async()=>({pending:0,failed:0}),onSaveStatusChanged:()=>()=>{},retryOrganizationSaves:()=>ipcRenderer.invoke('fixture:retry-saves'),
                 getConfiguration:()=>ipcRenderer.invoke('fixture:configuration'),chooseLibrary:()=>ipcRenderer.invoke('fixture:choose-library'),
                 getCacheSummary:()=>ipcRenderer.invoke('fixture:cache'),clearCache:()=>ipcRenderer.invoke('fixture:clear-cache'),
                 getLocalDataSummary:()=>ipcRenderer.invoke('fixture:local-summary'),clearLocalData:()=>ipcRenderer.invoke('fixture:local-clear'),
@@ -182,7 +182,7 @@ if (!process.versions.electron) {
             await push(collection.shots.map((shot,index)=>index===0?{...shot,filename:'Renamed.mp4',relativePath:'renamed.mp4'}:shot));
             await wait(`document.querySelector('[aria-label="Inspect Renamed.mp4"]')?.getAttribute('aria-pressed')==='true'`);
             assert.equal(await js(`document.querySelector('[aria-label="Notes"]').value`),'Original clip note','Renaming keeps the selected fingerprint and notes');
-            const samePathReplacement={...collection.shots[0],id:'f'.repeat(64),fingerprint:{...collection.shots[0].fingerprint,value:'f'.repeat(64)},organization:{identity:null,projects:[],context:[],notes:'',skipped:false}};
+            const samePathReplacement={...collection.shots[0],id:'f'.repeat(64),fingerprint:{...collection.shots[0].fingerprint,value:'f'.repeat(64)},organization:{identity:null,project:null,scene:'',tags:[],notes:'',skipped:false}};
             await push([samePathReplacement,...collection.shots.slice(1)]);
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "][aria-pressed="true"]').length===0`);
             await click('Inspect Renamed.mp4');
@@ -214,12 +214,12 @@ if (!process.versions.electron) {
             await wait(`!document.querySelector('dialog[open]')`);
             assert.equal(optionSaves, 1);
             assert.ok(!vocabulary.identity.includes('cmsh'));
-            assert.ok(!vocabulary.projects.includes('crystal-brigade'));
-            assert.ok(vocabulary.context.includes('topic-00'));
+            assert.ok(!vocabulary.project.includes('crystal-brigade'));
+            assert.ok(vocabulary.tags.includes('topic-00'));
             assert.deepEqual(collection.shots.map(shot=>shot.organization), organizationBeforeSave, 'Configuration never changes clip information');
             await click('Configuration');
             await wait(`!!document.querySelector('[aria-label="Delete Identity option owmo"]')`);
-            collection={...collection,revision:collection.revision+1,shots:collection.shots.map((shot,index)=>index<2?{...shot,organization:{...shot.organization,identity:'owmo',context:['music','studio'],notes:'Keep notes'}}:shot)};
+            collection={...collection,revision:collection.revision+1,shots:collection.shots.map((shot,index)=>index<2?{...shot,organization:{...shot.organization,identity:'owmo',tags:['music','studio'],notes:'Keep notes'}}:shot)};
             const affectedBefore=structuredClone(collection.shots.map(shot=>shot.organization));
             await click('Delete Identity option owmo');
             await click('Save configuration');
@@ -241,7 +241,7 @@ if (!process.versions.electron) {
             await click('Confirm remove saved values');
             await wait(`!document.querySelector('dialog[open]')`);
             assert.equal(collection.shots[0].organization.identity,null);
-            assert.deepEqual(collection.shots[0].organization.context,['music','studio']);
+            assert.deepEqual(collection.shots[0].organization.tags,['music','studio']);
             assert.equal(collection.shots[0].organization.notes,'Keep notes');
             assert.ok(!vocabulary.identity.includes('owmo'));
             await click('Configuration');
@@ -280,7 +280,7 @@ if (!process.versions.electron) {
             assert.equal(resetCalls,1);
             assert.equal(sources.length,0);
             assert.equal(configuration.libraryPath,'/synthetic/library','Reset preserves Library setting');
-            assert.deepEqual(vocabulary,{identity:[],projects:[],context:[]});
+            assert.deepEqual(vocabulary,{identity:[],project:[],tags:[]});
             // Restore synthetic sources for the remaining independent selection checks.
             sources=previousSources; collection={...previousCollection,revision:collection.revision+1};
             await new Promise(resolve => { window.webContents.once('did-finish-load', resolve); window.webContents.reload(); });
@@ -421,8 +421,8 @@ if (!process.versions.electron) {
             assert.equal(await js(`document.querySelector('p[aria-label="Total clips"]').textContent.trim()`), '3 clips total');
             await wait(`document.querySelector('footer').textContent.includes('0 skipped')`); assert.deepEqual(await selected(), []);
             assert.equal(await js(`Array.from(document.querySelectorAll('footer button')).find(b=>b.textContent==='Review & Ingest').disabled`), true);
-            Object.assign(vocabulary, { identity:['cmsh','owmo'], projects:['crystal-brigade'], context:['music','music/edm','music/rock','studio',...Array.from({length:20},(_,i)=>`topic-${String(i).padStart(2,'0')}`)] });
-            await push(collection.shots.map(shot=>shot.filename==='Clip 6.mp4'?{...shot,organization:{...shot.organization,context:[...vocabulary.context]}}:shot));
+            Object.assign(vocabulary, { identity:['cmsh','owmo'], project:['crystal-brigade'], tags:['music','music/edm','music/rock','studio',...Array.from({length:20},(_,i)=>`topic-${String(i).padStart(2,'0')}`)] });
+            await push(collection.shots.map(shot=>shot.filename==='Clip 6.mp4'?{...shot,organization:{...shot.organization,tags:[...vocabulary.tags]}}:shot));
             const fill = async (label, value) => {
                 const field = ['Project', 'Identity'].includes(label) ? label : null;
                 if (field && !await js(`!!document.querySelector('input[aria-label=${JSON.stringify(label)}]')`)) await click(`${field} selection`);
@@ -430,13 +430,30 @@ if (!process.versions.electron) {
                 await new Promise(resolve => setTimeout(resolve, 10));
             };
             const tag = async (label, value, key = ' ') => {
-                if (label !== 'Context tags' && key === ' ') key = 'Enter';
+                if (label !== 'Tags' && key === ' ') key = 'Enter';
                 await fill(label, value);
                 await js(`document.querySelector('[aria-label=${JSON.stringify(label)}]').dispatchEvent(new KeyboardEvent('keydown',{key:${JSON.stringify(key)},bubbles:true,cancelable:true}))`);
                 await wait(`!Array.from(document.querySelectorAll('#clip-inspector [role="status"]')).some(node=>node.textContent==='Saving…')`);
             };
             await inspect(4);
             await wait(`!document.querySelector('button[aria-label="Project selection"]').disabled`);
+            assert.deepEqual(await js(`Array.from(document.querySelectorAll('#clip-inspector [data-attribute-field]')).map(node=>node.dataset.attributeField)`),['identity','project','scene','notes','tags']);
+            await fill('Scene', "Walking home, before sunset.");
+            await wait(`!Array.from(document.querySelectorAll('#clip-inspector [role="status"]')).some(node=>node.textContent==='Saving…')`);
+            assert.equal(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.scene,'Walking home, before sunset.');
+            assert.equal(await js(`document.querySelector('[aria-label="Scene"]').maxLength`),80);
+            await fill('Scene','bad/path');
+            assert.equal(await js(`document.querySelector('[aria-label="Scene"]').value`),'Walking home, before sunset.','Unsupported filename characters are rejected without changing the saved Scene');
+            assert.equal(await js(`document.querySelector('[aria-label="Scene"]').getAttribute('aria-invalid')`),'true');
+            await fill('Scene','Walking home, before sunset.');
+            await js(`document.querySelector('[aria-label="Notes"]').focus()`);
+            const checkAttributeFit = async () => {
+                const fit=await js(`(()=>{const panel=document.querySelector('#clip-inspector-content');const bounds=panel.getBoundingClientRect();return {panelHeight:panel.clientHeight,scrollHeight:panel.scrollHeight,fields:['Scene','Notes','Tags','Clear selected clip information'].map(label=>{const element=document.querySelector('[aria-label="'+label+'"]');const rect=element.getBoundingClientRect();return {label,top:rect.top,bottom:rect.bottom,visible:rect.top>=bounds.top&&rect.bottom<=bounds.bottom};})};})()`);
+                assert.ok(fit.fields.every(field=>field.visible)&&fit.scrollHeight<=fit.panelHeight+1,`All attributes fit at the default window size: ${JSON.stringify(fit)}`);
+                if (process.env.SHOT_MANAGER_SCENE_SCREENSHOT) await writeFile(process.env.SHOT_MANAGER_SCENE_SCREENSHOT,(await window.webContents.capturePage()).toPNG());
+            };
+            await checkAttributeFit();
+
             await click('Project selection');
             await wait(`!!document.querySelector('[role="listbox"][aria-label="Project suggestions"]')`);
             assert.ok(await js(`document.querySelector('[role="listbox"][aria-label="Project suggestions"]').textContent.includes('crystal-brigade')`));
@@ -445,7 +462,7 @@ if (!process.versions.electron) {
             await fill('Project', 'Alpha Project');
             assert.equal(await js(`document.querySelector('input[aria-label="Project"]').value`), 'Alpha Project');
             await js(`document.querySelector('input[aria-label="Project"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))`);
-            await wait(`!!document.querySelector('[data-field="projects"][data-tag="Alpha Project"]')`);
+            await wait(`!!document.querySelector('[data-field="project"][data-tag="Alpha Project"]')`);
             assert.equal(await js(`document.querySelector('[data-tag="Alpha Project"]').getAttribute('style')`), null);
             failOrganizationSave = true;
             await tag('Project', 'retry-me');
@@ -459,80 +476,88 @@ if (!process.versions.electron) {
             await tag('Identity', 'OWMO');
             await tag('Identity', 'CMSH');
             assert.equal(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.identity, 'cmsh');
-            await fill('Context tags', 'topic-1');
-            await js(`document.querySelector('[aria-label="Context tags"]').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))`);
-            const highlighted = await js(`document.getElementById(document.querySelector('[aria-label="Context tags"]').getAttribute('aria-activedescendant')).textContent.trim()`);
+            await fill('Tags', 'topic-1');
+            await js(`document.querySelector('[aria-label="Tags"]').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))`);
+            const highlighted = await js(`document.getElementById(document.querySelector('[aria-label="Tags"]').getAttribute('aria-activedescendant')).textContent.trim()`);
             assert.equal(highlighted,'topic-11');
-            await js(`document.querySelector('[aria-label="Context tags"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))`);
-            await wait(`!!document.querySelector('[data-field="context"][data-tag="topic-11"]')`);
-            assert.ok(!collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.context.includes('topic-1'),'Enter adds the highlighted suggestion rather than the typed prefix');
-            await click('Remove Context tag topic-11');
-            await tag('Context tags', 'music/r', 'Tab');
-            await wait(`!!document.querySelector('[data-field="context"][data-tag="music/rock"]')`);
-            assert.equal(await js(`document.activeElement.getAttribute('aria-label')`), 'Context tags');
-            await tag('Context tags','backspace-test');
-            const contextKey=async(key,repeat=false)=>js(`document.querySelector('[aria-label="Context tags"]').dispatchEvent(new KeyboardEvent('keydown',{key:${JSON.stringify(key)},repeat:${repeat},bubbles:true,cancelable:true}))`);
-            await contextKey('Backspace');
+            await js(`document.querySelector('[aria-label="Tags"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))`);
+            await wait(`!!document.querySelector('[data-field="tags"][data-tag="topic-11"]')`);
+            assert.ok(!collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.tags.includes('topic-1'),'Enter adds the highlighted suggestion rather than the typed prefix');
+            await click('Remove tag topic-11');
+            await tag('Tags', 'music/r', 'Tab');
+            await wait(`!!document.querySelector('[data-field="tags"][data-tag="music/rock"]')`);
+            assert.equal(await js(`document.activeElement.getAttribute('aria-label')`), 'Tags');
+            await tag('Tags','backspace-test');
+            const tagKey=async(key,repeat=false)=>js(`document.querySelector('[aria-label="Tags"]').dispatchEvent(new KeyboardEvent('keydown',{key:${JSON.stringify(key)},repeat:${repeat},bubbles:true,cancelable:true}))`);
+            await tagKey('Backspace');
             await wait(`document.querySelector('[data-tag="backspace-test"]')?.getAttribute('data-tag-selected')==='true'`);
-            assert.ok(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.context.includes('backspace-test'),'First Backspace selects without removing');
-            await contextKey('Backspace',true);
-            assert.ok(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.context.includes('backspace-test'),'Holding Backspace cannot skip the second deliberate press');
-            await contextKey('Escape');
+            assert.ok(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.tags.includes('backspace-test'),'First Backspace selects without removing');
+            await tagKey('Backspace',true);
+            assert.ok(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.tags.includes('backspace-test'),'Holding Backspace cannot skip the second deliberate press');
+            await tagKey('Escape');
             assert.equal(await js(`document.querySelectorAll('[data-tag-selected="true"]').length`),0,'Escape clears tag selection');
-            assert.equal(await js(`document.activeElement.getAttribute('aria-label')`),'Context tags');
-            await contextKey('Backspace');
-            await click('Context tags');
+            assert.equal(await js(`document.activeElement.getAttribute('aria-label')`),'Tags');
+            await tagKey('Backspace');
+            await click('Tags');
             assert.equal(await js(`document.querySelectorAll('[data-tag-selected="true"]').length`),0,'Clicking the field restores typing');
-            await contextKey('Backspace');
-            await fill('Context tags','typing');
+            await tagKey('Backspace');
+            await fill('Tags','typing');
             assert.equal(await js(`document.querySelectorAll('[data-tag-selected="true"]').length`),0,'Typing cancels tag selection');
-            await contextKey('Backspace');
-            assert.ok(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.context.includes('backspace-test'),'Backspace in nonempty text does not remove a tag');
-            await fill('Context tags','');
-            await contextKey('Backspace');
-            await contextKey('Backspace');
+            await tagKey('Backspace');
+            assert.ok(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.tags.includes('backspace-test'),'Backspace in nonempty text does not remove a tag');
+            await fill('Tags','');
+            await tagKey('Backspace');
+            await tagKey('Backspace');
             await wait(`!document.querySelector('[data-tag="backspace-test"]')`);
-            assert.ok(!collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.context.includes('backspace-test'),'Second Backspace saves removal');
+            assert.ok(!collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.tags.includes('backspace-test'),'Second Backspace saves removal');
 
-            await tag('Context tags', 'music//bad', 'Enter');
+            await tag('Tags', 'music//bad', 'Enter');
             assert.ok(await js(`Array.from(document.querySelectorAll('[role="alert"]')).some(node=>node.textContent.includes('64 lowercase'))`));
-            await fill('Context tags', '');
+            await fill('Tags', '');
             await fill('Notes', 'Review the final take');
             await wait(`document.querySelector('[aria-label="Notes"]').value==='Review the final take'&&!Array.from(document.querySelectorAll('[role="status"]')).some(node=>node.textContent==='Saving…')`);
             assert.equal(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.notes, 'Review the final take');
+            assert.equal(await js(`document.querySelector('[aria-label="Notes"]').rows`),6);
+            await fill('Notes','First line\nSecond line\nThird line\nFourth line');
+            await wait(`!Array.from(document.querySelectorAll('#clip-inspector [role="status"]')).some(node=>node.textContent==='Saving…')`);
+            assert.equal(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.notes,'First line\nSecond line\nThird line\nFourth line','Notes preserves multiple lines');
+            await fill('Notes','Review the final take');
+
             await inspect(5); await tag('Project', 'beta');
             await inspect(4, { metaKey: true });
-            await wait(`document.querySelectorAll('[data-field="projects"][data-shared="false"]').length===2`);
+            await wait(`document.querySelectorAll('[data-field="project"][data-shared="false"]').length===2`);
 
             assert.ok(await js(`document.querySelector('[data-tag="Alpha Project"]').textContent.includes('1/2')`));
             await tag('Project', 'shared');
             await wait(`!!document.querySelector('[data-tag="shared"][data-shared="true"]')`);
-            assert.deepEqual(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.projects, ['shared']);
-            assert.deepEqual(collection.shots.find(shot=>shot.filename==='Clip 5.mp4').organization.projects, ['shared']);
+            assert.deepEqual(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.project, 'shared');
+            assert.deepEqual(collection.shots.find(shot=>shot.filename==='Clip 5.mp4').organization.project, 'shared');
             assert.equal(await js(`document.querySelector('[data-tag="Alpha Project"]')`), null);
-            assert.ok(vocabulary.projects.includes('Alpha Project'));
+            assert.ok(vocabulary.project.includes('Alpha Project'));
             await tag('Identity', 'owmo');
             assert.ok(collection.shots.filter(shot=>['Clip 4.mp4','Clip 5.mp4'].includes(shot.filename)).every(shot=>shot.organization.identity==='owmo'));
-            await tag('Context tags', 'studio');
+            await tag('Tags', 'studio');
             await wait(`!!document.querySelector('[data-tag="studio"][data-shared="true"]')`);
-            await fill('Context tags', '');
-            assert.equal(await js(`!!document.querySelector('[aria-label="Context suggestions"]')`), false, 'Empty focused tag input has no dropdown');
-            await fill('Context tags', 't');
-            await wait(`!!document.querySelector('[aria-label="Context suggestions"]')`);
-            assert.ok(await js(`Array.from(document.querySelectorAll('[aria-label="Context suggestions"] [role="option"]')).every(node=>node.textContent.startsWith('topic-')||node.textContent.startsWith('Add'))`), 'First character filters suggestions');
-            assert.ok(await js(`(()=>{const list=document.querySelector('[aria-label="Context suggestions"]');return list.scrollHeight>list.clientHeight&&getComputedStyle(list).overflowY==='auto'})()`));
-            await js(`Array.from(document.querySelectorAll('[aria-label="Context suggestions"] button')).find(b=>b.textContent.includes('topic-19')).click()`);
+            await fill('Tags', '');
+            assert.equal(await js(`!!document.querySelector('[aria-label="Tag suggestions"]')`), false, 'Empty focused tag input has no dropdown');
+            await fill('Tags', 't');
+            await wait(`!!document.querySelector('[aria-label="Tag suggestions"]')`);
+            assert.ok(await js(`Array.from(document.querySelectorAll('[aria-label="Tag suggestions"] [role="option"]')).every(node=>node.textContent.startsWith('topic-')||node.textContent.startsWith('Add'))`), 'First character filters suggestions');
+            assert.ok(await js(`(()=>{const list=document.querySelector('[aria-label="Tag suggestions"]');return list.scrollHeight>list.clientHeight&&getComputedStyle(list).overflowY==='auto'})()`));
+            await js(`Array.from(document.querySelectorAll('[aria-label="Tag suggestions"] button')).find(b=>b.textContent.includes('topic-19')).click()`);
             await wait(`!!document.querySelector('[data-tag="topic-19"]')`);
-            assert.equal(await js(`!!document.querySelector('[aria-label="Context suggestions"]')`), false, 'Adding a tag closes suggestions');
-            await tag('Context tags','z-last');
-            await tag('Context tags','a-after');
-            assert.deepEqual(await js(`Array.from(document.querySelectorAll('[data-field="context"]')).map(node=>node.dataset.tag).filter(tag=>['z-last','a-after'].includes(tag))`), ['z-last','a-after'], 'Tags retain insertion order rather than sorting');
+            assert.equal(await js(`!!document.querySelector('[aria-label="Tag suggestions"]')`), false, 'Adding a tag closes suggestions');
+            await tag('Tags','z-last');
+            await tag('Tags','a-after');
+            assert.deepEqual(await js(`Array.from(document.querySelectorAll('[data-field="tags"]')).map(node=>node.dataset.tag).filter(tag=>['z-last','a-after'].includes(tag))`), ['z-last','a-after'], 'Tags retain insertion order rather than sorting');
             if (process.env.SHOT_MANAGER_ORGANIZATION_SCREENSHOT) {
                 await writeFile(process.env.SHOT_MANAGER_ORGANIZATION_SCREENSHOT, (await window.webContents.capturePage()).toPNG());
             }
-            await click('Remove Context tag music/rock');
+            await checkAttributeFit();
+            await click('Remove tag music/rock');
             await wait(`!document.querySelector('[data-tag="music/rock"]')`);
-            assert.ok(vocabulary.context.includes('music/rock'));
+            assert.ok(vocabulary.tags.includes('music/rock'));
+            await fill('Scene', 'Friends arriving at the studio.');
             await fill('Notes', 'Shared notes');
             await wait(`!Array.from(document.querySelectorAll('[role="status"]')).some(node=>node.textContent==='Saving…')`);
             assert.ok(collection.shots.filter(shot=>['Clip 4.mp4','Clip 5.mp4'].includes(shot.filename)).every(shot=>shot.organization.notes==='Shared notes'));
@@ -542,6 +567,7 @@ if (!process.versions.electron) {
             await inspect(4);
             await wait(`!!document.querySelector('[data-tag="shared"]')`);
             assert.equal(await js(`document.querySelector('[aria-label="Notes"]').value`), 'Shared notes');
+            assert.equal(await js(`document.querySelector('[aria-label="Scene"]').value`),'Friends arriving at the studio.','Scene restores after selection changes and renderer reload');
             assert.deepEqual(await skipped(),[4,5],'Saved Skip restores after renderer reload');
             failOrganizationSave=true;
             await click('Skip selected clips');
@@ -568,8 +594,8 @@ if (!process.versions.electron) {
             await wait(`document.querySelectorAll('#clip-inspector [data-tag]').length===0&&document.querySelector('[aria-label="Notes"]').value===''`);
             assert.equal(await js(`document.querySelectorAll('[data-shot-card]').length`), 3);
             assert.deepEqual(await selected(), [4,5]);
-            assert.ok(vocabulary.context.includes('studio'), 'Clip Clear preserves available options');
-            for (const shot of collection.shots.filter(shot=>['Clip 4.mp4','Clip 5.mp4'].includes(shot.filename))) assert.deepEqual(shot.organization, {identity:null,projects:[],context:[],notes:'',skipped:true});
+            assert.ok(vocabulary.tags.includes('studio'), 'Clip Clear preserves available options');
+            for (const shot of collection.shots.filter(shot=>['Clip 4.mp4','Clip 5.mp4'].includes(shot.filename))) assert.deepEqual(shot.organization, {identity:null,project:null,scene:'',tags:[],notes:'',skipped:true});
             sources = [...sources, { id: 'C', name: 'Source C', path: '/synthetic/C', type: 'folder', cameraModels: [], available: true }]
                 .map(source => ({ ...source, available: false }));
             collection = { ...collection, revision: collection.revision + 1, shots: collection.shots.map(shot => ({ ...shot, available: false, editable: true })) };

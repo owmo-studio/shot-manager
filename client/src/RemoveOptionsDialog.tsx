@@ -29,7 +29,7 @@ export function RemoveOptionsDialog({ plan, busy, onCancel, onConfirm }: {
                     </span></td>
                     <td className="break-words p-3 text-zinc-400">
                         {clip.removals.identity.length > 0 && <div>Identity: {clip.removals.identity.join(', ')}</div>}
-                        {clip.removals.projects.length > 0 && <div>Project: {clip.removals.projects.join(', ')}</div>}
+                        {clip.removals.project.length > 0 && <div>Project: {clip.removals.project.join(', ')}</div>}
                     </td>
                 </tr>)}</tbody>
             </table>

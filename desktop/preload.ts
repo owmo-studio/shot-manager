@@ -16,7 +16,7 @@ const desktop: DesktopBridge = {
   },
   previewConfigurationOptions: removals => invoke('configuration:preview-options', removals),
   saveConfigurationOptions: (removals, reviewToken) => invoke('configuration:save-options', removals, reviewToken),
-  flushNotes: () => invoke('organization:flush-notes'),
+  flushOrganizationText: () => invoke('organization:flush-text'),
   getLocalDataSummary: () => invoke('local-data:summary'),
   clearLocalData: () => invoke('local-data:clear'),
   getTagVocabulary: () => invoke('organization:vocabulary'),

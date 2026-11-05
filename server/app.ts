@@ -41,11 +41,11 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
 
   server.get('/api/sources', () => sources.list())
   server.get('/api/organization/vocabulary', () => sources.scanner.vocabulary())
-  const optionProperties = Object.fromEntries(['identity', 'projects', 'context'].map(field => [field, {
+  const optionProperties = Object.fromEntries(['identity', 'project', 'tags'].map(field => [field, {
     type: 'array', maxItems: 1000, items: { type: 'string', maxLength: 128 }
   }]))
   server.post<{ Body: TagVocabulary }>('/api/organization/vocabulary/preview', {
-    schema: { body: { type: 'object', required: ['identity', 'projects', 'context'], additionalProperties: false, properties: optionProperties } }
+    schema: { body: { type: 'object', required: ['identity', 'project', 'tags'], additionalProperties: false, properties: optionProperties } }
   }, request => {
     let removals: TagVocabulary
     try { removals = validateOptionRemovals(request.body) }
@@ -53,7 +53,7 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     return sources.previewOptions(removals)
   })
   server.patch<{ Body: TagVocabulary & { reviewToken: string } }>('/api/organization/vocabulary', {
-    schema: { body: { type: 'object', required: ['identity', 'projects', 'context', 'reviewToken'], additionalProperties: false,
+    schema: { body: { type: 'object', required: ['identity', 'project', 'tags', 'reviewToken'], additionalProperties: false,
       properties: { ...optionProperties, reviewToken: { type: 'string', pattern: '^[a-f0-9]{64}$' } } } }
   }, request => {
     const { reviewToken, ...values } = request.body
@@ -66,7 +66,7 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     schema: { body: { type: 'object', required: ['shotIds', 'action'], additionalProperties: false, properties: {
       shotIds: { type: 'array', minItems: 1, maxItems: 1000, items: { type: 'string', pattern: '^[a-f0-9]{64}$' } },
       action: { type: 'object', required: ['field', 'operation', 'value'], additionalProperties: false, properties: {
-        field: { type: 'string', enum: ['identity', 'projects', 'context', 'notes', 'skip', 'all'] },
+        field: { type: 'string', enum: ['identity', 'project', 'scene', 'tags', 'notes', 'skip', 'all'] },
         operation: { type: 'string', enum: ['add', 'remove', 'set', 'clear'] }, value: { type: 'string', maxLength: 10000 }
       } }
     } } }

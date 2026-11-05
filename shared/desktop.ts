@@ -50,7 +50,7 @@ export interface DesktopAPI {
   retryOrganizationSaves: () => Promise<void>
   previewConfigurationOptions: (removals: TagVocabulary) => Promise<OptionRemovalPlan>
   saveConfigurationOptions: (removals: TagVocabulary, reviewToken: string) => Promise<{ vocabulary: TagVocabulary; collection: ShotCollection }>
-  flushNotes: () => Promise<void>
+  flushOrganizationText: () => Promise<void>
   getLocalDataSummary: () => Promise<LocalDataSummary>
   clearLocalData: () => Promise<{ summary: LocalDataSummary; collection: ShotCollection }>
   getTagVocabulary: () => Promise<TagVocabulary>

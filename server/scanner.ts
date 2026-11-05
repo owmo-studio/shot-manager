@@ -42,16 +42,16 @@ export class ShotScanner {
     async vocabulary(): Promise<TagVocabulary> {
         const options = await this.organization.vocabulary();
         // Only loaded clips contribute suggestions, including temporarily unavailable sources.
-        options.context = [...new Set([...this.jobs.values()].flatMap(job =>
-            job.shots.flatMap(({ shot }) => shot.organization?.context ?? [])))].sort();
+        options.tags = [...new Set([...this.jobs.values()].flatMap(job =>
+            job.shots.flatMap(({ shot }) => shot.organization?.tags ?? [])))].sort();
         return options;
     }
 
     async localDataSummary() {
         const cache = await this.cacheSummary();
         const lists = await this.vocabulary();
-        return { ...cache, options: lists.identity.length + lists.projects.length + lists.context.length,
-            identities: lists.identity.length, projects: lists.projects.length, tags: lists.context.length,
+        return { ...cache, options: lists.identity.length + lists.project.length + lists.tags.length,
+            identities: lists.identity.length, projects: lists.project.length, tags: lists.tags.length,
             records: await this.organization.recordCount(), fingerprints: await this.fingerprints.recordCount(),
             clips: this.snapshot().shots.length };
     }
@@ -105,9 +105,9 @@ export class ShotScanner {
         clearTimeout(this.progressTimer);
         this.progressTimer = undefined;
         this.revision += 1;
-        const context = [...new Set([...this.jobs.values()].flatMap(job =>
-            job.shots.flatMap(({shot}) => shot.organization?.context ?? [])))].sort();
-        const vocabularyKey = JSON.stringify([this.organization.vocabularyRevision, context]);
+        const tags = [...new Set([...this.jobs.values()].flatMap(job =>
+            job.shots.flatMap(({shot}) => shot.organization?.tags ?? [])))].sort();
+        const vocabularyKey = JSON.stringify([this.organization.vocabularyRevision, tags]);
         if (vocabularyKey !== this.vocabularyKey) { this.vocabularyKey = vocabularyKey; this.vocabularyRevision++; }
         this.onChange?.({ revision: this.revision, vocabularyRevision: this.vocabularyRevision });
     }

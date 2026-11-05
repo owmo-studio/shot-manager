@@ -26,7 +26,7 @@ if (!process.versions.electron) {
     let allowWrites = !failureMode, prompts = 0, backendExited = false;
     const profile = join(root, 'profile'); fs.mkdirSync(profile);
     app.setPath('userData', profile);
-    let window, backend, backendURL, token, accepted = 0, noteRequests = 0, requested = false, observedQuit = false;
+    let window, backend, backendURL, token, accepted = 0, textRequests = 0, requested = false, observedQuit = false;
     const timer = setTimeout(() => { console.error('Command+Q did not finish gracefully'); backend?.kill(); app.exit(1); }, 15000);
     let activeReads = 0, shutdownRequested = false, lateFetches = 0, failedFetches = 0;
     let vocabularyHandler, vocabularyArgs;
@@ -38,7 +38,7 @@ if (!process.versions.electron) {
         try {
         if (vocabulary) await new Promise(resolve => setTimeout(resolve, 150));
         if (String(url).endsWith('/api/organization') && options?.method === 'PATCH') {
-            noteRequests++; await new Promise(resolve => setTimeout(resolve, 100));
+            textRequests++; await new Promise(resolve => setTimeout(resolve, 100));
             if (requested && !allowWrites) return new Response(JSON.stringify({message:'Synthetic disk failure'}), {status:503});
         }
         return await originalFetch(url, options);
@@ -108,7 +108,8 @@ if (!process.versions.electron) {
             assert.equal(failedFetches,0,'Normal quit causes no refused backend requests');
             const saved = JSON.parse(fs.readFileSync(join(profile, 'organization.json'), 'utf8'));
             assert.equal(Object.values(saved.drafts)[0].data.notes, 'last accepted edit');
-            assert.equal(noteRequests, failureMode && !discardMode ? 3 : 2, 'Each typing burst writes once, including a pending burst flushed by Command+Q');
+            assert.equal(Object.values(saved.drafts)[0].data.scene, discardMode ? 'Walking home.' : 'Final scene before closing.');
+            assert.equal(textRequests, failureMode && !discardMode ? 4 : 3, 'Scene and Notes save independently, and pending Scene flushes on either exit path');
             if (failureMode) assert.equal(prompts, 1, 'Failed quit requires an explicit choice');
             clearTimeout(timer);
             fs.writeFileSync(join(root,'validated'),'passed');
@@ -137,11 +138,13 @@ if (!process.versions.electron) {
             await window.webContents.executeJavaScript(`window.desktop.updateOrganization([${JSON.stringify(shot.id)}],{field:'notes',operation:'set',value:'first edit'}).catch(()=>{});window.desktop.updateOrganization([${JSON.stringify(shot.id)}],{field:'notes',operation:'set',value:'last accepted edit'}).catch(()=>{});void 0`);
             await wait(() => accepted === 2);
             await new Promise(resolve => setTimeout(resolve, 40));
-            assert.equal(noteRequests, 0, 'Notes do not save on every accepted keystroke');
-            await window.webContents.executeJavaScript('window.desktop.flushNotes()');
-            assert.equal(noteRequests, 1, 'Leaving the field flushes one coalesced save');
-            await window.webContents.executeJavaScript(`window.desktop.updateOrganization([${JSON.stringify(shot.id)}],{field:'notes',operation:'set',value:'last'}).catch(()=>{});window.desktop.updateOrganization([${JSON.stringify(shot.id)}],{field:'notes',operation:'set',value:'last accepted edit'}).catch(()=>{});void 0`);
+            assert.equal(textRequests, 0, 'Notes do not save on every accepted keystroke');
+            await window.webContents.executeJavaScript(`window.desktop.updateOrganization([${JSON.stringify(shot.id)}],{field:'scene',operation:'set',value:'Walking'}).catch(()=>{});window.desktop.updateOrganization([${JSON.stringify(shot.id)}],{field:'scene',operation:'set',value:'Walking home.'}).catch(()=>{});void 0`);
             await wait(() => accepted === 4);
+            await window.webContents.executeJavaScript('window.desktop.flushOrganizationText()');
+            assert.equal(textRequests,2,'Switching from Notes to Scene does not coalesce away either field');
+            await window.webContents.executeJavaScript(`window.desktop.updateOrganization([${JSON.stringify(shot.id)}],{field:'scene',operation:'set',value:'Final'}).catch(()=>{});window.desktop.updateOrganization([${JSON.stringify(shot.id)}],{field:'scene',operation:'set',value:'Final scene before closing.'}).catch(()=>{});void 0`);
+            await wait(() => accepted === 6);
             await window.webContents.executeJavaScript(`setInterval(()=>window.desktop.getTagVocabulary().catch(()=>{}),10);void 0`);
             await wait(()=>activeReads>0);
             const requestExit = () => {
@@ -161,8 +164,12 @@ if (!process.versions.electron) {
                 assert.equal((await window.webContents.executeJavaScript('window.desktop.getSaveStatus()')).failed, 1, 'Unsaved edits survive renderer reload');
                 await wait(() => window.webContents.executeJavaScript(`!!document.querySelector('[aria-label="Retry unsaved changes"]')`));
                 allowWrites = true;
-                await window.webContents.executeJavaScript('window.desktop.retryOrganizationSaves()');
-                assert.equal((await window.webContents.executeJavaScript('window.desktop.getSaveStatus()')).failed, 0);
+                await wait(()=>window.webContents.executeJavaScript(`!!document.getElementById('shot-${shot.id}')`));
+                await window.webContents.executeJavaScript(`document.getElementById('shot-${shot.id}').click()`);
+                await wait(()=>window.webContents.executeJavaScript(`document.querySelector('[aria-label="Scene"]')?.value==='Walking home.'`));
+                await window.webContents.executeJavaScript(`document.querySelector('[aria-label="Retry unsaved changes"]').click()`);
+                await wait(async()=>{const status=await window.webContents.executeJavaScript('window.desktop.getSaveStatus()');return !status.failed&&!status.pending;});
+                await wait(()=>window.webContents.executeJavaScript(`document.querySelector('[aria-label="Scene"]')?.value==='Final scene before closing.'`));
                 requestExit();
             }
         } catch (error) { console.error(error); backend?.kill(); app.exit(1); }

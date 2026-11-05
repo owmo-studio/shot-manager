@@ -29,7 +29,7 @@ export function ClearOrganizationButton({ shots, onUpdated }: { shots: VideoShot
     }
 
     return <>
-        <button type="button" aria-label="Clear selected clip information" title="Clear Identity, Project, Context and Notes"
+        <button type="button" aria-label="Clear selected clip information" title="Clear Identity, Project, Scene, Notes and Tags"
             disabled={disabled || busy} onClick={() => { setError(null); setTargets([...shots]); }}
             className="flex h-7 items-center rounded-md border border-white/15 bg-white/8 px-2 text-[10px] font-medium text-zinc-200 transition duration-75 hover:border-red-400/40 hover:bg-red-500/15 hover:text-red-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">Clear</button>
         {targets && <dialog ref={dialog} role="alertdialog" aria-labelledby="clear-organization-title" aria-describedby="clear-organization-description"
