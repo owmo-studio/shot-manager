@@ -22,6 +22,18 @@ let choosingSource = false
 let choosingLibrary = false
 const organizationWrites = new WriteQueue()
 const noteWrites = new DebouncedWrites(organizationWrites, 500)
+const pendingIPC = new Set<Promise<unknown>>()
+const mediaShutdown = new AbortController()
+
+function handle(channel: string, listener: Parameters<typeof ipcMain.handle>[1]) {
+  ipcMain.handle(channel, (event, ...args) => {
+    // Calls already accepted are drained; late renderer calls must not restart work.
+    if (quitting) return undefined
+    const request = Promise.resolve(listener(event, ...args))
+    pendingIPC.add(request)
+    return request.finally(() => pendingIPC.delete(request))
+  })
+}
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'shot-media', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, corsEnabled: true } }
@@ -123,13 +135,13 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     installApplicationMenu()
-    ipcMain.handle('configuration:preview-options', (event, value: unknown) => {
+    handle('configuration:preview-options', (event, value: unknown) => {
       requireMainWindow(event)
       const removals = validateOptionRemovals(value)
       void noteWrites.flush()
       return organizationWrites.run(() => backendRequest('/api/organization/vocabulary/preview', { method: 'POST', body: JSON.stringify(removals) }))
     })
-    ipcMain.handle('configuration:save-options', (event, value: unknown, reviewToken: unknown) => {
+    handle('configuration:save-options', (event, value: unknown, reviewToken: unknown) => {
       requireMainWindow(event)
       const removals = validateOptionRemovals(value)
       void noteWrites.flush()
@@ -138,24 +150,24 @@ if (!app.requestSingleInstanceLock()) {
         method: 'PATCH', body: JSON.stringify({ ...removals, reviewToken })
       }))
     })
-    ipcMain.handle('local-data:summary', (event) => {
+    handle('local-data:summary', (event) => {
       requireMainWindow(event)
       return backendRequest('/api/local-data')
     })
-    ipcMain.handle('local-data:clear', (event) => {
+    handle('local-data:clear', (event) => {
       requireMainWindow(event)
       void noteWrites.flush()
       return organizationWrites.run(() => backendRequest('/api/local-data', { method: 'DELETE', body: JSON.stringify({ confirm: true }) }))
     })
-    ipcMain.handle('organization:flush-notes', event => {
+    handle('organization:flush-notes', event => {
       requireMainWindow(event)
       return noteWrites.flush()
     })
-    ipcMain.handle('organization:vocabulary', (event) => {
+    handle('organization:vocabulary', (event) => {
       requireMainWindow(event)
       return backendRequest('/api/organization/vocabulary')
     })
-    ipcMain.handle('organization:update', (event, shotIds: unknown, action: OrganizationAction) => {
+    handle('organization:update', (event, shotIds: unknown, action: OrganizationAction) => {
       requireMainWindow(event)
       if (!Array.isArray(shotIds) || !shotIds.length || shotIds.length > 1000 || shotIds.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id))) throw new Error('Invalid selection')
       const normalized = validateOrganizationAction(action)
@@ -167,11 +179,11 @@ if (!app.requestSingleInstanceLock()) {
       return organizationWrites.run(operation)
     })
     const configurationPath = join(app.getPath('userData'), 'configuration.json')
-    ipcMain.handle('configuration:get', (event) => {
+    handle('configuration:get', (event) => {
       requireMainWindow(event)
       return readConfiguration(configurationPath)
     })
-    ipcMain.handle('configuration:choose-library', async (event) => {
+    handle('configuration:choose-library', async (event) => {
       const owner = requireMainWindow(event)
       if (choosingLibrary) return null
       choosingLibrary = true
@@ -190,11 +202,11 @@ if (!app.requestSingleInstanceLock()) {
         return next
       } finally { choosingLibrary = false }
     })
-    ipcMain.handle('cache:summary', (event) => {
+    handle('cache:summary', (event) => {
       requireMainWindow(event)
       return backendRequest('/api/cache')
     })
-    ipcMain.handle('cache:clear', (event) => {
+    handle('cache:clear', (event) => {
       requireMainWindow(event)
       return backendRequest('/api/cache', { method: 'DELETE' })
     })
@@ -202,52 +214,52 @@ if (!app.requestSingleInstanceLock()) {
       const url = new URL(request.url)
       const match = /^\/shots\/([a-f0-9]{64})\/original$/.exec(url.pathname)
       if (url.hostname !== 'local' || url.search || !match || !['GET', 'HEAD'].includes(request.method)) return new Response(null, { status: 404 })
-      if (!backendURL) return new Response(null, { status: 503 })
+      if (quitting || !backendURL) return new Response(null, { status: 503 })
       const headers = new Headers({ Authorization: `Bearer ${token}` })
       const range = request.headers.get('range')
       if (range) headers.set('Range', range)
       try {
         const response = await fetch(`${backendURL}/api/shots/${match[1]}/media/original`, {
-          method: request.method, headers, signal: request.signal
+          method: request.method, headers, signal: AbortSignal.any([request.signal, mediaShutdown.signal])
         })
         const responseHeaders = new Headers(response.headers)
         responseHeaders.set('Access-Control-Allow-Origin', '*')
         return new Response(response.body, { status: response.status, headers: responseHeaders })
       } catch { return new Response(null, { status: 503 }) }
     })
-    ipcMain.handle('shots:lut', async (event, id: unknown) => {
+    handle('shots:lut', async (event, id: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid shot ID')
       return backendRequest(`/api/shots/${id}/lut`)
     })
-    ipcMain.handle('shots:details', async (event, id: unknown) => {
+    handle('shots:details', async (event, id: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid shot ID')
       return backendRequest(`/api/shots/${id}/details`)
     })
-    ipcMain.handle('shots:list', async (event) => {
+    handle('shots:list', async (event) => {
       requireMainWindow(event)
       return backendRequest('/api/shots')
     })
-    ipcMain.handle('shots:thumbnail', async (event, id: unknown) => {
+    handle('shots:thumbnail', async (event, id: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid shot ID')
       const result = await backendRequest(`/api/shots/${id}/thumbnail`)
       return result.dataUrl
     })
-    ipcMain.handle('shots:set-thumbnail', async (event, id: unknown, dataUrl: unknown) => {
+    handle('shots:set-thumbnail', async (event, id: unknown, dataUrl: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid shot ID')
       if (typeof dataUrl !== 'string' || dataUrl.length > 3000000 || !dataUrl.startsWith('data:image/jpeg;base64,')) throw new Error('Invalid thumbnail')
       await backendRequest(`/api/shots/${id}/thumbnail`, { method: 'PUT', body: JSON.stringify({ dataUrl }) })
     })
-    ipcMain.handle('sources:refresh', async (event, id: unknown) => {
+    handle('sources:refresh', async (event, id: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Invalid source ID')
       await noteWrites.flush()
       return backendRequest(`/api/sources/${encodeURIComponent(id)}/refresh`, { method: 'POST' })
     })
-    ipcMain.handle('sources:relink', async (event, id: unknown) => {
+    handle('sources:relink', async (event, id: unknown) => {
       const owner = requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Invalid source ID')
       if (choosingSource) return null
@@ -263,11 +275,11 @@ if (!app.requestSingleInstanceLock()) {
         })
       } finally { choosingSource = false }
     })
-    ipcMain.handle('sources:list', async (event) => {
+    handle('sources:list', async (event) => {
       requireMainWindow(event)
       return backendRequest('/api/sources')
     })
-    ipcMain.handle('sources:drop', async (event, path: unknown) => {
+    handle('sources:drop', async (event, path: unknown) => {
       requireMainWindow(event)
       if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) {
         throw new Error('Drop a folder from your computer')
@@ -275,13 +287,13 @@ if (!app.requestSingleInstanceLock()) {
       await noteWrites.flush()
       return backendRequest('/api/sources', { method: 'POST', body: JSON.stringify({ path }) })
     })
-    ipcMain.handle('sources:remove', async (event, id: unknown) => {
+    handle('sources:remove', async (event, id: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Invalid source ID')
       await noteWrites.flush()
       await backendRequest(`/api/sources/${encodeURIComponent(id)}`, { method: 'DELETE' })
     })
-    ipcMain.handle('sources:choose', async (event) => {
+    handle('sources:choose', async (event) => {
       const owner = requireMainWindow(event)
       if (choosingSource) return null
       choosingSource = true
@@ -299,7 +311,7 @@ if (!app.requestSingleInstanceLock()) {
         choosingSource = false
       }
     })
-    ipcMain.handle('backend:status', async (event): Promise<BackendStatus> => {
+    handle('backend:status', async (event): Promise<BackendStatus> => {
       requireMainWindow(event)
       if (!backendURL) return { state: backendState, message: backendState === 'starting' ? 'Starting backend…' : 'Backend stopped. Relaunch the app to reconnect.' }
       try {
@@ -328,9 +340,16 @@ if (!app.requestSingleInstanceLock()) {
     event.preventDefault()
     if (quitting) return
     quitting = true
-    // Renderer closure must not discard accepted inline edits waiting to be written.
+    // Stop polling, event-driven reads, and playback before the backend begins closing.
+    mediaShutdown.abort()
+    mainWindow?.destroy()
+    // Accepted inline edits live in the main process and survive renderer destruction.
     void noteWrites.flush()
-    void organizationWrites.drain().then(() => backend?.postMessage('shutdown'))
+    void (async () => {
+      await Promise.allSettled([...pendingIPC])
+      await organizationWrites.drain()
+      backend?.postMessage('shutdown')
+    })()
     setTimeout(() => {
       backend?.kill()
       shutdownComplete = true

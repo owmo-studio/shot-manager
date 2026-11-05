@@ -20,10 +20,19 @@ if (!process.versions.electron) {
     app.setPath('userData', profile);
     let window, backend, backendURL, token, accepted = 0, noteRequests = 0, requested = false, observedQuit = false;
     const timer = setTimeout(() => { console.error('Command+Q did not finish gracefully'); backend?.kill(); app.exit(1); }, 8000);
+    let activeReads = 0, shutdownRequested = false, lateFetches = 0, failedFetches = 0;
+    let vocabularyHandler, vocabularyArgs;
     const originalFetch = global.fetch;
     global.fetch = async (url, options) => {
+        if (shutdownRequested) lateFetches++;
+        const vocabulary = String(url).endsWith('/api/organization/vocabulary');
+        if (vocabulary) activeReads++;
+        try {
+        if (vocabulary) await new Promise(resolve => setTimeout(resolve, 150));
         if (String(url).endsWith('/api/organization') && options?.method === 'PATCH') { noteRequests++; await new Promise(resolve => setTimeout(resolve, 100)); }
-        return originalFetch(url, options);
+        return await originalFetch(url, options);
+        } catch(error) { failedFetches++; throw error; }
+        finally { if(vocabulary) activeReads--; }
     };
     const originalLoad = require('node:module')._load;
     const fork = electron.utilityProcess.fork.bind(electron.utilityProcess);
@@ -36,11 +45,27 @@ if (!process.versions.electron) {
         utilityProcess: { ...electron.utilityProcess, fork(path, args, options) {
             token = options.env.SHOT_MANAGER_TOKEN;
             backend = fork(path, args, options);
+            const post = backend.postMessage.bind(backend);
+            backend.postMessage = message => {
+                if (message === 'shutdown') {
+                    assert.ok(window.isDestroyed(), 'Renderer stops before backend shutdown');
+                    assert.equal(activeReads, 0, 'Accepted vocabulary reads finish before backend shutdown');
+                    shutdownRequested = true;
+                    // Simulate an IPC call arriving after the renderer started closing.
+                    void Promise.resolve(vocabularyHandler(...vocabularyArgs)).catch(error => { console.error(error); app.exit(1); });
+                }
+                return post(message);
+            };
             backend.on('message', message => { if (message?.type === 'ready') backendURL = message.url; });
             return backend;
         } },
         ipcMain: { ...electron.ipcMain, handle(channel, handler) {
-            handle(channel, (...args) => { if (channel === 'organization:update') accepted++; return handler(...args); });
+            if (channel === 'organization:vocabulary') vocabularyHandler = handler;
+            handle(channel, (...args) => {
+                if (channel === 'organization:vocabulary') vocabularyArgs = args;
+                if (channel === 'organization:update') accepted++;
+                return handler(...args);
+            });
         } },
     };
     require('node:module')._load = function(request, parent, isMain) {
@@ -49,12 +74,14 @@ if (!process.versions.electron) {
     app.on('before-quit', () => { observedQuit = true; });
     app.on('will-quit', () => {
         try {
-            assert.ok(requested && observedQuit);
+            assert.ok(requested && observedQuit && shutdownRequested);
+            assert.equal(lateFetches,0,'No renderer fetch reaches a closing backend');
+            assert.equal(failedFetches,0,'Normal quit causes no refused backend requests');
             const saved = JSON.parse(fs.readFileSync(join(profile, 'organization.json'), 'utf8'));
             assert.equal(Object.values(saved.drafts)[0].data.notes, 'last accepted edit');
             assert.equal(noteRequests, 2, 'Each typing burst writes once, including a pending burst flushed by Command+Q');
             clearTimeout(timer);
-            console.log('PASS: Command+Q quits real Electron/backend and drains pending accepted metadata saves.');
+            console.log('PASS: Command+Q stops renderer polling, drains accepted reads and pending saves, rejects late work, and quits real Electron/backend cleanly.');
         } catch (error) { console.error(error); app.exit(1); }
     });
     require('../out/main/index.cjs');
@@ -79,10 +106,12 @@ if (!process.versions.electron) {
             assert.equal(noteRequests, 1, 'Leaving the field flushes one coalesced save');
             await window.webContents.executeJavaScript(`window.desktop.updateOrganization([${JSON.stringify(shot.id)}],{field:'notes',operation:'set',value:'last'}).catch(()=>{});window.desktop.updateOrganization([${JSON.stringify(shot.id)}],{field:'notes',operation:'set',value:'last accepted edit'}).catch(()=>{});void 0`);
             await wait(() => accepted === 4);
+            await window.webContents.executeJavaScript(`setInterval(()=>window.desktop.getTagVocabulary().catch(()=>{}),10);void 0`);
+            await wait(()=>activeReads>0);
             window.webContents.focus();
             requested = true;
             window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Q', modifiers: ['meta'] });
-            window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Q', modifiers: ['meta'] });
+            if (!window.isDestroyed()) window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Q', modifiers: ['meta'] });
         } catch (error) { console.error(error); backend?.kill(); app.exit(1); }
     });
 }

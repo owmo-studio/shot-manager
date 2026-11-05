@@ -32,7 +32,7 @@ if (!process.versions.electron) {
                 timestamp: `2026-11-0${i < 3 ? 1 : 2}T12:00:0${i}Z`, dateSource: 'embedded', dateEvidence: '', dateConfidence: 'declared',
                 metadata, cameraModel: 'ILME-FX30', bytes: 100, durationSeconds: 3, hasThumbnail: false, warnings: [], available: true, editable: true,
                 fingerprint: { algorithm: 'sha256', scheme: 'sampled-sha256-v1', value: String(i + 1).padStart(64, '0'), fileSize: 100, sampleBytes: 262144, sampledBytes: 100 },
-                organization: { identity: null, projects: [], context: [], notes: '' },
+                organization: { identity: null, projects: [], context: [], notes: '', skipped: false },
             })) };
             ipcMain.handle('fixture:sources', () => sources);
             ipcMain.handle('fixture:shots', () => collection);
@@ -66,7 +66,8 @@ if (!process.versions.electron) {
                     if (!ids.includes(shot.id)) return shot;
                     if (!shot.editable) throw new Error('Locked');
                     const data = structuredClone(shot.organization);
-                    if (action.field === 'all') Object.assign(data, { identity: null, projects: [], context: [], notes: '' });
+                    if (action.field === 'skip') data.skipped = action.value === 'true';
+                    else if (action.field === 'all') Object.assign(data, { identity: null, projects: [], context: [], notes: '' });
                     else if (action.field === 'notes') data.notes = action.value;
                     else if (action.field === 'identity') { if (action.operation === 'add') data.identity = action.value; else if (data.identity === action.value) data.identity = null; }
                     else data[action.field] = action.operation === 'add' ? action.field === 'projects' ? [action.value] : [...new Set([...data[action.field], action.value])] : data[action.field].filter(tag => tag !== action.value);
@@ -168,7 +169,7 @@ if (!process.versions.electron) {
             await push(collection.shots.map((shot,index)=>index===0?{...shot,filename:'Renamed.mp4',relativePath:'renamed.mp4'}:shot));
             await wait(`document.querySelector('[aria-label="Inspect Renamed.mp4"]')?.getAttribute('aria-pressed')==='true'`);
             assert.equal(await js(`document.querySelector('[aria-label="Notes"]').value`),'Original clip note','Renaming keeps the selected fingerprint and notes');
-            const samePathReplacement={...collection.shots[0],id:'f'.repeat(64),fingerprint:{...collection.shots[0].fingerprint,value:'f'.repeat(64)},organization:{identity:null,projects:[],context:[],notes:''}};
+            const samePathReplacement={...collection.shots[0],id:'f'.repeat(64),fingerprint:{...collection.shots[0].fingerprint,value:'f'.repeat(64)},organization:{identity:null,projects:[],context:[],notes:'',skipped:false}};
             await push([samePathReplacement,...collection.shots.slice(1)]);
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "][aria-pressed="true"]').length===0`);
             await click('Inspect Renamed.mp4');
@@ -456,6 +457,30 @@ if (!process.versions.electron) {
             await tag('Context tags', 'music/r', 'Tab');
             await wait(`!!document.querySelector('[data-field="context"][data-tag="music/rock"]')`);
             assert.equal(await js(`document.activeElement.getAttribute('aria-label')`), 'Context tags');
+            await tag('Context tags','backspace-test');
+            const contextKey=async(key,repeat=false)=>js(`document.querySelector('[aria-label="Context tags"]').dispatchEvent(new KeyboardEvent('keydown',{key:${JSON.stringify(key)},repeat:${repeat},bubbles:true,cancelable:true}))`);
+            await contextKey('Backspace');
+            await wait(`document.querySelector('[data-tag="backspace-test"]')?.getAttribute('data-tag-selected')==='true'`);
+            assert.ok(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.context.includes('backspace-test'),'First Backspace selects without removing');
+            await contextKey('Backspace',true);
+            assert.ok(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.context.includes('backspace-test'),'Holding Backspace cannot skip the second deliberate press');
+            await contextKey('Escape');
+            assert.equal(await js(`document.querySelectorAll('[data-tag-selected="true"]').length`),0,'Escape clears tag selection');
+            assert.equal(await js(`document.activeElement.getAttribute('aria-label')`),'Context tags');
+            await contextKey('Backspace');
+            await click('Context tags');
+            assert.equal(await js(`document.querySelectorAll('[data-tag-selected="true"]').length`),0,'Clicking the field restores typing');
+            await contextKey('Backspace');
+            await fill('Context tags','typing');
+            assert.equal(await js(`document.querySelectorAll('[data-tag-selected="true"]').length`),0,'Typing cancels tag selection');
+            await contextKey('Backspace');
+            assert.ok(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.context.includes('backspace-test'),'Backspace in nonempty text does not remove a tag');
+            await fill('Context tags','');
+            await contextKey('Backspace');
+            await contextKey('Backspace');
+            await wait(`!document.querySelector('[data-tag="backspace-test"]')`);
+            assert.ok(!collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization.context.includes('backspace-test'),'Second Backspace saves removal');
+
             await tag('Context tags', 'music//bad', 'Enter');
             assert.ok(await js(`Array.from(document.querySelectorAll('[role="alert"]')).some(node=>node.textContent.includes('64 lowercase'))`));
             await fill('Context tags', '');
@@ -498,11 +523,20 @@ if (!process.versions.electron) {
             await fill('Notes', 'Shared notes');
             await wait(`!Array.from(document.querySelectorAll('[role="status"]')).some(node=>node.textContent==='Saving…')`);
             assert.ok(collection.shots.filter(shot=>['Clip 4.mp4','Clip 5.mp4'].includes(shot.filename)).every(shot=>shot.organization.notes==='Shared notes'));
+            await js(`window.desktop.updateOrganization(${JSON.stringify(collection.shots.filter(shot=>['Clip 4.mp4','Clip 5.mp4'].includes(shot.filename)).map(shot=>shot.id))},{field:'skip',operation:'set',value:'true'})`);
             await new Promise(resolve => { window.webContents.once('did-finish-load', resolve); window.webContents.reload(); });
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===3`);
             await inspect(4);
             await wait(`!!document.querySelector('[data-tag="shared"]')`);
             assert.equal(await js(`document.querySelector('[aria-label="Notes"]').value`), 'Shared notes');
+            assert.deepEqual(await skipped(),[4,5],'Saved Skip restores after renderer reload');
+            failOrganizationSave=true;
+            await click('Skip selected clips');
+            await wait(`document.querySelector('#source-error-title')?.textContent==='Skip could not be saved'`);
+            assert.deepEqual(await skipped(),[4,5],'A failed Skip save preserves the stored and displayed choices');
+            await js(`Array.from(document.querySelectorAll('dialog button')).find(button=>button.textContent==='Dismiss').click()`);
+            await wait(`!document.querySelector('#source-error-title')`);
+
             const beforeClipClear = structuredClone(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization);
             await click('Clear selected clip information');
             await wait(`!!document.querySelector('#clear-organization-title')`);
@@ -522,7 +556,7 @@ if (!process.versions.electron) {
             assert.equal(await js(`document.querySelectorAll('[data-shot-card]').length`), 3);
             assert.deepEqual(await selected(), [4,5]);
             assert.ok(vocabulary.context.includes('studio'), 'Clip Clear preserves available options');
-            for (const shot of collection.shots.filter(shot=>['Clip 4.mp4','Clip 5.mp4'].includes(shot.filename))) assert.deepEqual(shot.organization, {identity:null,projects:[],context:[],notes:''});
+            for (const shot of collection.shots.filter(shot=>['Clip 4.mp4','Clip 5.mp4'].includes(shot.filename))) assert.deepEqual(shot.organization, {identity:null,projects:[],context:[],notes:'',skipped:true});
             sources = [...sources, { id: 'C', name: 'Source C', path: '/synthetic/C', type: 'folder', cameraModels: [], available: true }]
                 .map(source => ({ ...source, available: false }));
             collection = { ...collection, revision: collection.revision + 1, shots: collection.shots.map(shot => ({ ...shot, available: false, editable: true })) };

@@ -6,7 +6,7 @@ import type { OptionRemovalPlan, OrganizationAction, ShotOrganization, TagVocabu
 import type { VideoFingerprint } from '../shared/shots';
 
 interface DraftRecord { data: ShotOrganization; lastScannedAt: number; lastEditedAt: number; previousProjects?: string[]; clip?: { name: string; path: string } }
-interface OrganizationState { version: 1 | 2 | 3 | 4; vocabulary: TagVocabulary; drafts: Record<string, DraftRecord> }
+interface OrganizationState { version: 1 | 2 | 3 | 4 | 5; vocabulary: TagVocabulary; drafts: Record<string, DraftRecord> }
 
 export class OrganizationStore {
     private state?: OrganizationState;
@@ -21,25 +21,26 @@ export class OrganizationStore {
 
     private async load() {
         if (this.state) return this.state;
-        let state: OrganizationState = { version: 4, vocabulary: emptyVocabulary(), drafts: {} };
+        let state: OrganizationState = { version: 5, vocabulary: emptyVocabulary(), drafts: {} };
         if (this.path) {
             try {
                 state = JSON.parse(await readFile(this.path, 'utf8'));
-                if (![1, 2, 3, 4].includes(state.version) || !state.vocabulary || !state.drafts || typeof state.drafts !== 'object' || Array.isArray(state.drafts)) throw new Error('Invalid state');
+                if (![1, 2, 3, 4, 5].includes(state.version) || !state.vocabulary || !state.drafts || typeof state.drafts !== 'object' || Array.isArray(state.drafts)) throw new Error('Invalid state');
                 for (const field of TAG_FIELDS) {
                     if (!Array.isArray(state.vocabulary[field]) || state.vocabulary[field].some(value => typeof value !== 'string' || (field === 'context' ? normalizeTag(value) : normalizeOption(value)) !== value)) throw new Error('Invalid vocabulary');
                 }
                 for (const [key, record] of Object.entries(state.drafts)) {
                     if (!/^sampled-sha256-v1:[a-f0-9]{64}$/.test(key) || !record || !Number.isFinite(record.lastScannedAt) || !Number.isFinite(record.lastEditedAt)) throw new Error('Invalid draft');
                     const data = record.data;
+                    if (state.version < 5 && data && !Object.hasOwn(data, 'skipped')) data.skipped = false;
                     if (record.clip && (typeof record.clip.name !== 'string' || typeof record.clip.path !== 'string')) throw new Error('Invalid clip reference');
                     if (!data || !(data.identity === null || (typeof data.identity === 'string' && normalizeOption(data.identity) === data.identity)) ||
-                        typeof data.notes !== 'string' || data.notes.length > 10000) throw new Error('Invalid draft');
+                        typeof data.skipped !== 'boolean' || typeof data.notes !== 'string' || data.notes.length > 10000) throw new Error('Invalid draft');
                     for (const field of ['projects', 'context'] as const) {
                         if (!Array.isArray(data[field]) || data[field].some(value => typeof value !== 'string' || (field === 'context' ? normalizeTag(value) : normalizeOption(value)) !== value)) throw new Error('Invalid draft');
                     }
                 }
-                let migrated = state.version !== 4 || Object.hasOwn(state.vocabulary, 'colors') || Object.hasOwn(state.vocabulary, 'colorVersion');
+                let migrated = state.version !== 5 || Object.hasOwn(state.vocabulary, 'colors') || Object.hasOwn(state.vocabulary, 'colorVersion');
                 state.vocabulary = { identity: state.vocabulary.identity, projects: state.vocabulary.projects, context: [] };
                 for (const record of Object.values(state.drafts)) {
                     if (record.data.projects.length > 1) {
@@ -48,7 +49,7 @@ export class OrganizationStore {
                         migrated = true;
                     }
                 }
-                if (migrated) { state.version = 4; await this.save(state); }
+                if (migrated) { state.version = 5; await this.save(state); }
             } catch (error) {
                 if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Could not read saved tags. Existing data has been preserved.');
             }
@@ -82,7 +83,7 @@ export class OrganizationStore {
 
     reset() {
         return this.serialize(async () => {
-            await this.save({ version: 4, vocabulary: emptyVocabulary(), drafts: {} });
+            await this.save({ version: 5, vocabulary: emptyVocabulary(), drafts: {} });
         });
     }
 
@@ -114,7 +115,8 @@ export class OrganizationStore {
             for (const key of keys) {
                 const record = next.drafts[key];
                 if (!record) throw new Error('Draft unavailable. Refresh the source to retry.');
-                if (action.field === 'all') { record.data = emptyOrganization(); delete record.previousProjects; }
+                if (action.field === 'skip') record.data.skipped = action.value === 'true';
+                else if (action.field === 'all') { record.data = { ...emptyOrganization(), skipped: record.data.skipped }; delete record.previousProjects; }
                 else if (action.field === 'notes') record.data.notes = action.value;
                 else if (action.field === 'identity') {
                     if (action.operation === 'add') record.data.identity = action.value;
@@ -128,7 +130,7 @@ export class OrganizationStore {
                 }
                 record.lastEditedAt = this.now();
             }
-            if (action.field !== 'notes' && action.field !== 'all' && action.operation === 'add') {
+            if (action.field !== 'notes' && action.field !== 'all' && action.field !== 'skip' && action.operation === 'add') {
                 next.vocabulary[action.field] = [...new Set([...next.vocabulary[action.field], action.value])].sort();
             }
             await this.save(next, validate);

@@ -65,7 +65,7 @@ export function createServer(token: string, onShotsChanged?: (collection: ShotCo
     schema: { body: { type: 'object', required: ['shotIds', 'action'], additionalProperties: false, properties: {
       shotIds: { type: 'array', minItems: 1, maxItems: 1000, items: { type: 'string', pattern: '^[a-f0-9]{64}$' } },
       action: { type: 'object', required: ['field', 'operation', 'value'], additionalProperties: false, properties: {
-        field: { type: 'string', enum: ['identity', 'projects', 'context', 'notes', 'all'] },
+        field: { type: 'string', enum: ['identity', 'projects', 'context', 'notes', 'skip', 'all'] },
         operation: { type: 'string', enum: ['add', 'remove', 'set', 'clear'] }, value: { type: 'string', maxLength: 10000 }
       } }
     } } }

@@ -14,6 +14,7 @@ function TagFieldInput({ field, shots, vocabulary, disabled, submit }: {
     const [focused, setFocused] = useState(false);
     const [highlight, setHighlight] = useState(0);
     const [optionChosen, setOptionChosen] = useState(false);
+    const [selectedTag, setSelectedTag] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const id = useId();
     const input = useRef<HTMLInputElement>(null);
@@ -40,19 +41,20 @@ function TagFieldInput({ field, shots, vocabulary, disabled, submit }: {
             const tag = single ? normalizeOption(value) : normalizeTag(value);
             const remove = !single && fromOption && counts.get(tag) === shots.length;
             submit({ field, operation: remove ? 'remove' : 'add', value: tag });
+            setSelectedTag(null);
             setQuery(''); setHighlight(0); setOptionChosen(false); setError(null);
             if (single) setFocused(false);
         } catch (failure) { setError((failure as Error).message); }
     }
     const chips = [...counts].map(([tag, count]) => {
         const partial = count !== shots.length;
-        return <span key={tag} data-tag={tag} data-field={field} data-shared={!partial}
+        return <span key={tag} data-tag={tag} data-field={field} data-shared={!partial} data-tag-selected={selectedTag === tag && focused && !disabled}
             title={partial ? `${count} of ${shots.length} selected clips` : 'Shared by all selected clips'}
-            className={`inline-flex max-w-full items-center gap-1 text-zinc-300 ${single ? 'text-xs' : `rounded-md border px-2 py-1 text-[11px] ${partial ? 'border-dashed border-white/25' : 'border-white/15 bg-white/8'}`}`}>
+            className={`inline-flex max-w-full items-center gap-1 text-zinc-300 ${single ? 'text-xs' : `rounded-md border px-2 py-1 text-[11px] ${partial ? 'border-dashed border-white/25' : 'border-white/15 bg-white/8'} ${selectedTag === tag && focused && !disabled ? 'ring-1 ring-blue-300 bg-blue-400/15 text-blue-100' : ''}`}`}>
             <span className="min-w-0 break-all">{tag}</span>
             {partial && <span className="ml-1 shrink-0 text-[10px] opacity-70">{count}/{shots.length}</span>}
             {!single && <button type="button" disabled={disabled} aria-label={`Remove ${labels[field]} tag ${tag}`}
-                title="Remove from selected clips" onClick={() => submit({ field, operation: 'remove', value: tag })}
+                title="Remove from selected clips" onClick={() => { setSelectedTag(null); submit({ field, operation: 'remove', value: tag }); }}
                 className="ml-0.5 grid size-4 shrink-0 place-items-center rounded text-sm opacity-60 hover:bg-white/10 hover:opacity-100 disabled:opacity-30">×</button>}
         </span>;
     });
@@ -62,10 +64,19 @@ function TagFieldInput({ field, shots, vocabulary, disabled, submit }: {
         autoComplete="off" spellCheck={false} disabled={disabled} value={query}
         placeholder={single ? 'Search or add…' : shots.length ? 'Choose or add tags…' : ''} maxLength={single ? 128 : 64}
         title={single ? 'Select an existing value or type a new name; Enter saves and Tab completes.' : 'Space/Enter adds a tag; Tab completes. Use / for hierarchy.'}
-        onFocus={() => setFocused(true)} onClick={() => setFocused(true)}
-        onChange={event => { setQuery(single ? event.target.value.normalize('NFC') : event.target.value.normalize('NFC').toLowerCase()); setHighlight(0); setOptionChosen(false); setFocused(true); setError(null); }}
+        onFocus={() => setFocused(true)} onClick={() => { setSelectedTag(null); setFocused(true); }}
+        onChange={event => { setSelectedTag(null); setQuery(single ? event.target.value.normalize('NFC') : event.target.value.normalize('NFC').toLowerCase()); setHighlight(0); setOptionChosen(false); setFocused(true); setError(null); }}
         onKeyDown={event => {
             if (event.nativeEvent.isComposing) return;
+            if (!single && event.key === 'Backspace' && !query && !event.metaKey && !event.ctrlKey && !event.altKey) {
+                event.preventDefault(); event.stopPropagation();
+                if (event.repeat || disabled) return;
+                if (selectedTag && counts.has(selectedTag)) {
+                    submit({ field, operation: 'remove', value: selectedTag });
+                    setSelectedTag(null);
+                } else setSelectedTag([...counts.keys()].at(-1) ?? null);
+                return;
+            }
             if (event.key === 'Tab' && event.shiftKey) { event.preventDefault(); return; }
             if ((single ? ['Tab', 'Enter'] : ['Tab', ' ', 'Enter']).includes(event.key)) {
                 event.preventDefault(); event.stopPropagation();
@@ -76,11 +87,15 @@ function TagFieldInput({ field, shots, vocabulary, disabled, submit }: {
                 event.preventDefault(); event.stopPropagation();
                 setOptionChosen(true);
                 setHighlight((active + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % Math.max(1, options.length));
-            } else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setFocused(false); }
+            } else if (event.key === 'Escape') {
+                event.preventDefault(); event.stopPropagation();
+                if (selectedTag) setSelectedTag(null);
+                else setFocused(false);
+            }
         }}
-        className="min-w-20 flex-1 bg-transparent px-1 py-1 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 disabled:opacity-40" />;
+        className={`min-w-20 flex-1 bg-transparent px-1 py-1 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 disabled:opacity-40 ${selectedTag ? 'caret-transparent' : ''}`} />;
 
-    return <div className="relative" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setFocused(false); }}>
+    return <div className="relative" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) { setFocused(false); setSelectedTag(null); } }}>
         <label htmlFor={single ? `${id}-trigger` : id} className="block text-xs text-zinc-400">{labels[field]}</label>
         {single ? <div className="mt-1.5 flex min-h-10 items-center rounded-lg border border-white/10 bg-black/10 focus-within:border-blue-400/50">
             <button type="button" id={`${id}-trigger`} disabled={disabled} aria-label={`${labels[field]} selection`}
@@ -94,7 +109,7 @@ function TagFieldInput({ field, shots, vocabulary, disabled, submit }: {
                 aria-label={`Clear ${labels[field]}`}
                 onClick={() => { for (const tag of counts.keys()) submit({ field, operation: 'remove', value: tag }); }}
                 title={`Clear ${labels[field]} from selected clips`} className="mr-2 grid size-6 shrink-0 place-items-center rounded text-zinc-500 hover:bg-white/10 hover:text-zinc-200">×</button>}
-        </div> : <div onClick={event => { if (!(event.target instanceof Element) || !event.target.closest('button')) { setFocused(true); input.current?.focus(); } }}
+        </div> : <div onClick={event => { if (!(event.target instanceof Element) || !event.target.closest('button')) { setSelectedTag(null); setFocused(true); input.current?.focus(); } }}
             className="mt-1.5 flex min-h-10 cursor-text flex-wrap items-center gap-1.5 rounded-lg border border-white/10 bg-black/10 p-2 focus-within:border-blue-400/50">
             {chips}{editor}
         </div>}
@@ -113,6 +128,7 @@ function TagFieldInput({ field, shots, vocabulary, disabled, submit }: {
                 {!options.length && <li className="px-2 py-2 text-xs text-zinc-500">{query ? 'No matches' : single ? 'No options yet — type to add one' : 'No tags yet — type to add one'}</li>}
             </ul>
         </div>}
+        {selectedTag && focused && !disabled && counts.has(selectedTag) && <span role="status" className="sr-only">{selectedTag} selected. Press Backspace to remove or Escape to cancel.</span>}
         {error && <p role="alert" className="mt-1 text-[11px] leading-5 text-red-300">{error}</p>}
     </div>;
 }

@@ -64,6 +64,8 @@ function App() {
     const blockedIngestCount = ingestShots.filter((shot) => !shot.available || !shot.editable || !availableSourceIds.has(shot.sourceId)).length;
     const navigationKey = JSON.stringify({ orderedIds: displayedShots.map((shot) => shot.id), selectableIds: selectableShots.map((shot) => shot.id) });
     const keyboardNavigation = useRef(false);
+    const skipPending = useRef(new Set<string>());
+    const [skipError, setSkipError] = useState<string | null>(null);
 
     const clearEditingSelection = useCallback(() => {
         keyboardNavigation.current = false;
@@ -82,10 +84,14 @@ function App() {
             additive: modifiers.ctrlKey || modifiers.metaKey, range: modifiers.shiftKey });
     }
 
-    function changeSkip(ids: string[], skipped: boolean) {
-        if (ids.some((id) => !shotCollection.shots.some((shot) => shot.id === id && shot.editable))) return;
-        const keys = new Set(shotCollection.shots.filter(shot => ids.includes(shot.id)).map(clipIdentity));
-        selection.dispatch({ type: "skip", ids: shotCollection.shots.filter(shot => keys.has(clipIdentity(shot))).map(shot => shot.id), skipped });
+    async function changeSkip(ids: string[], skipped: boolean) {
+        if (!ids.length || ids.some(id => skipPending.current.has(id) || !shotCollection.shots.some(shot => shot.id === id && shot.editable))) return;
+        ids.forEach(id => skipPending.current.add(id));
+        try {
+            const result = await window.desktop.updateOrganization([...new Set(ids)], { field: 'skip', operation: 'set', value: skipped ? 'true' : 'false' });
+            receiveShots(result.collection);
+        } catch { setSkipError('Could not save the Skip choice. Please try again.'); }
+        finally { ids.forEach(id => skipPending.current.delete(id)); }
     }
 
     useEffect(() => {
@@ -524,10 +530,11 @@ function App() {
                     onProceed={() => void removeSource(removalSource.id)}
                 />
             )}
-            {!removalSource && sourceError && (
+            {skipError && <SourceErrorDialog title="Skip could not be saved" message={skipError} onDismiss={() => setSkipError(null)} />}
+            {!skipError && !removalSource && sourceError && (
                 <SourceErrorDialog message={sourceError} onDismiss={() => setSourceError(null)} />
             )}
-            {!removalSource && !sourceError && unavailableSources.length > 0 && (
+            {!skipError && !removalSource && !sourceError && unavailableSources.length > 0 && (
                 <SourceUnavailableDialog
                     sources={unavailableSources}
                     onDismiss={() => setUnavailableSources([])}

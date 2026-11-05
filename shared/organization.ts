@@ -7,6 +7,7 @@ export interface ShotOrganization {
     projects: string[]; // Zero or one project; array shape retained for draft compatibility.
     context: string[];
     notes: string;
+    skipped: boolean;
 }
 export type TagVocabulary = Record<TagField, string[]>;
 export interface OptionRemovalPlan {
@@ -16,8 +17,9 @@ export interface OptionRemovalPlan {
 export type OrganizationAction =
     | { field: TagField; operation: 'add' | 'remove'; value: string }
     | { field: 'notes'; operation: 'set'; value: string }
+    | { field: 'skip'; operation: 'set'; value: 'true' | 'false' }
     | { field: 'all'; operation: 'clear'; value: '' };
-export const emptyOrganization = (): ShotOrganization => ({ identity: null, projects: [], context: [], notes: '' });
+export const emptyOrganization = (): ShotOrganization => ({ identity: null, projects: [], context: [], notes: '', skipped: false });
 export const emptyVocabulary = (): TagVocabulary => ({ identity: [], projects: [], context: [] });
 
 export function validateOptionRemovals(value: unknown): TagVocabulary {
@@ -55,6 +57,7 @@ export function organizationKey(fingerprint: { scheme: string; value: string }) 
 }
 
 export function validateOrganizationAction(action: OrganizationAction): OrganizationAction {
+    if (action.field === 'skip' && action.operation === 'set' && ['true', 'false'].includes(action.value)) return action;
     if (action.field === 'all' && action.operation === 'clear' && action.value === '') return action;
     if (action.field === 'notes' && action.operation === 'set' && typeof action.value === 'string' && action.value.length <= 10000) return action;
     if (TAG_FIELDS.includes(action.field as TagField) && ['add', 'remove'].includes(action.operation) && typeof action.value === 'string') {

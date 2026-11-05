@@ -19,7 +19,7 @@ Viewing LUTs are included in the repository. See [LUT provenance](resources/luts
 ## Current functionality
 
 - Add multiple card or folder sources, browse original videos by recording date, filter by source/device, inspect technical metadata, and play or seek the original video. Clips appear after fingerprinting and attribute loading; their identity follows the fingerprint across moves and rescans. Previews are generated locally; camera proxies, thumbnails, and external XML are not used.
-- Edit Identity, Project, Context tags, and Notes per clip. Drafts may be incomplete; future ingestion requires Identity and Project. Attribute drafts persist locally; source lists, editing selections, and skip choices last only for the current session. Skipping a clip is separate from selecting it for inspection.
+- Edit Identity, Project, Context tags, and Notes per clip. Drafts may be incomplete; future ingestion requires Identity and Project. Attributes and Skip choices persist locally; source lists and editing selections are session-only. Skipping a clip is separate from selecting it for inspection.
 - Use the inspector's LUT toggle to review supported Sony S-Log3 and Apple Log footage. Viewing transforms and cached previews do not change source files.
 - Set a Library location in Configuration. This only saves a path; it does not scan or write to the Library. **Review & Ingest remains disabled.**
 

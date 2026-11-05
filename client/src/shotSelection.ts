@@ -25,13 +25,11 @@ export function orderedShots(shots: VideoShot[], newestFirst: boolean) {
 
 interface SelectionState {
     editingIds: string[];
-    skippedIds: string[];
     anchorId: string | null;
     activeId: string | null;
 }
 type Action =
     | { type: "select"; id: string; orderedIds: string[]; additive: boolean; range: boolean }
-    | { type: "skip"; ids: string[]; skipped: boolean }
     | { type: "navigate"; direction: -1 | 1; orderedIds: string[]; selectableIds: string[]; layout?: { id: string; x: number; y: number }[] }
     | { type: "clear" }
     | { type: "reconcile"; existingIds: string[]; visibleIds: string[] };
@@ -74,31 +72,25 @@ function reducer(state: SelectionState, action: Action): SelectionState {
             }
             return state;
         }
-        case "skip": {
-            const ids = new Set(state.skippedIds);
-            for (const id of action.ids) { if (action.skipped) ids.add(id); else ids.delete(id); }
-            return { ...state, skippedIds: [...ids] };
-        }
         case "clear": return { ...state, editingIds: [], anchorId: null, activeId: null };
         case "reconcile": {
             const existing = new Set(action.existingIds), visible = new Set(action.visibleIds);
             const editingIds = state.editingIds.filter((id) => existing.has(id) && visible.has(id));
-            const skippedIds = state.skippedIds.filter((id) => existing.has(id));
             const anchorId = state.anchorId && visible.has(state.anchorId) ? state.anchorId : null;
             const activeId = state.activeId && editingIds.includes(state.activeId) ? state.activeId : editingIds.at(-1) ?? null;
-            return editingIds.length === state.editingIds.length && skippedIds.length === state.skippedIds.length && anchorId === state.anchorId && activeId === state.activeId
-                ? state : { editingIds, skippedIds, anchorId, activeId };
+            return editingIds.length === state.editingIds.length && anchorId === state.anchorId && activeId === state.activeId
+                ? state : { editingIds, anchorId, activeId };
         }
     }
 }
 
-// Separate transient editing targets from explicit skip intent for future ingestion. Neither is a queue.
+// Editing selection is transient; skip intent comes from the saved clip draft.
 export function useShotSelection(shots: VideoShot[], visibleShots: VideoShot[]) {
-    const [state, dispatch] = useReducer(reducer, { editingIds: [], skippedIds: [], anchorId: null, activeId: null });
+    const [state, dispatch] = useReducer(reducer, { editingIds: [], anchorId: null, activeId: null });
     const existingKey = JSON.stringify(shots.map((shot) => shot.id));
     const visibleKey = JSON.stringify(visibleShots.map((shot) => shot.id));
     useEffect(() => {
         dispatch({ type: "reconcile", existingIds: JSON.parse(existingKey), visibleIds: JSON.parse(visibleKey) });
     }, [existingKey, visibleKey]);
-    return { ...state, dispatch };
+    return { ...state, skippedIds: shots.filter(shot => shot.organization?.skipped).map(shot => shot.id), dispatch };
 }
