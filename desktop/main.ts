@@ -28,7 +28,9 @@ const noteWrites = new DebouncedWrites(draftWrites, 500)
 let backendStopping = false
 
 function publishSaveStatus() {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('organization:save-status', { ...draftWrites.status(), closing: quitting })
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('organization:save-status', {
+    ...draftWrites.status(), closing: quitting, shutdownPhase: backendStopping ? 'backend' : 'saving'
+  })
 }
 
 async function flushDrafts() {
@@ -91,6 +93,7 @@ function startBackend() {
     console.info(`Backend exited (${code})`)
     if (backendStopping) {
       shutdownComplete = true
+      mainWindow?.destroy()
       app.quit()
     }
   })
@@ -371,9 +374,9 @@ if (!app.requestSingleInstanceLock()) {
       }
       // Accepted edits have settled successfully or were explicitly discarded.
       mediaShutdown.abort()
-      mainWindow?.destroy()
       backendStopping = true
-      if (!backend) { shutdownComplete = true; app.quit(); return }
+      publishSaveStatus()
+      if (!backend) { shutdownComplete = true; mainWindow?.destroy(); app.quit(); return }
       backend.postMessage('shutdown')
       setTimeout(() => {
         backend?.kill()

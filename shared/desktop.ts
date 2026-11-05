@@ -74,7 +74,7 @@ export interface DesktopAPI {
   getShotLut: (id: string) => Promise<ViewingLut | null>
 }
 
-export interface SaveStatus { pending: number; failed: number; error?: string; closing?: boolean }
+export interface SaveStatus { pending: number; failed: number; error?: string; closing?: boolean; shutdownPhase?: 'saving' | 'backend' }
 
 // Error data crosses contextBridge as plain values; renderer constructs its own Error.
 export type DesktopBridge = { [K in keyof DesktopAPI]: DesktopAPI[K] extends (...args: infer A) => Promise<infer R>

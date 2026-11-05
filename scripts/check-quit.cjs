@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const { join } = require('node:path');
 if (!process.versions.electron) {
-    for (const mode of ['normal', 'failed-save', 'discard-failed-save']) {
+    for (const mode of ['normal', 'close-button', 'failed-save', 'close-button-failed-save', 'discard-failed-save']) {
         const root = fs.mkdtempSync(join(require('node:os').tmpdir(), 'shot-quit-check-'));
         try {
             const env = { ...process.env, SHOT_MANAGER_QUIT_TEST_ROOT: root, SHOT_MANAGER_QUIT_TEST_MODE: mode };
@@ -10,6 +10,7 @@ if (!process.versions.electron) {
             const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, stdio: 'inherit', timeout: 20000 });
             if (result.error) console.error(result.error);
             if (result.status !== 0) { process.exitCode = result.status ?? 1; break; }
+            if (!fs.existsSync(join(root,'validated'))) { console.error('Quit bypassed lifecycle validation'); process.exitCode=1; break; }
         } finally { fs.rmSync(root, { recursive: true, force: true }); }
     }
 } else {
@@ -18,9 +19,11 @@ if (!process.versions.electron) {
     const { app, Menu } = electron;
     const root = process.env.SHOT_MANAGER_QUIT_TEST_ROOT;
     if (!root) throw new Error('Missing isolated test directory');
-    const failureMode = process.env.SHOT_MANAGER_QUIT_TEST_MODE !== 'normal';
+    const mode = process.env.SHOT_MANAGER_QUIT_TEST_MODE;
+    const closeButton = mode.includes('close-button');
+    const failureMode = mode.includes('failed-save');
     const discardMode = process.env.SHOT_MANAGER_QUIT_TEST_MODE === 'discard-failed-save';
-    let allowWrites = !failureMode, prompts = 0;
+    let allowWrites = !failureMode, prompts = 0, backendExited = false;
     const profile = join(root, 'profile'); fs.mkdirSync(profile);
     app.setPath('userData', profile);
     let window, backend, backendURL, token, accepted = 0, noteRequests = 0, requested = false, observedQuit = false;
@@ -61,15 +64,27 @@ if (!process.versions.electron) {
             const post = backend.postMessage.bind(backend);
             backend.postMessage = message => {
                 if (message === 'shutdown') {
-                    assert.ok(window.isDestroyed(), 'Renderer stops before backend shutdown');
+                    assert.ok(!window.isDestroyed(), 'Closing window stays available until backend exit');
                     assert.equal(activeReads, 0, 'Accepted vocabulary reads finish before backend shutdown');
                     shutdownRequested = true;
                     // Simulate an IPC call arriving after the renderer started closing.
                     void Promise.resolve(vocabularyHandler(...vocabularyArgs)).catch(error => { console.error(error); app.exit(1); });
+                    setTimeout(() => {
+                        void (async () => {
+                            assert.ok(!window.isDestroyed(), 'Delayed shutdown does not hide the closing window');
+                            assert.ok(await window.webContents.executeJavaScript(`document.body.inert && document.body.textContent.includes('Stopping background work and closing')`), 'Both exit paths show shutdown progress and prevent further edits');
+                            post(message);
+                        })().catch(error => { console.error(error); app.exit(1); });
+                    }, 250);
+                    return;
                 }
                 return post(message);
             };
             backend.on('message', message => { if (message?.type === 'ready') backendURL = message.url; });
+            backend.on('exit', () => {
+                backendExited = true;
+                assert.ok(!window.isDestroyed(), 'The backend exits before the window is destroyed');
+            });
             return backend;
         } },
         ipcMain: { ...electron.ipcMain, handle(channel, handler) {
@@ -87,7 +102,8 @@ if (!process.versions.electron) {
     app.on('before-quit', () => { observedQuit = true; });
     app.on('will-quit', () => {
         try {
-            assert.ok(requested && observedQuit && shutdownRequested);
+            assert.ok(requested && observedQuit && shutdownRequested && backendExited);
+            assert.ok(window.isDestroyed(), 'Window closes after backend exit');
             assert.equal(lateFetches,0,'No renderer fetch reaches a closing backend');
             assert.equal(failedFetches,0,'Normal quit causes no refused backend requests');
             const saved = JSON.parse(fs.readFileSync(join(profile, 'organization.json'), 'utf8'));
@@ -95,7 +111,8 @@ if (!process.versions.electron) {
             assert.equal(noteRequests, failureMode && !discardMode ? 3 : 2, 'Each typing burst writes once, including a pending burst flushed by Command+Q');
             if (failureMode) assert.equal(prompts, 1, 'Failed quit requires an explicit choice');
             clearTimeout(timer);
-            console.log('PASS: Command+Q stops renderer polling, drains accepted reads and pending saves, rejects late work, and quits real Electron/backend cleanly.');
+            fs.writeFileSync(join(root,'validated'),'passed');
+            console.log(`PASS: ${mode} drains accepted work, reports delayed shutdown, preserves failed-save choices, and closes only after backend exit.`);
         } catch (error) { console.error(error); app.exit(1); }
     });
     require('../out/main/index.cjs');
@@ -127,10 +144,16 @@ if (!process.versions.electron) {
             await wait(() => accepted === 4);
             await window.webContents.executeJavaScript(`setInterval(()=>window.desktop.getTagVocabulary().catch(()=>{}),10);void 0`);
             await wait(()=>activeReads>0);
-            window.webContents.focus();
+            const requestExit = () => {
+                if (closeButton) window.close();
+                else {
+                    window.webContents.focus();
+                    window.webContents.sendInputEvent({type:'keyDown',keyCode:'Q',modifiers:['meta']});
+                    if (!window.isDestroyed()) window.webContents.sendInputEvent({type:'keyUp',keyCode:'Q',modifiers:['meta']});
+                }
+            };
             requested = true;
-            window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Q', modifiers: ['meta'] });
-            if (!window.isDestroyed()) window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Q', modifiers: ['meta'] });
+            requestExit();
             if (failureMode && !discardMode) {
                 await wait(() => prompts === 1);
                 await wait(async () => (await window.webContents.executeJavaScript('window.desktop.getSaveStatus()'))?.failed === 1);
@@ -140,7 +163,7 @@ if (!process.versions.electron) {
                 allowWrites = true;
                 await window.webContents.executeJavaScript('window.desktop.retryOrganizationSaves()');
                 assert.equal((await window.webContents.executeJavaScript('window.desktop.getSaveStatus()')).failed, 0);
-                app.quit();
+                requestExit();
             }
         } catch (error) { console.error(error); backend?.kill(); app.exit(1); }
     });
