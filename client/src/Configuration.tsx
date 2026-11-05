@@ -1,24 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
-import type { AppConfiguration, LocalDataSummary } from '../../shared/desktop';
+import type { AppConfiguration } from '../../shared/desktop';
 import { emptyVocabulary, TAG_FIELDS } from '../../shared/organization';
-import type { TagField, TagVocabulary } from '../../shared/organization';
+import type { OptionRemovalPlan, TagField, TagVocabulary } from '../../shared/organization';
+import { RemoveOptionsDialog } from './RemoveOptionsDialog';
 
-function cacheSize(bytes: number) {
-    if (bytes < 1024) return `${bytes} B`;
-    const units = ['KB', 'MB', 'GB'];
-    let value = bytes / 1024;
-    let unit = 0;
-    while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
-    return `${value.toFixed(1)} ${units[unit]}`;
-}
+import type { ShotCollection } from '../../shared/shots';
+import { ResetLocalDataButton } from './ResetLocalDataButton';
 
-export function Configuration() {
+export function Configuration({ onLocalDataReset }: { onLocalDataReset: (collection: ShotCollection) => void }) {
     const [configuration, setConfiguration] = useState<AppConfiguration | null>(null);
     const [open, setOpen] = useState(false);
     const [libraryError, setLibraryError] = useState<string | null>(null);
-    const [cacheError, setCacheError] = useState<string | null>(null);
-    const [cache, setCache] = useState<LocalDataSummary | null>(null);
-    const [busy, setBusy] = useState<'library' | 'cache' | 'save' | null>(null);
+    const [busy, setBusy] = useState<'library' | 'cache' | 'save' | 'review' | null>(null);
+    const [removalPlan, setRemovalPlan] = useState<OptionRemovalPlan | null>(null);
     const [vocabulary, setVocabulary] = useState<TagVocabulary | null>(null);
     const [removals, setRemovals] = useState<TagVocabulary>(emptyVocabulary);
     const [optionsError, setOptionsError] = useState<string | null>(null);
@@ -48,9 +42,8 @@ export function Configuration() {
         async function refresh() {
             if (!mutation.current) {
                 const version = requestVersion.current;
-                const [usage, options] = await Promise.allSettled([window.desktop.getLocalDataSummary(), window.desktop.getTagVocabulary()]);
+                const [options] = await Promise.allSettled([window.desktop.getTagVocabulary()]);
                 if (!disposed && version === requestVersion.current) {
-                    setCache(usage.status === 'fulfilled' ? usage.value : null);
                     if (options.status === 'fulfilled') { setVocabulary(options.value); setOptionsError(null); }
                     else setOptionsError('Could not load saved options.');
                 }
@@ -73,35 +66,37 @@ export function Configuration() {
         finally { mutation.current = false; setBusy(null); }
     }
 
-    async function clearCache() {
-        if (mutation.current) return;
-        mutation.current = true;
-        requestVersion.current++;
-        setBusy('cache'); setCacheError(null);
-        try {
-            setCache(await window.desktop.clearLocalData());
-            setRemovals(emptyVocabulary());
-            setVocabulary(null);
-            window.dispatchEvent(new Event('organization-options-changed'));
-        } catch { setCacheError('Could not clear Local Data. Try again.'); }
-        finally { mutation.current = false; setBusy(null); }
-    }
-
     function removeOption(field: TagField, value: string) {
         setRemovals(current => ({ ...current, [field]: [...new Set([...current[field], value])] }));
     }
 
-    async function saveOptions() {
-        if (mutation.current || !hasChanges || !vocabulary) return;
+    async function saveOptions(reviewToken?: string) {
+        if ((mutation.current && !reviewToken) || !hasChanges || !vocabulary) return;
         mutation.current = true; requestVersion.current++;
         setBusy('save'); setOptionsError(null);
+        let reviewing = false;
         try {
-            const result = await window.desktop.saveConfigurationOptions(removals);
+            if (!reviewToken) {
+                const plan = await window.desktop.previewConfigurationOptions(removals);
+                if (plan.clips.length) {
+                    reviewing = true;
+                    setRemovalPlan(plan); setBusy('review');
+                    return;
+                }
+                reviewToken = plan.reviewToken;
+            }
+            const result = await window.desktop.saveConfigurationOptions(removals, reviewToken);
             setVocabulary(result.vocabulary); setRemovals(emptyVocabulary());
             window.dispatchEvent(new Event('organization-options-changed'));
             setOpen(false);
-        } catch { setOptionsError('Could not save the option lists. Please try again.'); }
-        finally { mutation.current = false; setBusy(null); }
+            setRemovalPlan(null);
+        } catch {
+            setRemovalPlan(null);
+            setOptionsError('Could not save changes. Wait for any scans to finish, then Save again to review.');
+        } finally {
+            // Keep configuration controls locked while the confirmation is open.
+            if (!reviewing) { mutation.current = false; setBusy(null); }
+        }
     }
 
     const buttonStyle = 'rounded-md border border-white/10 bg-white/5 px-3 py-2 text-xs text-zinc-200 transition hover:bg-white/10 disabled:opacity-40';
@@ -135,18 +130,12 @@ export function Configuration() {
                 <p aria-label="Configured Library location" role={libraryError ? 'alert' : undefined} className={`break-all select-text text-xs leading-5 ${libraryPath && !libraryError ? 'text-zinc-400' : 'text-red-400'}`}>
                     {libraryError ?? libraryPath ?? (configuration ? 'library needs to be set' : 'Loading configuration…')}
                 </p>
-                <button onClick={() => void clearCache()} disabled={!!busy || !cache || (cache.files === 0 && cache.options === 0)} className={`whitespace-nowrap ${buttonStyle}`}>
-                    {busy === 'cache' ? 'Clearing…' : 'Clear Local Data'}
-                </button>
-                <span aria-label="Local Data usage" role={cacheError ? 'alert' : undefined} className={`text-xs ${cacheError ? 'text-red-400' : 'text-zinc-400'}`}>
-                    {cacheError ?? (cache ? `${cacheSize(cache.bytes)} · ${cache.files.toLocaleString()} ${cache.files === 1 ? 'thumbnail' : 'thumbnails'} · ${cache.options.toLocaleString()} options` : 'Local Data unavailable')}
-                </span>
             </div>
-            <div className="mt-6 grid grid-cols-3 gap-3 border-t border-white/8 pt-5">
-                {TAG_FIELDS.map(field => <section key={field} aria-labelledby={`options-${field}-title`}>
+            <div className="mt-6 grid grid-cols-2 gap-4">
+                {TAG_FIELDS.map(field => <section key={field} aria-labelledby={`options-${field}-title`} className={field === 'context' ? 'col-span-2 min-w-0' : 'min-w-0'}>
                     <h3 id={`options-${field}-title`} className="mb-2 text-xs font-medium text-zinc-400">{{ identity: 'Identity', projects: 'Project', context: 'Tags' }[field]}</h3>
                     <ul aria-label={`${{ identity: 'Identity', projects: 'Project', context: 'Tags' }[field]} options`}
-                        className="max-h-48 min-h-24 overflow-y-auto rounded-lg border border-white/10 bg-black/10 py-1">
+                        className={`${field === 'context' ? 'max-h-64 min-h-32' : 'max-h-48 min-h-24'} overflow-y-auto rounded-lg border border-white/10 bg-black/10 py-1`}>
                         {vocabulary?.[field].filter(value => !removals[field].includes(value)).map(value => <li key={value} className="flex items-start gap-2 px-2 py-1.5 text-xs">
                             <span className="min-w-0 flex-1 break-all py-0.5 text-zinc-300">{value}</span>
                             <button type="button" aria-label={`Delete ${field === 'projects' ? 'Project' : field === 'identity' ? 'Identity' : 'Tag'} option ${value}`}
@@ -158,13 +147,23 @@ export function Configuration() {
                 </section>)}
             </div>
             {optionsError && <p role="alert" className="mt-4 text-xs text-red-300">{optionsError}</p>}
-            <div className="mt-5 flex justify-end gap-3">
+            <div className="mt-8 flex items-center justify-end gap-3">
+                <ResetLocalDataButton disabled={!!busy} onBusyChange={value => {
+                    mutation.current = value; requestVersion.current++; setBusy(value ? 'cache' : null);
+                }} onReset={collection => {
+                    mutation.current = false; setBusy(null); setRemovals(emptyVocabulary()); setVocabulary(emptyVocabulary());
+                    window.dispatchEvent(new Event('organization-options-changed'));
+                    onLocalDataReset(collection); setOpen(false);
+                }} />
                 <button type="button" disabled={!!busy} onClick={() => setOpen(false)} className={buttonStyle}>Cancel</button>
                 <button type="button" aria-label="Save configuration" disabled={!!busy || !hasChanges || !vocabulary}
                     onClick={() => void saveOptions()} className="rounded-md bg-blue-500 px-4 py-2 text-xs font-medium text-white hover:bg-blue-400 disabled:opacity-40">
                     {busy === 'save' ? 'Saving…' : 'Save'}
                 </button>
             </div>
+            {removalPlan && <RemoveOptionsDialog plan={removalPlan} busy={busy === 'save'} onCancel={() => {
+                setRemovalPlan(null); mutation.current = false; setBusy(null);
+            }} onConfirm={() => void saveOptions(removalPlan.reviewToken)} />}
         </dialog>}
     </>;
 }

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Stats } from 'node:fs';
-import { mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { VideoFingerprint, VideoMetadata } from '../shared/shots';
 
@@ -38,6 +38,28 @@ export function videoSampleRanges(size: number) {
 export class VideoFingerprintStore {
     private memory = new Map<string, VideoFingerprint>();
     constructor(private directory?: string) {}
+
+    private async records() {
+        if (!this.directory) return [];
+        try {
+            return (await readdir(this.directory, { withFileTypes: true })).filter(entry =>
+                entry.isFile() && /^[a-f0-9]{64}(?:\.json|\.json\.[a-f0-9-]{36}\.tmp)$/.test(entry.name));
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+            throw error;
+        }
+    }
+
+    async recordCount() { return (await this.records()).filter(entry => entry.name.endsWith('.json')).length; }
+
+    // Call only after scan and thumbnail workers have stopped using this store.
+    async reset() {
+        this.memory.clear();
+        for (const entry of await this.records()) {
+            try { await unlink(join(this.directory!, entry.name)); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        }
+    }
 
     async identify(input: string, metadata: FingerprintMetadata, signal: AbortSignal): Promise<VideoFingerprint> {
         signal.throwIfAborted();

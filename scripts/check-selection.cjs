@@ -40,9 +40,20 @@ if (!process.versions.electron) {
             let failOrganizationSave = false;
             let optionSaves = 0;
             let failOptionsSave = false;
+            const previewOptions = removals => ({reviewToken:'a'.repeat(64), clips:collection.shots.flatMap(shot=>{
+                const data=shot.organization;
+                const removed={identity:data.identity && removals.identity.includes(data.identity)?[data.identity]:[],projects:data.projects.filter(value=>removals.projects.includes(value)),context:data.context.filter(value=>removals.context.includes(value))};
+                return Object.values(removed).some(values=>values.length)?[{key:shot.id,name:shot.filename,path:'/synthetic/'+shot.filename,removals:removed}]:[];
+            })});
+            ipcMain.handle('fixture:preview-options', (_, removals) => previewOptions(removals));
             ipcMain.handle('fixture:save-options', (_, removals) => {
                 if (failOptionsSave) { failOptionsSave = false; throw new Error('Synthetic option save failure'); }
                 optionSaves++;
+                collection={...collection,revision:collection.revision+1,shots:collection.shots.map(shot=>({...shot,organization:{...shot.organization,
+                    identity:removals.identity.includes(shot.organization.identity)?null:shot.organization.identity,
+                    projects:shot.organization.projects.filter(value=>!removals.projects.includes(value)),
+                    context:shot.organization.context.filter(value=>!removals.context.includes(value))}}))};
+                window.webContents.send('shots:changed',collection);
                 for (const field of ['identity', 'projects', 'context']) vocabulary[field] = vocabulary[field].filter(value => !removals[field].includes(value));
                 return { vocabulary, collection };
             });
@@ -79,9 +90,19 @@ if (!process.versions.electron) {
             let cancelLibrary = true;
             ipcMain.handle('fixture:configuration', () => configuration);
             ipcMain.handle('fixture:choose-library', () => cancelLibrary ? null : (configuration = { version: 1, libraryPath: '/synthetic/library' }));
-            const localSummary = () => ({...cache, options: vocabulary.identity.length + vocabulary.projects.length + vocabulary.context.length});
+            let resetCalls = 0;
+            let failReset = false;
+            const localSummary = () => ({...cache, options: vocabulary.identity.length + vocabulary.projects.length + vocabulary.context.length,
+                identities:vocabulary.identity.length, projects:vocabulary.projects.length, tags:vocabulary.context.length,
+                records:6, fingerprints:6, sources:sources.length, clips:collection.shots.length});
             ipcMain.handle('fixture:local-summary', localSummary);
-            ipcMain.handle('fixture:local-clear', () => { cache = {bytes:0,files:0}; for (const field of ['identity','projects','context']) vocabulary[field] = []; return localSummary(); });
+            ipcMain.handle('fixture:local-clear', () => {
+                if(failReset) {failReset=false; throw new Error('Synthetic reset failure');}
+                resetCalls++; cache={bytes:0,files:0}; sources=[];
+                for(const field of ['identity','projects','context']) vocabulary[field]=[];
+                collection={revision:collection.revision+1,shots:[],scans:[]};
+                return {summary:localSummary(),collection};
+            });
             ipcMain.handle('fixture:cache', () => cache);
             ipcMain.handle('fixture:clear-cache', () => (cache = { bytes: 0, files: 0 }));
             ipcMain.handle('fixture:remove', (_, id) => { sources = sources.filter((source) => source.id !== id); collection = { ...collection, revision: collection.revision + 1, shots: collection.shots.filter((shot) => shot.sourceId !== id) }; });
@@ -90,7 +111,7 @@ if (!process.versions.electron) {
                 getConfiguration:()=>ipcRenderer.invoke('fixture:configuration'),chooseLibrary:()=>ipcRenderer.invoke('fixture:choose-library'),
                 getCacheSummary:()=>ipcRenderer.invoke('fixture:cache'),clearCache:()=>ipcRenderer.invoke('fixture:clear-cache'),
                 getLocalDataSummary:()=>ipcRenderer.invoke('fixture:local-summary'),clearLocalData:()=>ipcRenderer.invoke('fixture:local-clear'),
-                saveConfigurationOptions:removals=>ipcRenderer.invoke('fixture:save-options',removals),getTagVocabulary:()=>ipcRenderer.invoke('fixture:vocabulary'),updateOrganization:(ids,action)=>ipcRenderer.invoke('fixture:organization',ids,action),
+                previewConfigurationOptions:removals=>ipcRenderer.invoke('fixture:preview-options',removals),saveConfigurationOptions:(removals,reviewToken)=>ipcRenderer.invoke('fixture:save-options',removals,reviewToken),getTagVocabulary:()=>ipcRenderer.invoke('fixture:vocabulary'),updateOrganization:(ids,action)=>ipcRenderer.invoke('fixture:organization',ids,action),
                 getBackendStatus:async()=>({state:'connected',health:{status:'ok'}}),getSources:()=>ipcRenderer.invoke('fixture:sources'),getShots:()=>ipcRenderer.invoke('fixture:shots'),
                 onShotsChanged:listener=>{const fn=(_,value)=>listener(value);ipcRenderer.on('shots:changed',fn);return()=>ipcRenderer.removeListener('shots:changed',fn)},
                 getShotThumbnail:async()=>null,getShotDetails:async()=>({file:{filename:'fixture',path:'/synthetic/fixture',bytes:100},embeddedMetadata:[],errors:[]}),
@@ -130,7 +151,7 @@ if (!process.versions.electron) {
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
             await wait(`document.querySelector('[aria-label="Library location"]').textContent.includes('library needs to be set')`);
             await click('Configuration');
-            await wait(`document.querySelector('dialog[open] [aria-label="Local Data usage"]').textContent.includes('2.0 KB · 2 thumbnails')`);
+            await wait(`!!document.querySelector('dialog[open] [aria-label="Identity options"]')`);
             await wait(`!!document.querySelector('[aria-label="Delete Identity option cmsh"]')`);
             assert.deepEqual(await js(`Array.from(document.querySelectorAll('dialog h3')).map(e=>e.textContent)`), ['Identity','Project','Tags']);
             assert.ok(await js(`document.querySelector('[aria-label="Configured Library location"]').getBoundingClientRect().left > Array.from(document.querySelectorAll('dialog button')).find(b=>b.textContent==='Set Library location').getBoundingClientRect().right`));
@@ -157,6 +178,29 @@ if (!process.versions.electron) {
             assert.deepEqual(collection.shots.map(shot=>shot.organization), organizationBeforeSave, 'Configuration never changes clip information');
             await click('Configuration');
             await wait(`!!document.querySelector('[aria-label="Delete Identity option owmo"]')`);
+            collection={...collection,revision:collection.revision+1,shots:collection.shots.map((shot,index)=>index<2?{...shot,organization:{...shot.organization,identity:'owmo',context:['music','studio'],notes:'Keep notes'}}:shot)};
+            const affectedBefore=structuredClone(collection.shots.map(shot=>shot.organization));
+            await click('Delete Identity option owmo');
+            await click('Delete Tag option music');
+            await click('Save configuration');
+            await wait(`document.querySelector('[role="alertdialog"]')?.textContent.includes('2 clips will be affected')`);
+            assert.equal(await js(`document.querySelectorAll('[aria-label="Clips affected by removal"] tbody tr').length`),2);
+            assert.ok(await js(`document.querySelector('[aria-label="Clips affected by removal"]').textContent.includes('Identity: owmo')`));
+            assert.ok(await js(`document.querySelector('[aria-label="Clips affected by removal"]').textContent.includes('Context: music')`));
+            await js(`document.querySelector('[role="alertdialog"] button').click()`);
+            await wait(`!document.querySelector('[role="alertdialog"]')`);
+            assert.deepEqual(collection.shots.map(shot=>shot.organization),affectedBefore,'Cancel preserves all assignments');
+            await click('Save configuration');
+            await wait(`!!document.querySelector('[aria-label="Clips affected by removal"]')`);
+            if(process.env.SHOT_MANAGER_OPTIONS_SCREENSHOT) await writeFile(process.env.SHOT_MANAGER_OPTIONS_SCREENSHOT,(await window.webContents.capturePage()).toPNG());
+            await click('Confirm remove saved values');
+            await wait(`!document.querySelector('dialog[open]')`);
+            assert.equal(collection.shots[0].organization.identity,null);
+            assert.deepEqual(collection.shots[0].organization.context,['studio']);
+            assert.equal(collection.shots[0].organization.notes,'Keep notes');
+            assert.ok(!vocabulary.identity.includes('owmo'));
+            await click('Configuration');
+            await wait(`!!document.querySelector('[aria-label="Tags options"]')`);
             if (process.env.SHOT_MANAGER_CONFIGURATION_SCREENSHOT) {
                 await new Promise(resolve => setTimeout(resolve, 150));
                 await writeFile(process.env.SHOT_MANAGER_CONFIGURATION_SCREENSHOT, (await window.webContents.capturePage()).toPNG());
@@ -167,10 +211,32 @@ if (!process.versions.electron) {
             cancelLibrary = false;
             await js(`Array.from(document.querySelectorAll('dialog button')).find(b=>b.textContent==='Set Library location').click()`);
             await wait(`document.querySelector('[aria-label="Library location"]').textContent==='/synthetic/library'`);
-            await js(`Array.from(document.querySelectorAll('dialog button')).find(b=>b.textContent==='Clear Local Data').click()`);
-            await wait(`document.querySelector('[aria-label="Local Data usage"]').textContent.includes('0 B · 0 thumbnails · 0 options')`);
-            await click('Close configuration');
-            await wait(`!document.querySelector('dialog[open]')`);
+            const previousSources=structuredClone(sources), previousCollection=structuredClone(collection);
+            assert.equal(await js(`document.querySelector('[aria-label="Local Data usage"]')===null`),true,'No usage status beside the reset button');
+            await js(`Array.from(document.querySelectorAll('dialog button')).find(b=>b.textContent==='Reset Local Data').click()`);
+            await wait(`document.querySelector('[aria-label="Local data to reset"]')?.textContent.includes('6 clip records')`);
+            assert.ok(await js(`document.querySelector('[role="alertdialog"]').textContent.includes('Local data will be permanently deleted')`));
+            await js(`document.querySelector('[role="alertdialog"] button').click()`);
+            await wait(`!document.querySelector('[role="alertdialog"]')`);
+            assert.equal(resetCalls,0,'Cancel preserves all local records');
+            assert.equal(collection.shots.length,6);
+            await js(`Array.from(document.querySelectorAll('dialog button')).find(b=>b.textContent==='Reset Local Data').click()`);
+            await wait(`!!document.querySelector('[aria-label="Local data to reset"]')`);
+            await js(`document.querySelector('[role="alertdialog"]').dispatchEvent(new Event('cancel',{bubbles:true,cancelable:true}))`);
+            await wait(`!document.querySelector('[role="alertdialog"]') && !!document.querySelector('dialog[open]')`);
+            await js(`Array.from(document.querySelectorAll('dialog button')).find(b=>b.textContent==='Reset Local Data').click()`);
+            await wait(`!!document.querySelector('[aria-label="Local data to reset"]')`);
+            failReset=true;
+            await click('Confirm reset local data');
+            await wait(`document.querySelector('[role="alertdialog"] [role="alert"]')?.textContent.includes('Reset could not finish')`);
+            await click('Confirm reset local data');
+            await wait(`!document.querySelector('dialog[open]') && document.querySelectorAll('button[aria-label^="Inspect "]').length===0`);
+            assert.equal(resetCalls,1);
+            assert.equal(sources.length,0);
+            assert.equal(configuration.libraryPath,'/synthetic/library','Reset preserves Library setting');
+            assert.deepEqual(vocabulary,{identity:[],projects:[],context:[]});
+            // Restore synthetic sources for the remaining independent selection checks.
+            sources=previousSources; collection={...previousCollection,revision:collection.revision+1};
             await new Promise(resolve => { window.webContents.once('did-finish-load', resolve); window.webContents.reload(); });
             await wait(`document.querySelector('[aria-label="Library location"]')?.textContent==='/synthetic/library'`);
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);

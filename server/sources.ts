@@ -189,20 +189,27 @@ export class SourceRegistry {
         });
     }
 
+    async localDataSummary() {
+        return { ...await this.scanner.localDataSummary(), sources: this.sources.size };
+    }
+
     clearLocalData() {
         return this.serialize(async () => {
-            await this.scanner.clearLocalData();
-            for (const { source } of this.sources.values()) if (source.available) this.scanner.refresh(source);
-            return this.scanner.localDataSummary();
+            try { await this.scanner.clearLocalData(); }
+            finally {
+                // Never let polling automatically re-add sources after a partially failed reset.
+                if (!this.scanner.snapshot().shots.length && !this.scanner.snapshot().scans.length) this.sources.clear();
+            }
+            return { summary: await this.localDataSummary(), collection: this.scanner.snapshot() };
         });
     }
 
-    saveOptions(removals: TagVocabulary) {
-        return this.serialize(async () => {
-            const vocabulary = await this.scanner.organization.removeOptions(removals);
-            for (const { source } of this.sources.values()) if (source.available) this.scanner.refresh(source);
-            return { vocabulary, collection: this.scanner.snapshot() };
-        });
+    previewOptions(removals: TagVocabulary) {
+        return this.serialize(() => this.scanner.previewOptions(removals));
+    }
+
+    saveOptions(removals: TagVocabulary, reviewToken: string) {
+        return this.serialize(() => this.scanner.removeOptions(removals, reviewToken));
     }
 
 }

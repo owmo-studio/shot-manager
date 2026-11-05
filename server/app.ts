@@ -40,16 +40,26 @@ export function createServer(token: string, onShotsChanged?: (collection: ShotCo
 
   server.get('/api/sources', () => sources.list())
   server.get('/api/organization/vocabulary', () => sources.scanner.organization.vocabulary())
-  server.patch<{ Body: TagVocabulary }>('/api/organization/vocabulary', {
-    schema: { body: { type: 'object', required: ['identity', 'projects', 'context'], additionalProperties: false,
-      properties: Object.fromEntries(['identity', 'projects', 'context'].map(field => [field, {
-        type: 'array', maxItems: 1000, items: { type: 'string', maxLength: 128 }
-      }])) } }
+  const optionProperties = Object.fromEntries(['identity', 'projects', 'context'].map(field => [field, {
+    type: 'array', maxItems: 1000, items: { type: 'string', maxLength: 128 }
+  }]))
+  server.post<{ Body: TagVocabulary }>('/api/organization/vocabulary/preview', {
+    schema: { body: { type: 'object', required: ['identity', 'projects', 'context'], additionalProperties: false, properties: optionProperties } }
   }, request => {
     let removals: TagVocabulary
     try { removals = validateOptionRemovals(request.body) }
     catch (error) { throw Object.assign(error as Error, { statusCode: 400 }) }
-    return sources.saveOptions(removals)
+    return sources.previewOptions(removals)
+  })
+  server.patch<{ Body: TagVocabulary & { reviewToken: string } }>('/api/organization/vocabulary', {
+    schema: { body: { type: 'object', required: ['identity', 'projects', 'context', 'reviewToken'], additionalProperties: false,
+      properties: { ...optionProperties, reviewToken: { type: 'string', pattern: '^[a-f0-9]{64}$' } } } }
+  }, request => {
+    const { reviewToken, ...values } = request.body
+    let removals: TagVocabulary
+    try { removals = validateOptionRemovals(values) }
+    catch (error) { throw Object.assign(error as Error, { statusCode: 400 }) }
+    return sources.saveOptions(removals, reviewToken)
   })
   server.patch<{ Body: { shotIds: string[]; action: OrganizationAction } }>('/api/organization', {
     schema: { body: { type: 'object', required: ['shotIds', 'action'], additionalProperties: false, properties: {
@@ -73,8 +83,11 @@ export function createServer(token: string, onShotsChanged?: (collection: ShotCo
   }, (request) => sources.relink(request.params.id, request.body.path))
   server.get('/api/cache', () => sources.scanner.cacheSummary())
   server.delete('/api/cache', () => sources.scanner.clearCache())
-  server.get('/api/local-data', () => sources.scanner.localDataSummary())
-  server.delete('/api/local-data', () => sources.clearLocalData())
+  server.get('/api/local-data', () => sources.localDataSummary())
+  server.delete('/api/local-data', {
+    schema: { body: { type: 'object', required: ['confirm'], additionalProperties: false,
+      properties: { confirm: { type: 'boolean', const: true } } } }
+  }, () => sources.clearLocalData())
   server.post<{ Params: { id: string } }>('/api/sources/:id/refresh', (request) => sources.refresh(request.params.id))
   server.get('/api/shots', () => sources.scanner.snapshot())
   server.get<{ Params: { id: string } }>('/api/shots/:id/lut', async (request) => {

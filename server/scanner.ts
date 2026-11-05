@@ -9,7 +9,7 @@ import { ThumbnailQueue } from "./thumbnails";
 import { commonFingerprintMetadata, VideoFingerprintStore } from "./fingerprints";
 import { OrganizationStore } from "./organization";
 import { organizationKey } from "../shared/organization";
-import type { OrganizationAction } from "../shared/organization";
+import type { OrganizationAction, TagVocabulary } from "../shared/organization";
 
 interface ScanJob {
     source: ImportSource;
@@ -40,12 +40,29 @@ export class ShotScanner {
     async localDataSummary() {
         const cache = await this.cacheSummary();
         const lists = await this.organization.vocabulary();
-        return { ...cache, options: lists.identity.length + lists.projects.length + lists.context.length };
+        return { ...cache, options: lists.identity.length + lists.projects.length + lists.context.length,
+            identities: lists.identity.length, projects: lists.projects.length, tags: lists.context.length,
+            records: await this.organization.recordCount(), fingerprints: await this.fingerprints.recordCount(),
+            clips: this.snapshot().shots.length };
     }
 
     async clearLocalData() {
-        await this.clearCache();
-        await this.organization.clearOptions();
+        if (this.clearingCache || this.updatingThumbnails.size) {
+            throw Object.assign(new Error("A thumbnail update is in progress. Try again shortly."), { statusCode: 409 });
+        }
+        this.clearingCache = true;
+        try {
+            for (const id of this.jobs.keys()) this.remove(id, false);
+            this.publish();
+            await this.pending;
+            await this.thumbnailQueue?.clearCache();
+            await this.fingerprints.reset();
+            await this.organization.reset();
+        } finally {
+            this.generatedImages.clear();
+            this.clearingCache = false;
+            this.publish();
+        }
     }
 
     async clearCache() {
@@ -161,7 +178,7 @@ export class ShotScanner {
                     }
                     if (shot.shot.fingerprint) {
                         try {
-                            shot.shot.organization = await this.organization.scanned(shot.shot.fingerprint, job.controller.signal);
+                            shot.shot.organization = await this.organization.scanned(shot.shot.fingerprint, job.controller.signal, { name: shot.shot.filename, path: shot.original });
                             await this.thumbnailQueue?.touch(shot.original, job.rootIdentity ?? "", shot.shot.metadata, shot.fingerprintMetadata);
                         } catch {
                             job.controller.signal.throwIfAborted();
@@ -237,6 +254,26 @@ export class ShotScanner {
         }
         this.publish();
         return { collection: this.snapshot(), vocabulary: changed.vocabulary };
+    }
+
+    private optionsEditable = () => ![...this.jobs.keys()].some(id => this.isBusy(id)) && !this.clearingCache;
+
+    previewOptions(removals: TagVocabulary) {
+        if (!this.optionsEditable()) throw Object.assign(new Error("Wait for scanning to finish, then save again."), { statusCode: 409 });
+        return this.organization.previewOptions(removals);
+    }
+
+    async removeOptions(removals: TagVocabulary, reviewToken: string) {
+        if (!this.optionsEditable()) throw Object.assign(new Error("Wait for scanning to finish, then save again."), { statusCode: 409 });
+        const changed = await this.organization.removeOptions(removals, reviewToken, this.optionsEditable);
+        for (const job of this.jobs.values()) for (const { shot } of job.shots) {
+            if (shot.fingerprint) {
+                const data = changed.drafts[organizationKey(shot.fingerprint)];
+                if (data) shot.organization = structuredClone(data);
+            }
+        }
+        this.publish();
+        return { vocabulary: changed.vocabulary, collection: this.snapshot() };
     }
 
     private isReconciling(job: ScanJob): boolean {

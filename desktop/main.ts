@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, protocol, utilityProcess } from 'electron'
 import type { IpcMainInvokeEvent, UtilityProcess } from 'electron'
 import { randomBytes } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { realpath, stat } from 'node:fs/promises'
 import { readConfiguration, saveConfiguration } from './configuration'
@@ -49,9 +50,11 @@ function requireMainWindow(event: IpcMainInvokeEvent): BrowserWindow {
 }
 
 function startBackend() {
+  const sourceLuts = join(app.getAppPath(), 'resources', 'luts')
+  const lutDirectory = existsSync(sourceLuts) ? sourceLuts : join(__dirname, '..', 'resources', 'luts')
   backend = utilityProcess.fork(join(__dirname, 'backend.cjs'), [], {
     serviceName: 'Shot Manager Backend',
-    env: { ...process.env, SHOT_MANAGER_TOKEN: token, SHOT_MANAGER_THUMBNAIL_CACHE: join(app.getPath('userData'), 'cache', 'thumbnails'), SHOT_MANAGER_FINGERPRINT_DIRECTORY: join(app.getPath('userData'), 'fingerprints'), SHOT_MANAGER_ORGANIZATION_FILE: join(app.getPath('userData'), 'organization.json'), SHOT_MANAGER_LUT_DIRECTORY: join(app.getAppPath(), 'resources', 'luts') }
+    env: { ...process.env, SHOT_MANAGER_TOKEN: token, SHOT_MANAGER_THUMBNAIL_CACHE: join(app.getPath('userData'), 'cache', 'thumbnails'), SHOT_MANAGER_FINGERPRINT_DIRECTORY: join(app.getPath('userData'), 'fingerprints'), SHOT_MANAGER_ORGANIZATION_FILE: join(app.getPath('userData'), 'organization.json'), SHOT_MANAGER_LUT_DIRECTORY: lutDirectory }
   })
   backend.on('message', (message: unknown) => {
     if (typeof message === 'object' && message !== null && 'type' in message &&
@@ -120,12 +123,19 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     installApplicationMenu()
-    ipcMain.handle('configuration:save-options', (event, value: unknown) => {
+    ipcMain.handle('configuration:preview-options', (event, value: unknown) => {
       requireMainWindow(event)
       const removals = validateOptionRemovals(value)
       void noteWrites.flush()
+      return organizationWrites.run(() => backendRequest('/api/organization/vocabulary/preview', { method: 'POST', body: JSON.stringify(removals) }))
+    })
+    ipcMain.handle('configuration:save-options', (event, value: unknown, reviewToken: unknown) => {
+      requireMainWindow(event)
+      const removals = validateOptionRemovals(value)
+      void noteWrites.flush()
+      if (typeof reviewToken !== 'string' || !/^[a-f0-9]{64}$/.test(reviewToken)) throw new Error('Invalid removal review.')
       return organizationWrites.run(() => backendRequest('/api/organization/vocabulary', {
-        method: 'PATCH', body: JSON.stringify(removals)
+        method: 'PATCH', body: JSON.stringify({ ...removals, reviewToken })
       }))
     })
     ipcMain.handle('local-data:summary', (event) => {
@@ -135,7 +145,7 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle('local-data:clear', (event) => {
       requireMainWindow(event)
       void noteWrites.flush()
-      return organizationWrites.run(() => backendRequest('/api/local-data', { method: 'DELETE' }))
+      return organizationWrites.run(() => backendRequest('/api/local-data', { method: 'DELETE', body: JSON.stringify({ confirm: true }) }))
     })
     ipcMain.handle('organization:flush-notes', event => {
       requireMainWindow(event)

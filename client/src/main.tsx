@@ -379,7 +379,14 @@ function App() {
                         Library
                     </button>
                 </nav>
-                <Configuration />
+                <Configuration onLocalDataReset={collection => {
+                    sourceRevision.current++;
+                    setSources([]); setSelectedSourceIds([]); setSelectedDevices([]);
+                    setSourceError(null); setRemovalSourceId(null); setUnavailableSources([]);
+                    notifiedUnavailable.current.clear();
+                    selection.dispatch({ type: "reconcile", existingIds: [], visibleIds: [] });
+                    receiveShots(collection);
+                }} />
             </header>
             <main className="flex min-h-0 flex-1">
                 <aside className="w-60 shrink-0 overflow-y-auto border-r border-white/8 bg-white/1.5 p-3">

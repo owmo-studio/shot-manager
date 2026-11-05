@@ -1,11 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { DRAFT_RETENTION_DAYS, emptyOrganization, emptyVocabulary, normalizeOption, normalizeTag, organizationKey, TAG_FIELDS, validateOptionRemovals, validateOrganizationAction } from '../shared/organization';
-import type { OrganizationAction, ShotOrganization, TagVocabulary } from '../shared/organization';
+import type { OptionRemovalPlan, OrganizationAction, ShotOrganization, TagVocabulary } from '../shared/organization';
 import type { VideoFingerprint } from '../shared/shots';
 
-interface DraftRecord { data: ShotOrganization; lastScannedAt: number; lastEditedAt: number; previousProjects?: string[] }
+interface DraftRecord { data: ShotOrganization; lastScannedAt: number; lastEditedAt: number; previousProjects?: string[]; clip?: { name: string; path: string } }
 interface OrganizationState { version: 1 | 2 | 3; vocabulary: TagVocabulary; drafts: Record<string, DraftRecord> }
 
 export class OrganizationStore {
@@ -32,6 +32,7 @@ export class OrganizationStore {
                 for (const [key, record] of Object.entries(state.drafts)) {
                     if (!/^sampled-sha256-v1:[a-f0-9]{64}$/.test(key) || !record || !Number.isFinite(record.lastScannedAt) || !Number.isFinite(record.lastEditedAt)) throw new Error('Invalid draft');
                     const data = record.data;
+                    if (record.clip && (typeof record.clip.name !== 'string' || typeof record.clip.path !== 'string')) throw new Error('Invalid clip reference');
                     if (!data || !(data.identity === null || (typeof data.identity === 'string' && normalizeOption(data.identity) === data.identity)) ||
                         typeof data.notes !== 'string' || data.notes.length > 10000) throw new Error('Invalid draft');
                     for (const field of ['projects', 'context'] as const) {
@@ -72,11 +73,18 @@ export class OrganizationStore {
 
     vocabulary() { return this.serialize(async () => structuredClone((await this.load()).vocabulary)); }
 
-    scanned(fingerprint: VideoFingerprint, signal: AbortSignal) {
+    recordCount() { return this.serialize(async () => Object.keys((await this.load()).drafts).length); }
+
+    reset() {
+        return this.serialize(() => this.save({ version: 3, vocabulary: emptyVocabulary(), drafts: {} }));
+    }
+
+    scanned(fingerprint: VideoFingerprint, signal: AbortSignal, clip?: { name: string; path: string }) {
         return this.serialize(async () => {
             const next = structuredClone(await this.load());
             const key = organizationKey(fingerprint);
             const record = next.drafts[key] ?? { data: emptyOrganization(), lastScannedAt: 0, lastEditedAt: 0 };
+            if (clip) record.clip = clip;
             record.lastScannedAt = this.now();
             next.drafts[key] = record;
             this.collectOptions(next.vocabulary, record.data);
@@ -129,16 +137,45 @@ export class OrganizationStore {
         });
     }
 
-    removeOptions(value: unknown) {
+    private removalPlan(state: OrganizationState, removals: TagVocabulary): OptionRemovalPlan {
+        const clips: OptionRemovalPlan['clips'] = [];
+        const versions: unknown[] = [];
+        for (const [key, record] of Object.entries(state.drafts).sort(([a], [b]) => a.localeCompare(b))) {
+            const removed = emptyVocabulary();
+            removed.identity = record.data.identity && removals.identity.includes(record.data.identity) ? [record.data.identity] : [];
+            removed.projects = [...new Set([...record.data.projects, ...(record.previousProjects ?? [])])].filter(value => removals.projects.includes(value));
+            removed.context = record.data.context.filter(value => removals.context.includes(value));
+            if (!TAG_FIELDS.some(field => removed[field].length)) continue;
+            clips.push({ key, name: record.clip?.name ?? `Saved clip ${key.slice(-12)}`, path: record.clip?.path, removals: removed });
+            versions.push([key, record.data, record.previousProjects, record.clip]);
+        }
+        return { clips, reviewToken: createHash('sha256').update(JSON.stringify([removals, versions])).digest('hex') };
+    }
+
+    previewOptions(value: unknown) {
+        return this.serialize(async () => this.removalPlan(await this.load(), validateOptionRemovals(value)));
+    }
+
+    removeOptions(value: unknown, reviewToken: string, validate: () => boolean = () => true) {
         return this.serialize(async () => {
             const removals = validateOptionRemovals(value);
             const next = structuredClone(await this.load());
+            const plan = this.removalPlan(next, removals);
+            if (plan.reviewToken !== reviewToken) throw Object.assign(new Error('Affected clips changed. Review the removal again.'), { statusCode: 409 });
             for (const field of TAG_FIELDS) {
                 const deleted = new Set(removals[field]);
                 next.vocabulary[field] = next.vocabulary[field].filter(option => !deleted.has(option));
             }
-            await this.save(next);
-            return structuredClone(next.vocabulary);
+            for (const { key } of plan.clips) {
+                const record = next.drafts[key];
+                if (record.data.identity && removals.identity.includes(record.data.identity)) record.data.identity = null;
+                record.data.projects = record.data.projects.filter(value => !removals.projects.includes(value));
+                record.data.context = record.data.context.filter(value => !removals.context.includes(value));
+                if (record.previousProjects) record.previousProjects = record.previousProjects.filter(value => !removals.projects.includes(value));
+                record.lastEditedAt = this.now();
+            }
+            await this.save(next, validate);
+            return { vocabulary: structuredClone(next.vocabulary), drafts: Object.fromEntries(Object.entries(next.drafts).map(([key, record]) => [key, structuredClone(record.data)])) };
         });
     }
 

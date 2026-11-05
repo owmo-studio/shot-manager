@@ -8,6 +8,10 @@ export interface ShotOrganization {
     notes: string;
 }
 export type TagVocabulary = Record<TagField, string[]>;
+export interface OptionRemovalPlan {
+    reviewToken: string;
+    clips: { key: string; name: string; path?: string; removals: TagVocabulary }[];
+}
 export type OrganizationAction =
     | { field: TagField; operation: 'add' | 'remove'; value: string }
     | { field: 'notes'; operation: 'set'; value: string }

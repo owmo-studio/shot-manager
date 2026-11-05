@@ -2,7 +2,8 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { DesktopAPI } from '../shared/desktop'
 
 const desktop: DesktopAPI = {
-  saveConfigurationOptions: removals => ipcRenderer.invoke('configuration:save-options', removals),
+  previewConfigurationOptions: removals => ipcRenderer.invoke('configuration:preview-options', removals),
+  saveConfigurationOptions: (removals, reviewToken) => ipcRenderer.invoke('configuration:save-options', removals, reviewToken),
   flushNotes: () => ipcRenderer.invoke('organization:flush-notes'),
   getLocalDataSummary: () => ipcRenderer.invoke('local-data:summary'),
   clearLocalData: () => ipcRenderer.invoke('local-data:clear'),

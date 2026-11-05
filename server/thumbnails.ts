@@ -87,6 +87,7 @@ export class ThumbnailQueue {
     async clearCache() {
         this.shutdown.abort();
         await this.pending;
+        this.legacyLocations.clear();
         try { return await inspectThumbnailCache(this.cacheDirectory, true); }
         finally { this.shutdown = new AbortController(); }
     }
