@@ -31,7 +31,7 @@ if (!process.versions.electron) {
                 id: String(i + 1).padStart(64, '0'), sourceId: i < 3 ? 'A' : 'B', filename: `Clip ${i + 1}.mp4`, relativePath: `${i + 1}.mp4`,
                 timestamp: `2026-11-0${i < 3 ? 1 : 2}T12:00:0${i}Z`, dateSource: 'embedded', dateEvidence: '', dateConfidence: 'declared',
                 metadata, cameraModel: 'ILME-FX30', bytes: 100, durationSeconds: 3, hasThumbnail: false, warnings: [], available: true, editable: true,
-                fingerprint: { algorithm: 'sha256', scheme: 'sampled-sha256-v1', value: String(i + 1).padStart(64, '0'), fileSize: 100, sampleBytes: 262144, sampledBytes: 100 },
+                fingerprint: { algorithm: 'sha256', scheme: 'sampled-sha256-v2', value: String(i + 1).padStart(64, '0'), fileSize: 100, sampleBytes: 262144, sampledBytes: 100 },
                 organization: { identity: null, projects: [], context: [], notes: '', skipped: false },
             })) };
             ipcMain.handle('fixture:sources', () => sources);
@@ -156,6 +156,14 @@ if (!process.versions.electron) {
             await push([...originals,duplicate]);
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
             assert.equal(await js(`document.querySelector('[aria-label="Total clips"]').textContent.trim()`),'6 clips total','Duplicate hashes do not increase the total');
+            await push([{...originals[0],available:false},...originals.slice(1),duplicate]);
+            await wait(`!!document.querySelector('[aria-label="Inspect Copied Clip.mp4"]')`);
+            assert.equal(await js(`document.querySelector('[aria-label="Inspect Copied Clip.mp4"]').textContent.includes('source unavailable')`),false,'An available occurrence takes priority over an offline copy');
+            await push([{...originals[0],editable:false},...originals.slice(1),duplicate]);
+            await wait(`!!document.querySelector('[aria-label="Inspect Copied Clip.mp4"]')`);
+            assert.equal(await js(`document.querySelector('[aria-label="Inspect Copied Clip.mp4"]').disabled`),false,'An editable occurrence takes priority over a rescanning copy');
+            await push([...originals,duplicate]);
+            await wait(`!!document.querySelector('[aria-label="Inspect Clip 1.mp4"]')`);
             await click('Filter clips from Source B');
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===4`);
             assert.ok(await js(`!!document.querySelector('[aria-label="Inspect Copied Clip.mp4"]')`),'Filtering retains the occurrence belonging to that source');

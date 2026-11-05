@@ -6,13 +6,17 @@ export function clipIdentity(shot: VideoShot): string {
 }
 
 export function uniqueShots(shots: VideoShot[]): VideoShot[] {
-    const seen = new Set<string>();
-    return shots.filter(shot => {
+    const preferred = new Map<string, VideoShot>();
+    for (const shot of shots) {
         const key = clipIdentity(shot);
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-    });
+        const previous = preferred.get(key);
+        // Match backend asset lookup: prefer an available occurrence, then an editable one.
+        if (!previous || Number(shot.available) > Number(previous.available) ||
+            (shot.available === previous.available && Number(shot.editable) > Number(previous.editable))) {
+            preferred.set(key, shot);
+        }
+    }
+    return [...preferred.values()];
 }
 
 export function orderedShots(shots: VideoShot[], newestFirst: boolean) {

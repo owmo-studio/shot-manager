@@ -27,7 +27,7 @@ const { tmpdir } = require('node:os');
         const file = join(root, 'state', 'organization.json');
         let now = Date.now();
         const day = 86400000;
-        const fp = value => ({ algorithm: 'sha256', scheme: 'sampled-sha256-v1', value: value.repeat(64), fileSize: 10, sampleBytes: 262144, sampledBytes: 10 });
+        const fp = value => ({ algorithm: 'sha256', scheme: 'sampled-sha256-v2', value: value.repeat(64), fileSize: 10, sampleBytes: 262144, sampledBytes: 10 });
         const a = fp('a'), b = fp('b'), c = fp('c');
         const signal = new AbortController().signal;
         const store = new OrganizationStore(file, () => now);

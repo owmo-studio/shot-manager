@@ -1,3 +1,5 @@
+import { VIDEO_SAMPLE_SCHEME } from './shots';
+
 export const DRAFT_RETENTION_DAYS = 90;
 export const TAG_FIELDS = ['identity', 'projects', 'context'] as const;
 export const OPTION_FIELDS = ['identity', 'projects'] as const;
@@ -52,7 +54,7 @@ export function normalizeTag(value: string): string {
 }
 
 export function organizationKey(fingerprint: { scheme: string; value: string }) {
-    if (fingerprint.scheme !== 'sampled-sha256-v1' || !/^[a-f0-9]{64}$/.test(fingerprint.value)) throw new Error('Invalid video fingerprint.');
+    if (fingerprint.scheme !== VIDEO_SAMPLE_SCHEME || !/^[a-f0-9]{64}$/.test(fingerprint.value)) throw new Error('Invalid video fingerprint.');
     return `${fingerprint.scheme}:${fingerprint.value}`;
 }
 

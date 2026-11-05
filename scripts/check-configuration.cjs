@@ -1,7 +1,7 @@
 // Isolated filesystem/backend checks; never uses the real app configuration or media.
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
-const { join } = require('node:path');
+const { delimiter, join } = require('node:path');
 const { tmpdir } = require('node:os');
 
 (async () => {
@@ -25,7 +25,7 @@ const { tmpdir } = require('node:os');
         loaded.paths = module.paths;
         loaded._compile(bundle.output.find(item => item.type === 'chunk' && item.isEntry).code, __filename);
         const { readConfiguration, saveConfiguration, ThumbnailQueue, inspectThumbnailCache, createServer, SourceRegistry,
-            VideoFingerprintStore, commonFingerprintMetadata, videoSampleRanges, VIDEO_SAMPLE_BYTES } = loaded.exports;
+            VideoFingerprintStore, videoSampleRanges, VIDEO_SAMPLE_BYTES } = loaded.exports;
         const configPath = join(root, 'settings', 'configuration.json');
         assert.deepEqual(await readConfiguration(configPath), { version: 1, libraryPath: null });
         const chosen = { version: 1, libraryPath: join(root, 'dummy-library') };
@@ -123,9 +123,8 @@ const { tmpdir } = require('node:os');
         const sampledVideo = join(root, 'sampled-video.mp4');
         await fs.writeFile(sampledVideo, Buffer.alloc(3 * 1024 * 1024));
         const signal = new AbortController().signal;
-        const common = commonFingerprintMetadata(undefined, { recordingDate: '2026-11-04T12:00:00Z', durationSeconds: 10, frameCount: '300' });
-        const baseline = await fingerprintStore.identify(sampledVideo, common, signal);
-        assert.equal(baseline.scheme, 'sampled-sha256-v1');
+        const baseline = await fingerprintStore.identify(sampledVideo, signal);
+        assert.equal(baseline.scheme, 'sampled-sha256-v2');
         assert.equal(baseline.algorithm, 'sha256');
         assert.equal(baseline.sampledBytes, 5 * VIDEO_SAMPLE_BYTES);
         assert.ok(baseline.sampledBytes < baseline.fileSize);
@@ -135,32 +134,123 @@ const { tmpdir } = require('node:os');
         for (let index = 1; index < sampleRanges.length; index++) {
             assert.ok(sampleRanges[index].offset >= sampleRanges[index - 1].offset + sampleRanges[index - 1].length);
         }
-        assert.deepEqual(await new VideoFingerprintStore(recordDirectory).identify(sampledVideo, common, signal), baseline);
+        assert.deepEqual(await new VideoFingerprintStore(recordDirectory).identify(sampledVideo, signal), baseline);
         const persisted = (await fs.readdir(recordDirectory)).filter(name => name.endsWith('.json'));
         assert.equal(persisted.length, 1);
         const record = JSON.parse(await fs.readFile(join(recordDirectory, persisted[0]), 'utf8'));
         assert.equal(record.fingerprint.value, baseline.value);
+        assert.equal(Object.hasOwn(record, 'metadata'), false, 'Extracted metadata is absent from fingerprint records');
         assert.equal(JSON.stringify(record).includes(sampledVideo), false, 'Fingerprint record does not identify clips by path');
+        const recordPath = join(recordDirectory, persisted[0]);
+        const savedRecord = await fs.readFile(recordPath, 'utf8');
+        for (const invalid of ['{broken', 'null', '[]', JSON.stringify({ ...record, version: 999 }),
+            JSON.stringify({ ...record, fingerprint: { ...record.fingerprint, fileSize: 1 } }),
+            JSON.stringify({ ...record, fileVersion: 'invalid' })]) {
+            await fs.writeFile(recordPath, invalid);
+            await assert.rejects(new VideoFingerprintStore(recordDirectory).identify(sampledVideo, signal), /preserved/);
+            assert.equal(await fs.readFile(recordPath, 'utf8'), invalid, 'Invalid fingerprint records are never overwritten');
+        }
+        await fs.unlink(recordPath);
+        await fs.mkdir(recordPath);
+        await assert.rejects(new VideoFingerprintStore(recordDirectory).identify(sampledVideo, signal), /preserved/);
+        assert.equal((await fs.stat(recordPath)).isDirectory(), true, 'Unreadable fingerprint paths remain untouched');
+        await fs.rmdir(recordPath);
+        await fs.writeFile(recordPath, savedRecord);
+        assert.deepEqual(await new VideoFingerprintStore(recordDirectory).identify(sampledVideo, signal), baseline, 'Reading recovers after the saved record is repaired');
         const sampledCopy = join(root, 'elsewhere.mp4');
         await fs.copyFile(sampledVideo, sampledCopy);
-        assert.equal((await fingerprintStore.identify(sampledCopy, common, signal)).value, baseline.value);
-        const small = await fingerprintStore.identify(firstVideo, commonFingerprintMetadata(), signal);
+        assert.equal((await fingerprintStore.identify(sampledCopy, signal)).value, baseline.value);
+        await fs.utimes(sampledCopy, new Date('2000-01-01T00:00:00Z'), new Date('2020-01-01T00:00:00Z'));
+        assert.equal((await new VideoFingerprintStore(recordDirectory).identify(sampledCopy, signal)).value, baseline.value, 'Copy timestamps do not affect clip identity');
+        const movedSample = join(root, 'renamed-sample.mov');
+        await fs.rename(sampledCopy, movedSample);
+        assert.equal((await new VideoFingerprintStore(recordDirectory).identify(movedSample, signal)).value, baseline.value, 'Moving and renaming preserves clip identity');
+        await fs.rename(movedSample, sampledCopy);
+        const small = await fingerprintStore.identify(firstVideo, signal);
         assert.equal(small.sampledBytes, (await fs.stat(firstVideo)).size, 'Small files are read once without overlapping samples');
         for (const range of sampleRanges) {
             const file = await fs.open(sampledCopy, 'r+');
             try { await file.write(Buffer.from([17]), 0, 1, range.offset + 17); }
             finally { await file.close(); }
-            assert.notEqual((await fingerprintStore.identify(sampledCopy, common, signal)).value, baseline.value, 'Every sample point contributes to the fingerprint');
+            assert.notEqual((await fingerprintStore.identify(sampledCopy, signal)).value, baseline.value, 'Every sample point contributes to the fingerprint');
             const restore = await fs.open(sampledCopy, 'r+');
             try { await restore.write(Buffer.from([0]), 0, 1, range.offset + 17); }
             finally { await restore.close(); }
         }
-        assert.notEqual((await fingerprintStore.identify(sampledVideo, { ...common, recordingDate: '2026-11-04T12:00:01Z' }, signal)).value, baseline.value, 'Recording metadata distinguishes otherwise identical samples');
-        await assert.rejects(fingerprintStore.identify(sampledVideo, common, AbortSignal.abort()));
+        await assert.rejects(fingerprintStore.identify(sampledVideo, AbortSignal.abort()));
         const durableQueue = new ThumbnailQueue(contentCache, fingerprintStore);
         await durableQueue.clearCache();
         assert.ok((await fs.readdir(recordDirectory)).includes(persisted[0]), 'Clearing thumbnails preserves fingerprint records');
         await durableQueue.close();
+
+        const corruptSource = join(root, 'corrupt-fingerprint-source');
+        const corruptRecords = join(root, 'corrupt-fingerprints');
+        await fs.mkdir(corruptSource);
+        const corruptVideo = join(corruptSource, 'clip.mp4');
+        await fs.writeFile(corruptVideo, 'synthetic invalid video');
+        await new VideoFingerprintStore(corruptRecords).identify(corruptVideo, signal);
+        const corruptRecord = join(corruptRecords, (await fs.readdir(corruptRecords))[0]);
+        await fs.writeFile(corruptRecord, '{broken');
+        const corruptRegistry = new SourceRegistry(undefined, corruptRecords);
+        try {
+            const source = await corruptRegistry.add(corruptSource);
+            for (let i = 0; i < 500 && corruptRegistry.scanner.isBusy(source.id); i++) await new Promise(resolve => setTimeout(resolve, 20));
+            assert.equal(corruptRegistry.scanner.isBusy(source.id), false);
+            const snapshot = corruptRegistry.scanner.snapshot();
+            assert.equal(snapshot.shots.length, 0, 'A clip with an unreadable fingerprint is not published');
+            assert.ok(snapshot.scans[0].warnings.some(warning => warning.includes('saved fingerprint') && warning.includes('preserved')), 'Scan issues report the preserved fingerprint failure');
+            assert.equal(await fs.readFile(corruptRecord, 'utf8'), '{broken');
+            assert.equal(await fs.readFile(corruptVideo, 'utf8'), 'synthetic invalid video');
+        } finally { await corruptRegistry.scanner.close(); }
+
+        // Metadata inspection can fail or recover without changing sampled clip identity.
+        const probeTools = join(root, 'probe-tools');
+        const probeSource = join(root, 'probe-source');
+        const probeRecords = join(root, 'probe-fingerprints');
+        const probeDrafts = join(root, 'probe-organization.json');
+        await fs.mkdir(probeTools); await fs.mkdir(probeSource);
+        await fs.writeFile(join(probeSource, 'clip.mp4'), 'unchanged synthetic video bytes');
+        const probeExecutable = join(probeTools, 'ffprobe');
+        await fs.writeFile(probeExecutable, '#!/bin/sh\nexit 1\n', { mode: 0o700 });
+        const originalPath = process.env.PATH;
+        let probeRegistry;
+        try {
+            process.env.PATH = `${probeTools}${delimiter}${originalPath ?? ''}`;
+            const scanProbeSource = async () => {
+                const source = await probeRegistry.add(probeSource);
+                for (let i = 0; i < 500 && probeRegistry.scanner.isBusy(source.id); i++) await new Promise(resolve => setTimeout(resolve, 20));
+                assert.equal(probeRegistry.scanner.isBusy(source.id), false, 'Metadata fixture scan finishes');
+                const shots = probeRegistry.scanner.snapshot().shots;
+                assert.equal(shots.length, 1);
+                return shots[0];
+            };
+            probeRegistry = new SourceRegistry(undefined, probeRecords, probeDrafts);
+            const unprobed = await scanProbeSource();
+            assert.equal(unprobed.metadata.codec.name, null);
+            assert.equal(unprobed.durationSeconds, null);
+            assert.equal(unprobed.dateSource, 'file-modified');
+            await probeRegistry.scanner.updateOrganization([unprobed.id], { field: 'notes', operation: 'set', value: 'Preserve this draft' });
+            await probeRegistry.scanner.updateOrganization([unprobed.id], { field: 'skip', operation: 'set', value: 'true' });
+            const savedOrganization = probeRegistry.scanner.snapshot().shots[0].organization;
+            await probeRegistry.scanner.close();
+            await fs.rm(probeRecords, { recursive: true }); // Require a fresh byte read in the next session.
+            const probeInfo = { streams: [{ codec_type: 'video', codec_name: 'h264', width: 1920, height: 1080,
+                r_frame_rate: '25/1', avg_frame_rate: '25/1', nb_frames: '250' }],
+                format: { duration: '10', tags: { creation_time: '2026-11-04T12:00:00Z' } } };
+            await fs.writeFile(probeExecutable, `#!/bin/sh\nprintf '%s\\n' '${JSON.stringify(probeInfo)}'\n`);
+            probeRegistry = new SourceRegistry(undefined, probeRecords, probeDrafts);
+            const probed = await scanProbeSource();
+            assert.equal(probed.metadata.codec.name, 'h264');
+            assert.equal(probed.durationSeconds, 10);
+            assert.equal(probed.dateSource, 'embedded');
+            assert.deepEqual(probed.fingerprint, unprobed.fingerprint, 'Recovering metadata does not change the fingerprint');
+            assert.equal(probed.id, unprobed.id, 'Recovering metadata does not change clip identity');
+            assert.deepEqual(probed.organization, savedOrganization, 'Drafts and Skip restore across metadata availability changes and restart');
+        } finally {
+            await probeRegistry?.scanner.close();
+            if (originalPath === undefined) delete process.env.PATH;
+            else process.env.PATH = originalPath;
+        }
 
         server = createServer('fixture-token', undefined, cache);
         assert.equal((await server.inject({ method: 'DELETE', url: '/api/cache' })).statusCode, 401);
@@ -201,7 +291,7 @@ const { tmpdir } = require('node:os');
             const clipId = registry.scanner.snapshot().shots[0].id;
             const clipFingerprint = registry.scanner.snapshot().shots[0].fingerprint;
             assert.equal(clipId,clipFingerprint.value,'The fingerprint is the published clip and asset ID');
-            assert.equal(clipFingerprint.scheme, 'sampled-sha256-v1', 'Every discovered video retains its fingerprint');
+            assert.equal(clipFingerprint.scheme, 'sampled-sha256-v2', 'Every discovered video retains its fingerprint');
             await assert.rejects(registry.relink(first.id, moved), /unavailable/);
             await fs.rename(original, moved);
             assert.equal((await registry.list())[0].available, false);

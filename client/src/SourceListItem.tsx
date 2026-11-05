@@ -87,7 +87,7 @@ export function SourceListItem({
     return (
         <li
             aria-busy={inProgress}
-            className={`group relative rounded-lg transition duration-75 ${unavailable ? "bg-red-500/8 hover:bg-red-500/15 has-[:focus-visible]:bg-red-500/15" : scanning ? "bg-blue-500/8 hover:bg-blue-500/12 has-[:focus-visible]:bg-blue-500/12" : queued ? "bg-white/2 opacity-60" : "hover:bg-white/4 has-[:focus-visible]:bg-white/4"}`}
+            className={`group relative rounded-lg transition duration-75 ${unavailable ? "bg-red-500/8 hover:bg-red-500/15 has-[:focus-visible]:bg-red-500/15" : scanning ? "bg-blue-500/8 hover:bg-blue-500/12 has-[:focus-visible]:bg-blue-500/12" : queued ? "bg-white/2 opacity-40 grayscale" : "hover:bg-white/4 has-[:focus-visible]:bg-white/4"}`}
         >
             <button
                 type="button"

@@ -18,7 +18,7 @@ Viewing LUTs are included in the repository. See [LUT provenance](resources/luts
 
 ## Current functionality
 
-- Add multiple card or folder sources, browse original videos by recording date, filter by source/device, inspect technical metadata, and play or seek the original video. Clips appear after fingerprinting and attribute loading; their identity follows the fingerprint across moves and rescans. Previews are generated locally; camera proxies, thumbnails, and external XML are not used.
+- Add multiple card or folder sources, browse original videos by recording date, filter by source/device, inspect technical metadata, and play or seek the original video. Clips appear after fingerprinting and attribute loading; their identity follows the fingerprint across moves and rescans. When loaded locations share a fingerprint, the grid prefers an available location, then an editable one, within the source filter. Previews are generated locally; camera proxies, thumbnails, and external XML are not used.
 - Edit Identity, Project, Context tags, and Notes per clip. Drafts may be incomplete; future ingestion requires Identity and Project. Attributes and Skip choices persist locally; source lists and editing selections are session-only. Skipping a clip is separate from selecting it for inspection.
 - Use the inspector's LUT toggle to review supported Sony S-Log3 and Apple Log footage. Viewing transforms and cached previews do not change source files.
 - Set a Library location in Configuration. This only saves a path; it does not scan or write to the Library. **Review & Ingest remains disabled.**
@@ -26,6 +26,10 @@ Viewing LUTs are included in the repository. See [LUT provenance](resources/luts
 Configuration's **Reset Local Data** requires confirmation and deletes local clip drafts, Identity/Project lists and session tag suggestions, fingerprints, previews, sources, selections, and skip choices. It preserves app configuration, LUTs, source footage, and Library files. Sources must be added again afterward. Removing a saved option or clearing selected clips' attributes is a narrower operation.
 
 Identity and Project options persist; Context suggestions reflect tags used by currently loaded clips, while clip tags remain saved in drafts. Removing Identity or Project options in Configuration clears only the matching field across local clip records. **Save** shows an affected-clip count and table distinguishing active and saved clips before confirmation; unused entries are deleted directly. No rescan is triggered. Other attributes stay intact. Removal waits for active scans to finish; changed attributes require a fresh review. Older saved records without a filename show a clip identifier until scanned again.
+
+Unreadable or invalid saved drafts, configuration, and fingerprint records are preserved and reported. A clip whose fingerprint or draft cannot be loaded is skipped during discovery; source scan issue details appear in the source's tooltip. Reset Local Data remains an explicitly confirmed operation.
+
+Clip fingerprints use `sampled-sha256-v2`: file size, the fixed sampling scheme and byte ranges, and bytes read from the original file. Large files use five 256 KiB samples spread from the start to the end; files up to 1.25 MiB are read in full. Extracted metadata, paths, and filesystem dates do not contribute to clip identity. Filesystem details only invalidate cached reads and detect changes during inspection. A sampled fingerprint associates local drafts and previews; it does not prove duplicate content or transfer integrity. Ingestion will require full-file SHA-256 verification. This development change does not migrate earlier fingerprint records or their associated drafts/previews.
 
 ## Development
 

@@ -6,7 +6,7 @@ import type { ShotCollection, ShotDetails, SourceScan } from "../shared/shots";
 import { discoverShots } from "./discovery";
 import type { DiscoveredShot } from "./discovery";
 import { ThumbnailQueue } from "./thumbnails";
-import { commonFingerprintMetadata, VideoFingerprintStore } from "./fingerprints";
+import { VideoFingerprintStore } from "./fingerprints";
 import { OrganizationStore } from "./organization";
 import { organizationKey } from "../shared/organization";
 import type { OrganizationAction, TagVocabulary } from "../shared/organization";
@@ -169,21 +169,15 @@ export class ShotScanner {
                 const root = await stat(source.path);
                 job.rootIdentity = `${root.dev}:${root.ino}:${root.birthtimeMs}`;
                 await discoverShots(source, job.controller.signal, async (shot) => {
-                    const streams = shot.mediaInfo?.streams as { codec_type?: string; nb_frames?: string }[] | undefined;
-                    shot.fingerprintMetadata = commonFingerprintMetadata(shot.shot.metadata, {
-                        recordingDate: shot.shot.dateSource === "file-modified" ? null : shot.shot.timestamp,
-                        durationSeconds: shot.shot.durationSeconds,
-                        frameCount: Array.isArray(streams) ? streams.find((stream) => stream.codec_type === "video")?.nb_frames : null,
-                    });
                     try {
-                        shot.shot.fingerprint = await this.fingerprints.identify(shot.original, shot.fingerprintMetadata, job.controller.signal);
+                        shot.shot.fingerprint = await this.fingerprints.identify(shot.original, job.controller.signal);
                         const current = await stat(shot.original);
                         if ([current.dev, current.ino, current.birthtimeMs, current.size, current.mtimeMs].join(":") !== shot.fileIdentity) {
                             throw new Error("Video changed after metadata discovery.");
                         }
-                    } catch {
+                    } catch (error) {
                         job.controller.signal.throwIfAborted();
-                        job.status.warnings.push(`Could not fingerprint ${shot.shot.filename}. File was skipped; refresh this source to retry.`);
+                        if (job.status.warnings.length < 100) job.status.warnings.push(`Could not fingerprint ${shot.shot.filename}. ${error instanceof Error ? error.message : 'Fingerprint unavailable.'} File was skipped; refresh this source to retry.`);
                         return;
                     }
                     shot.shot.id = shot.shot.fingerprint.value;
@@ -191,11 +185,11 @@ export class ShotScanner {
                         shot.shot.organization = await this.organization.scanned(shot.shot.fingerprint, job.controller.signal, { name: shot.shot.filename, path: shot.original });
                     } catch {
                         job.controller.signal.throwIfAborted();
-                        job.status.warnings.push(`Could not load attributes for ${shot.shot.filename}. File was skipped; refresh this source to retry.`);
+                        if (job.status.warnings.length < 100) job.status.warnings.push(`Could not load attributes for ${shot.shot.filename}. Saved data has been preserved. File was skipped; refresh this source to retry.`);
                         return;
                     }
                     // Preview failures must not prevent a fully identified clip from appearing.
-                    try { await this.thumbnailQueue?.touch(shot.original, job.rootIdentity ?? "", shot.shot.metadata, shot.fingerprintMetadata); }
+                    try { await this.thumbnailQueue?.touch(shot.original, job.rootIdentity ?? "", shot.shot.metadata); }
                     catch { job.controller.signal.throwIfAborted(); }
                     const old = previous?.shots.find((result) => result.shot.id === shot.shot.id);
                     if (old) {
@@ -429,7 +423,7 @@ export class ShotScanner {
                         result.shot.hasThumbnail = true;
                     }
                     this.publishProgress();
-                }, result.shot.metadata, result.fingerprintMetadata);
+                }, result.shot.metadata);
                 return null;
             } catch { return null; }
         }
@@ -450,7 +444,7 @@ export class ShotScanner {
                     return current.job === asset.job && current.path === asset.path && !this.isReconciling(asset.job, asset.result);
                 } catch { return false; }
             };
-            await this.thumbnailQueue.setCustomImage(asset.path, asset.job.rootIdentity ?? "", dataUrl, valid, asset.result.shot.metadata, asset.result.fingerprintMetadata);
+            await this.thumbnailQueue.setCustomImage(asset.path, asset.job.rootIdentity ?? "", dataUrl, valid, asset.result.shot.metadata);
             if (!await valid()) throw new Error("Source changed while updating the thumbnail.");
             this.generatedImages.delete(id);
             asset.result.shot.hasCustomThumbnail = true;

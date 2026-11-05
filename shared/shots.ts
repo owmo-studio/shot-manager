@@ -24,9 +24,11 @@ export function emptyVideoMetadata(): VideoMetadata {
     };
 }
 
+export const VIDEO_SAMPLE_SCHEME = 'sampled-sha256-v2' as const;
+
 export interface VideoFingerprint {
     algorithm: 'sha256';
-    scheme: 'sampled-sha256-v1';
+    scheme: typeof VIDEO_SAMPLE_SCHEME;
     value: string;
     fileSize: number;
     sampleBytes: number;

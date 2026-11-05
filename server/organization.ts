@@ -3,7 +3,10 @@ import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { DRAFT_RETENTION_DAYS, emptyOrganization, emptyVocabulary, normalizeOption, normalizeTag, organizationKey, TAG_FIELDS, validateOptionRemovals, validateOrganizationAction } from '../shared/organization';
 import type { OptionRemovalPlan, OrganizationAction, ShotOrganization, TagVocabulary } from '../shared/organization';
+import { VIDEO_SAMPLE_SCHEME } from '../shared/shots';
 import type { VideoFingerprint } from '../shared/shots';
+
+const draftKeyPattern = new RegExp(`^${VIDEO_SAMPLE_SCHEME}:[a-f0-9]{64}$`);
 
 interface DraftRecord { data: ShotOrganization; lastScannedAt: number; lastEditedAt: number; previousProjects?: string[]; clip?: { name: string; path: string } }
 interface OrganizationState { version: 1 | 2 | 3 | 4 | 5; vocabulary: TagVocabulary; drafts: Record<string, DraftRecord> }
@@ -30,7 +33,7 @@ export class OrganizationStore {
                     if (!Array.isArray(state.vocabulary[field]) || state.vocabulary[field].some(value => typeof value !== 'string' || (field === 'context' ? normalizeTag(value) : normalizeOption(value)) !== value)) throw new Error('Invalid vocabulary');
                 }
                 for (const [key, record] of Object.entries(state.drafts)) {
-                    if (!/^sampled-sha256-v1:[a-f0-9]{64}$/.test(key) || !record || !Number.isFinite(record.lastScannedAt) || !Number.isFinite(record.lastEditedAt)) throw new Error('Invalid draft');
+                    if (!draftKeyPattern.test(key) || !record || !Number.isFinite(record.lastScannedAt) || !Number.isFinite(record.lastEditedAt)) throw new Error('Invalid draft');
                     const data = record.data;
                     if (state.version < 5 && data && !Object.hasOwn(data, 'skipped')) data.skipped = false;
                     if (record.clip && (typeof record.clip.name !== 'string' || typeof record.clip.path !== 'string')) throw new Error('Invalid clip reference');
