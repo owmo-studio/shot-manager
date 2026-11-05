@@ -1,3 +1,5 @@
+import type { ShotOrganization } from './organization';
+
 export interface VideoMetadata {
     device: { manufacturer: string | null; model: string | null; software: string | null; evidence: string | null };
     codec: { name: string | null; profile: string | null; bitDepth: number | null; chroma: string | null };
@@ -45,6 +47,7 @@ export interface VideoShot {
     durationSeconds: number | null;
     metadata: VideoMetadata;
     fingerprint?: VideoFingerprint;
+    organization?: ShotOrganization;
     hasThumbnail: boolean;
     hasCustomThumbnail?: boolean;
     thumbnailRevision?: number;

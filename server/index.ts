@@ -5,7 +5,7 @@ if (!token || !process.parentPort) throw new Error('Backend must be started by S
 
 const server = createServer(token, (collection) => {
   process.parentPort?.postMessage({ type: 'shots:changed', collection })
-}, process.env.SHOT_MANAGER_THUMBNAIL_CACHE, process.env.SHOT_MANAGER_FINGERPRINT_DIRECTORY)
+}, process.env.SHOT_MANAGER_THUMBNAIL_CACHE, process.env.SHOT_MANAGER_FINGERPRINT_DIRECTORY, process.env.SHOT_MANAGER_ORGANIZATION_FILE)
 let stopping = false
 
 async function shutdown() {

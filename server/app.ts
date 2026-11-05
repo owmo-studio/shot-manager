@@ -6,20 +6,22 @@ import { pruneThumbnailCache } from './thumbnails'
 import { sendVideo } from './media'
 import { viewingProfile } from '../shared/viewing'
 import { loadViewingLut } from './viewing'
+import { validateOptionRemovals, validateOrganizationAction } from '../shared/organization'
+import type { OrganizationAction, TagVocabulary } from '../shared/organization'
 
-export function createServer(token: string, onShotsChanged?: (collection: ShotCollection) => void, thumbnailCacheDirectory?: string, fingerprintDirectory?: string) {
+export function createServer(token: string, onShotsChanged?: (collection: ShotCollection) => void, thumbnailCacheDirectory?: string, fingerprintDirectory?: string, organizationFile?: string) {
   const server = Fastify({ logger: true })
-  const sources = new SourceRegistry(thumbnailCacheDirectory, fingerprintDirectory)
+  const sources = new SourceRegistry(thumbnailCacheDirectory, fingerprintDirectory, organizationFile)
   sources.scanner.onChange = onShotsChanged
 
   if (thumbnailCacheDirectory) {
-    server.addHook('onReady', async () => {
+    server.addHook('onClose', async () => {
       try {
         const result = await pruneThumbnailCache(thumbnailCacheDirectory)
         if (result.removed) server.log.info({ removed: result.removed }, 'Expired thumbnail cache files removed')
         if (result.failed) server.log.warn({ failed: result.failed }, 'Some expired thumbnail cache files could not be removed')
       } catch (error) {
-        server.log.warn({ err: error }, 'Thumbnail cache cleanup failed; continuing startup')
+        server.log.warn({ err: error }, 'Thumbnail cache cleanup failed')
       }
     })
   }
@@ -37,6 +39,32 @@ export function createServer(token: string, onShotsChanged?: (collection: ShotCo
   }))
 
   server.get('/api/sources', () => sources.list())
+  server.get('/api/organization/vocabulary', () => sources.scanner.organization.vocabulary())
+  server.patch<{ Body: TagVocabulary }>('/api/organization/vocabulary', {
+    schema: { body: { type: 'object', required: ['identity', 'projects', 'context'], additionalProperties: false,
+      properties: Object.fromEntries(['identity', 'projects', 'context'].map(field => [field, {
+        type: 'array', maxItems: 1000, items: { type: 'string', maxLength: 128 }
+      }])) } }
+  }, request => {
+    let removals: TagVocabulary
+    try { removals = validateOptionRemovals(request.body) }
+    catch (error) { throw Object.assign(error as Error, { statusCode: 400 }) }
+    return sources.saveOptions(removals)
+  })
+  server.patch<{ Body: { shotIds: string[]; action: OrganizationAction } }>('/api/organization', {
+    schema: { body: { type: 'object', required: ['shotIds', 'action'], additionalProperties: false, properties: {
+      shotIds: { type: 'array', minItems: 1, maxItems: 1000, items: { type: 'string', pattern: '^[a-f0-9]{64}$' } },
+      action: { type: 'object', required: ['field', 'operation', 'value'], additionalProperties: false, properties: {
+        field: { type: 'string', enum: ['identity', 'projects', 'context', 'notes', 'all'] },
+        operation: { type: 'string', enum: ['add', 'remove', 'set', 'clear'] }, value: { type: 'string', maxLength: 10000 }
+      } }
+    } } }
+  }, (request) => {
+    let action: OrganizationAction
+    try { action = validateOrganizationAction(request.body.action) }
+    catch (error) { throw Object.assign(error as Error, { statusCode: 400 }) }
+    return sources.scanner.updateOrganization(request.body.shotIds, action)
+  })
   server.post<{ Params: { id: string }; Body: { path: string } }>('/api/sources/:id/relink', {
     schema: {
       params: { type: 'object', required: ['id'], additionalProperties: false, properties: { id: { type: 'string', pattern: '^[a-zA-Z0-9-]+$' } } },
@@ -45,6 +73,8 @@ export function createServer(token: string, onShotsChanged?: (collection: ShotCo
   }, (request) => sources.relink(request.params.id, request.body.path))
   server.get('/api/cache', () => sources.scanner.cacheSummary())
   server.delete('/api/cache', () => sources.scanner.clearCache())
+  server.get('/api/local-data', () => sources.scanner.localDataSummary())
+  server.delete('/api/local-data', () => sources.clearLocalData())
   server.post<{ Params: { id: string } }>('/api/sources/:id/refresh', (request) => sources.refresh(request.params.id))
   server.get('/api/shots', () => sources.scanner.snapshot())
   server.get<{ Params: { id: string } }>('/api/shots/:id/lut', async (request) => {

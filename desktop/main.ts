@@ -4,6 +4,10 @@ import { randomBytes } from 'node:crypto'
 import { isAbsolute, join } from 'node:path'
 import { realpath, stat } from 'node:fs/promises'
 import { readConfiguration, saveConfiguration } from './configuration'
+import { validateOptionRemovals, validateOrganizationAction } from '../shared/organization'
+import type { OrganizationAction } from '../shared/organization'
+import { DebouncedWrites, WriteQueue } from './writeQueue'
+import { installApplicationMenu } from './menu'
 import type { BackendHealth, BackendStatus } from '../shared/desktop'
 
 let mainWindow: BrowserWindow | null = null
@@ -15,6 +19,8 @@ let shutdownComplete = false
 const token = randomBytes(32).toString('hex')
 let choosingSource = false
 let choosingLibrary = false
+const organizationWrites = new WriteQueue()
+const noteWrites = new DebouncedWrites(organizationWrites, 500)
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'shot-media', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, corsEnabled: true } }
@@ -45,7 +51,7 @@ function requireMainWindow(event: IpcMainInvokeEvent): BrowserWindow {
 function startBackend() {
   backend = utilityProcess.fork(join(__dirname, 'backend.cjs'), [], {
     serviceName: 'Shot Manager Backend',
-    env: { ...process.env, SHOT_MANAGER_TOKEN: token, SHOT_MANAGER_THUMBNAIL_CACHE: join(app.getPath('userData'), 'cache', 'thumbnails'), SHOT_MANAGER_FINGERPRINT_DIRECTORY: join(app.getPath('userData'), 'fingerprints'), SHOT_MANAGER_LUT_DIRECTORY: join(app.getAppPath(), 'resources', 'luts') }
+    env: { ...process.env, SHOT_MANAGER_TOKEN: token, SHOT_MANAGER_THUMBNAIL_CACHE: join(app.getPath('userData'), 'cache', 'thumbnails'), SHOT_MANAGER_FINGERPRINT_DIRECTORY: join(app.getPath('userData'), 'fingerprints'), SHOT_MANAGER_ORGANIZATION_FILE: join(app.getPath('userData'), 'organization.json'), SHOT_MANAGER_LUT_DIRECTORY: join(app.getAppPath(), 'resources', 'luts') }
   })
   backend.on('message', (message: unknown) => {
     if (typeof message === 'object' && message !== null && 'type' in message &&
@@ -88,6 +94,12 @@ function createWindow() {
   })
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && input.key.toLowerCase() === 'q' && input.meta && !input.control && !input.alt && !input.shift) {
+      event.preventDefault()
+      app.quit()
+    }
+  })
   mainWindow.on('closed', () => { mainWindow = null })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -107,6 +119,43 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(() => {
+    installApplicationMenu()
+    ipcMain.handle('configuration:save-options', (event, value: unknown) => {
+      requireMainWindow(event)
+      const removals = validateOptionRemovals(value)
+      void noteWrites.flush()
+      return organizationWrites.run(() => backendRequest('/api/organization/vocabulary', {
+        method: 'PATCH', body: JSON.stringify(removals)
+      }))
+    })
+    ipcMain.handle('local-data:summary', (event) => {
+      requireMainWindow(event)
+      return backendRequest('/api/local-data')
+    })
+    ipcMain.handle('local-data:clear', (event) => {
+      requireMainWindow(event)
+      void noteWrites.flush()
+      return organizationWrites.run(() => backendRequest('/api/local-data', { method: 'DELETE' }))
+    })
+    ipcMain.handle('organization:flush-notes', event => {
+      requireMainWindow(event)
+      return noteWrites.flush()
+    })
+    ipcMain.handle('organization:vocabulary', (event) => {
+      requireMainWindow(event)
+      return backendRequest('/api/organization/vocabulary')
+    })
+    ipcMain.handle('organization:update', (event, shotIds: unknown, action: OrganizationAction) => {
+      requireMainWindow(event)
+      if (!Array.isArray(shotIds) || !shotIds.length || shotIds.length > 1000 || shotIds.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id))) throw new Error('Invalid selection')
+      const normalized = validateOrganizationAction(action)
+      const operation = () => backendRequest('/api/organization', {
+        method: 'PATCH', body: JSON.stringify({ shotIds, action: normalized })
+      })
+      if (normalized.field === 'notes') return noteWrites.schedule([...new Set(shotIds)].sort().join(','), operation)
+      void noteWrites.flush()
+      return organizationWrites.run(operation)
+    })
     const configurationPath = join(app.getPath('userData'), 'configuration.json')
     ipcMain.handle('configuration:get', (event) => {
       requireMainWindow(event)
@@ -185,6 +234,7 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle('sources:refresh', async (event, id: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Invalid source ID')
+      await noteWrites.flush()
       return backendRequest(`/api/sources/${encodeURIComponent(id)}/refresh`, { method: 'POST' })
     })
     ipcMain.handle('sources:relink', async (event, id: unknown) => {
@@ -197,6 +247,7 @@ if (!app.requestSingleInstanceLock()) {
           title: 'Re-link Source', buttonLabel: 'Re-link Source', properties: ['openDirectory']
         })
         if (result.canceled || !result.filePaths[0]) return null
+        await noteWrites.flush()
         return await backendRequest(`/api/sources/${encodeURIComponent(id)}/relink`, {
           method: 'POST', body: JSON.stringify({ path: result.filePaths[0] })
         })
@@ -211,11 +262,13 @@ if (!app.requestSingleInstanceLock()) {
       if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) {
         throw new Error('Drop a folder from your computer')
       }
+      await noteWrites.flush()
       return backendRequest('/api/sources', { method: 'POST', body: JSON.stringify({ path }) })
     })
     ipcMain.handle('sources:remove', async (event, id: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Invalid source ID')
+      await noteWrites.flush()
       await backendRequest(`/api/sources/${encodeURIComponent(id)}`, { method: 'DELETE' })
     })
     ipcMain.handle('sources:choose', async (event) => {
@@ -230,6 +283,7 @@ if (!app.requestSingleInstanceLock()) {
           properties: ['openDirectory']
         })
         if (result.canceled || !result.filePaths[0]) return null
+        await noteWrites.flush()
         return await backendRequest('/api/sources', { method: 'POST', body: JSON.stringify({ path: result.filePaths[0] }) })
       } finally {
         choosingSource = false
@@ -264,8 +318,14 @@ if (!app.requestSingleInstanceLock()) {
     event.preventDefault()
     if (quitting) return
     quitting = true
-    backend.postMessage('shutdown')
-    setTimeout(() => backend?.kill(), 3000).unref()
+    // Renderer closure must not discard accepted inline edits waiting to be written.
+    void noteWrites.flush()
+    void organizationWrites.drain().then(() => backend?.postMessage('shutdown'))
+    setTimeout(() => {
+      backend?.kill()
+      shutdownComplete = true
+      app.exit(0)
+    }, 10000).unref()
   })
   process.on('SIGINT', () => app.quit())
   process.on('SIGTERM', () => app.quit())

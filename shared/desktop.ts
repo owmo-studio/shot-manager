@@ -1,5 +1,6 @@
 import type { ShotCollection, ShotDetails } from './shots'
 import type { ViewingLut } from './viewing'
+import type { OrganizationAction, TagVocabulary } from './organization'
 
 export interface BackendHealth {
   status: 'ok'
@@ -31,7 +32,15 @@ export interface CacheSummary {
   files: number
 }
 
+export interface LocalDataSummary extends CacheSummary { options: number }
+
 export interface DesktopAPI {
+  saveConfigurationOptions: (removals: TagVocabulary) => Promise<{ vocabulary: TagVocabulary; collection: ShotCollection }>
+  flushNotes: () => Promise<void>
+  getLocalDataSummary: () => Promise<LocalDataSummary>
+  clearLocalData: () => Promise<LocalDataSummary>
+  getTagVocabulary: () => Promise<TagVocabulary>
+  updateOrganization: (shotIds: string[], action: OrganizationAction) => Promise<{ collection: ShotCollection; vocabulary: TagVocabulary }>
   getConfiguration: () => Promise<AppConfiguration>
   chooseLibrary: () => Promise<AppConfiguration | null>
   getCacheSummary: () => Promise<CacheSummary>

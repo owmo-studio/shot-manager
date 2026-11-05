@@ -7,6 +7,9 @@ import { discoverShots } from "./discovery";
 import type { DiscoveredShot } from "./discovery";
 import { ThumbnailQueue } from "./thumbnails";
 import { commonFingerprintMetadata, VideoFingerprintStore } from "./fingerprints";
+import { OrganizationStore } from "./organization";
+import { organizationKey } from "../shared/organization";
+import type { OrganizationAction } from "../shared/organization";
 
 interface ScanJob {
     source: ImportSource;
@@ -25,12 +28,24 @@ export class ShotScanner {
     onChange?: (collection: ShotCollection) => void;
     private thumbnailQueue?: ThumbnailQueue;
     private fingerprints: VideoFingerprintStore;
+    readonly organization: OrganizationStore;
     private generatedImages = new Map<string, string>();
     private updatingThumbnails = new Set<string>();
     private clearingCache = false;
 
     async cacheSummary() {
         return this.thumbnailQueue?.cacheSummary() ?? { bytes: 0, files: 0 };
+    }
+
+    async localDataSummary() {
+        const cache = await this.cacheSummary();
+        const lists = await this.organization.vocabulary();
+        return { ...cache, options: lists.identity.length + lists.projects.length + lists.context.length };
+    }
+
+    async clearLocalData() {
+        await this.clearCache();
+        await this.organization.clearOptions();
     }
 
     async clearCache() {
@@ -54,7 +69,8 @@ export class ShotScanner {
         }
     }
 
-    constructor(thumbnailCacheDirectory?: string, fingerprintDirectory?: string) {
+    constructor(thumbnailCacheDirectory?: string, fingerprintDirectory?: string, organizationFile?: string) {
+        this.organization = new OrganizationStore(organizationFile);
         this.fingerprints = new VideoFingerprintStore(fingerprintDirectory);
         if (thumbnailCacheDirectory) this.thumbnailQueue = new ThumbnailQueue(thumbnailCacheDirectory, this.fingerprints);
     }
@@ -143,6 +159,15 @@ export class ShotScanner {
                         shot.shot.fingerprint = undefined;
                         shot.shot.warnings.push("Video fingerprint unavailable. Refresh this source to retry.");
                     }
+                    if (shot.shot.fingerprint) {
+                        try {
+                            shot.shot.organization = await this.organization.scanned(shot.shot.fingerprint, job.controller.signal);
+                            await this.thumbnailQueue?.touch(shot.original, job.rootIdentity ?? "", shot.shot.metadata, shot.fingerprintMetadata);
+                        } catch {
+                            job.controller.signal.throwIfAborted();
+                            if (!shot.shot.organization) shot.shot.warnings.push("Saved tags unavailable. Refresh this source to retry.");
+                        }
+                    }
                     const old = previous?.shots.find((result) => result.shot.id === shot.shot.id);
                     if (old?.fileIdentity === shot.fileIdentity) {
                         this.thumbnailQueue?.rememberLegacyLocation(old.fileIdentity, old.original, previous?.rootIdentity ?? "");
@@ -196,6 +221,22 @@ export class ShotScanner {
     isBusy(id: string): boolean {
         const state = this.jobs.get(id)?.status.state;
         return state === "queued" || state === "scanning";
+    }
+
+    async updateOrganization(ids: string[], action: OrganizationAction) {
+        const targets = [...new Set(ids)].map(id => this.findShot(id));
+        const valid = () => targets.every(({ job, result }) => this.jobs.get(job.source.id) === job &&
+            !this.isReconciling(job) && !!result.shot.fingerprint && !!result.shot.organization);
+        if (!valid()) throw Object.assign(new Error("Selected clips are locked or their drafts are unavailable."), { statusCode: 409 });
+        const changed = await this.organization.update(targets.map(({ result }) => result.shot.fingerprint!), action, valid);
+        for (const job of this.jobs.values()) for (const { shot } of job.shots) {
+            if (shot.fingerprint) {
+                const data = changed.drafts[organizationKey(shot.fingerprint)];
+                if (data) shot.organization = structuredClone(data);
+            }
+        }
+        this.publish();
+        return { collection: this.snapshot(), vocabulary: changed.vocabulary };
     }
 
     private isReconciling(job: ScanJob): boolean {
@@ -364,5 +405,6 @@ export class ShotScanner {
         for (const id of this.jobs.keys()) this.remove(id);
         await this.thumbnailQueue?.close();
         await this.pending;
+        await this.organization.prune().catch(error => console.warn('Draft retention cleanup failed; saved drafts preserved.', error));
     }
 }

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
-import { link, lstat, mkdir, readdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, readdir, realpath, rename, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { readSmallFile } from "./discovery";
@@ -13,7 +13,7 @@ import { loadViewingLut, viewingLutPath } from "./viewing";
 
 const execute = promisify(execFile);
 const maximumImageBytes = 2 * 1024 * 1024;
-export const DEFAULT_THUMBNAIL_CACHE_EXPIRY_DAYS = 30;
+export const DEFAULT_THUMBNAIL_CACHE_EXPIRY_DAYS = 90;
 const cacheFilename = /^[a-f0-9]{64}(?:\.jpg|\.[a-f0-9-]{36}\.tmp)$/;
 
 export async function inspectThumbnailCache(directory: string, clear = false) {
@@ -92,6 +92,15 @@ export class ThumbnailQueue {
     }
 
     cacheSummary() { return inspectThumbnailCache(this.cacheDirectory); }
+
+    async touch(input: string, sourceIdentity: string, metadata?: VideoMetadata, fingerprintMetadata?: FingerprintMetadata) {
+        const paths = await this.cachePaths(input, sourceIdentity, metadata, this.shutdown.signal, fingerprintMetadata);
+        const now = new Date();
+        for (const path of [paths.custom, paths.generated, ...paths.legacyCustom, ...paths.legacyGenerated]) {
+            try { if ((await lstat(path)).isFile()) await utimes(path, now, now); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        }
+    }
 
     rememberLegacyLocation(identity: string, input: string, sourceIdentity: string) {
         const locations = this.legacyLocations.get(identity) ?? [];

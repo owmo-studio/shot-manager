@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ImportSource } from "../../shared/desktop";
-import type { ShotDetails, VideoShot } from "../../shared/shots";
+import type { ShotCollection, ShotDetails, VideoShot } from "../../shared/shots";
 import { emptyVideoMetadata } from "../../shared/shots";
 import { viewingProfile } from "../../shared/viewing";
 import { durationRow, primaryMetadataRows, quickMediaSummary, sourceFilePath } from "./mediaInfo";
@@ -9,6 +9,7 @@ import { PreviewPlayer } from "./PreviewPlayer";
 import type { PreviewHandle } from "./PreviewPlayer";
 import { ContextFields } from "./ContextFields";
 import { SkipSelection } from "./SkipSelection";
+import { ClearOrganizationButton } from "./ClearOrganizationButton";
 
 function bytesLabel(bytes: number) {
     if (!bytes) return "0 B";
@@ -46,6 +47,7 @@ export function ClipInspector({
     onResize,
     skipped,
     onSkipChange,
+    onOrganizationUpdated,
 }: {
     shot?: VideoShot;
     source?: ImportSource;
@@ -53,6 +55,7 @@ export function ClipInspector({
     onResize: (width: number) => void;
     skipped: boolean;
     onSkipChange: (skipped: boolean) => void;
+    onOrganizationUpdated: (collection: ShotCollection) => void;
 }) {
     const empty = !selectedShot;
     const shot = selectedShot ?? emptyShot;
@@ -137,7 +140,7 @@ export function ClipInspector({
 
     return (
         <ResizableInspector width={width} onResize={onResize}>
-            <div inert={empty} className={empty ? "opacity-40" : undefined}>
+            <div inert={empty} className={`flex min-h-full flex-col ${empty ? "opacity-40" : ""}`}>
                 <header className="mb-4 flex items-start justify-between gap-3">
                     <div className="min-w-0">
                         <h2
@@ -238,7 +241,7 @@ export function ClipInspector({
                                 (tab === choice ? "bg-white/10 text-zinc-200" : "text-zinc-500 hover:text-zinc-300")
                             }
                         >
-                            {choice === "metadata" ? "Context" : "File info"}
+                            {choice === "metadata" ? "Metadata" : "File info"}
                         </button>
                     ))}
                 </div>
@@ -247,9 +250,12 @@ export function ClipInspector({
                         role="tabpanel"
                         id="inspector-metadata-panel"
                         aria-labelledby="inspector-metadata-tab"
-                        className="mt-4 rounded-lg border border-white/8 p-3"
+                        className="mt-4 flex flex-1 flex-col"
                     >
-                        <ContextFields empty={empty} />
+                        <ContextFields shots={selectedShot ? [selectedShot] : []} onUpdated={onOrganizationUpdated} />
+                        <div className="mt-auto flex justify-end pt-5">
+                            <ClearOrganizationButton shots={selectedShot ? [selectedShot] : []} onUpdated={onOrganizationUpdated} />
+                        </div>
                     </section>
                 ) : (
                     <section

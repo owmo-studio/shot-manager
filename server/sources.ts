@@ -6,6 +6,7 @@ import { ShotScanner } from "./scanner";
 import { findSonyLayout } from "./sony";
 import { readEmbeddedContainer } from "./embedded";
 import { sonyMetadata } from "./videoMetadata";
+import type { TagVocabulary } from "../shared/organization";
 
 
 export async function inspectSource(path: string) {
@@ -51,8 +52,8 @@ export async function inspectSource(path: string) {
 export class SourceRegistry {
     readonly scanner: ShotScanner;
 
-    constructor(thumbnailCacheDirectory?: string, fingerprintDirectory?: string) {
-        this.scanner = new ShotScanner(thumbnailCacheDirectory, fingerprintDirectory);
+    constructor(thumbnailCacheDirectory?: string, fingerprintDirectory?: string, organizationFile?: string) {
+        this.scanner = new ShotScanner(thumbnailCacheDirectory, fingerprintDirectory, organizationFile);
     }
     private sources = new Map<string, { source: ImportSource; fingerprint: string }>();
     private pending: Promise<unknown> = Promise.resolve();
@@ -185,6 +186,22 @@ export class SourceRegistry {
                 if (entry.source.id === id) this.sources.delete(path);
             }
             this.scanner.sync([...this.sources.values()].map((entry) => entry.source));
+        });
+    }
+
+    clearLocalData() {
+        return this.serialize(async () => {
+            await this.scanner.clearLocalData();
+            for (const { source } of this.sources.values()) if (source.available) this.scanner.refresh(source);
+            return this.scanner.localDataSummary();
+        });
+    }
+
+    saveOptions(removals: TagVocabulary) {
+        return this.serialize(async () => {
+            const vocabulary = await this.scanner.organization.removeOptions(removals);
+            for (const { source } of this.sources.values()) if (source.available) this.scanner.refresh(source);
+            return { vocabulary, collection: this.scanner.snapshot() };
         });
     }
 

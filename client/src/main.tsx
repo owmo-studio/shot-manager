@@ -87,6 +87,7 @@ function App() {
     useEffect(() => {
         const blockTab = (event: KeyboardEvent) => {
             if (event.key !== "Tab") return;
+            if (event.target instanceof Element && event.target.closest('[data-tag-input]')) return;
             event.preventDefault();
             event.stopPropagation();
         };
@@ -486,10 +487,12 @@ function App() {
                     )}
                 </section>
                     {selectedShots.length > 1 ? <MultiClipInspector
+                        onOrganizationUpdated={receiveShots}
                         shots={orderedShots(selectedShots, newestFirst)} sources={sources} skippedCount={selectedSkippedCount} disabled={selectedLocked}
                         width={inspectorWidth} onResize={setInspectorWidth}
                         onSkipChange={(skipped) => changeSkip(selectedShots.map((shot) => shot.id), skipped)}
                     /> : <ClipInspector
+                        onOrganizationUpdated={receiveShots}
                         key={inspectedShot?.id ?? "empty"}
                         shot={inspectedShot}
                         source={sources.find((source) => source.id === inspectedShot?.sourceId)}
