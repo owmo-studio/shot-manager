@@ -82,6 +82,7 @@ export function SourceListItem({
     const scanning = !unavailable && scan?.state === "scanning";
     const queued = !unavailable && (refreshing || !scan || scan.state === "queued");
     const inProgress = scanning || queued;
+    const scanWarning = !inProgress && !!scan?.warnings.length;
 
     return (
         <li
@@ -93,7 +94,7 @@ export function SourceListItem({
                 onClick={onToggle}
                 aria-pressed={selected}
                 aria-label={`Filter clips from ${presentation.name}`}
-                title={`${presentation.name}\n${source.path}${source.warning ? `\n${source.warning}` : ""}`}
+                title={[presentation.name, source.path, source.warning, scan?.error, ...(scan?.warnings ?? [])].filter(Boolean).join("\n")}
                 className={`flex min-h-14 w-full items-center gap-3 rounded-lg border py-2.5 pl-3 text-left transition duration-75 focus-visible:outline-2 focus-visible:outline-blue-400 ${selected ? "bg-blue-400/10 ring-1 ring-blue-400/60" : ""} ${inProgress ? "pr-3" : "pr-18"} ${unavailable ? "border-red-500/30 group-hover:border-red-400/60 group-has-[:focus-visible]:border-red-400/60" : scanning ? "border-blue-400/30 group-hover:border-blue-400/50 group-has-[:focus-visible]:border-blue-400/50" : queued ? "border-white/5" : "border-transparent"}`}
             >
                 {scanning ? (
@@ -122,8 +123,8 @@ export function SourceListItem({
                                 ? "Queued..."
                                 : `${scan!.clipCount} clips${scan!.state === "failed" || scan!.state === "interrupted" ? " · Scan interrupted" : ""}`}
                     </span>
-                    {source.available && source.warning && (
-                        <span className="mt-1 block text-xs text-amber-300">{source.warning}</span>
+                    {source.available && (source.warning || scanWarning) && (
+                        <span className="mt-1 block text-xs text-amber-300">{source.warning ?? "Scan needs attention"}</span>
                     )}
                 </span>
             </button>

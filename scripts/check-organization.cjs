@@ -13,6 +13,7 @@ const { tmpdir } = require('node:os');
             `export * from ${JSON.stringify(join(__dirname, '../server/organization.ts'))};`,
             `export * from ${JSON.stringify(join(__dirname, '../shared/organization.ts'))};`,
             `export * from ${JSON.stringify(join(__dirname, '../server/app.ts'))};`,
+            `export * from ${JSON.stringify(join(__dirname, '../server/scanner.ts'))};`,
             `export * from ${JSON.stringify(join(__dirname, '../server/thumbnails.ts'))};`,
             `export * from ${JSON.stringify(join(__dirname, '../desktop/writeQueue.ts'))};`,
         ].join('\n'));
@@ -22,7 +23,7 @@ const { tmpdir } = require('node:os');
         const Module = require('node:module');
         const loaded = new Module(__filename, module); loaded.paths = module.paths;
         loaded._compile(bundle.output.find(item => item.type === 'chunk' && item.isEntry).code, __filename);
-        const { OrganizationStore, normalizeTag, organizationKey, emptyOrganization, emptyVocabulary, normalizeOption, createServer, pruneThumbnailCache, DEFAULT_THUMBNAIL_CACHE_EXPIRY_DAYS, WriteQueue, DebouncedWrites } = loaded.exports;
+        const { ShotScanner, OrganizationStore, normalizeTag, organizationKey, emptyOrganization, emptyVocabulary, normalizeOption, createServer, pruneThumbnailCache, DEFAULT_THUMBNAIL_CACHE_EXPIRY_DAYS, WriteQueue, DebouncedWrites } = loaded.exports;
         const file = join(root, 'state', 'organization.json');
         let now = Date.now();
         const day = 86400000;
@@ -174,6 +175,55 @@ const { tmpdir } = require('node:os');
         assert.equal(DEFAULT_THUMBNAIL_CACHE_EXPIRY_DAYS, 90);
         assert.equal((await pruneThumbnailCache(cache)).removed, 1);
 
+        const failureRoot=join(root,'fingerprint-failure'); await fs.mkdir(failureRoot);
+        await fs.writeFile(join(failureRoot,'clip.mp4'),'synthetic failure fixture');
+        const failureScanner=new ShotScanner();
+        const failureSource={id:'failure-fixture',name:'Fixture',path:failureRoot,type:'folder',cameraModels:[],available:true};
+        const identify=failureScanner.fingerprints.identify.bind(failureScanner.fingerprints);
+        const finishFailureScan=async()=>{for(let i=0;i<250;i++){if(!failureScanner.isBusy(failureSource.id)) return;await new Promise(resolve=>setTimeout(resolve,20));}throw new Error('Failure fixture timed out');};
+        try {
+            failureScanner.fingerprints.identify=async()=>{throw new Error('Synthetic fingerprint failure');};
+            failureScanner.schedule(failureSource); await finishFailureScan();
+            assert.equal(failureScanner.snapshot().shots.length,0,'No path-based fallback clip is published');
+            assert.ok(failureScanner.snapshot().scans[0].warnings.some(value=>value.includes('fingerprint')));
+            failureScanner.fingerprints.identify=identify;
+            const scanned=failureScanner.organization.scanned.bind(failureScanner.organization);
+            failureScanner.organization.scanned=async()=>{throw new Error('Synthetic attribute failure');};
+            failureScanner.refresh(failureSource); await finishFailureScan();
+            assert.equal(failureScanner.snapshot().shots.length,0,'Attribute failures do not publish incomplete clips');
+            failureScanner.organization.scanned=scanned;
+            failureScanner.refresh(failureSource); await finishFailureScan();
+            const ready=failureScanner.snapshot().shots[0];
+            assert.ok(ready.organization);
+            assert.equal(ready.id,ready.fingerprint.value,'Retry publishes the fingerprint identity');
+            await fs.writeFile(join(failureRoot,'second.mp4'),'second synthetic rescan fixture');
+            failureScanner.refresh(failureSource); await finishFailureScan();
+            assert.equal(failureScanner.snapshot().shots.length,2);
+            let releaseRescan, rescanEntered;
+            const rescanGate=new Promise(resolve=>{releaseRescan=resolve;});
+            const secondEntered=new Promise(resolve=>{rescanEntered=resolve;});
+            let processed=0;
+            failureScanner.organization.scanned=async(...args)=>{
+                if(++processed===2){rescanEntered();await rescanGate;}
+                return scanned(...args);
+            };
+            failureScanner.refresh(failureSource);
+            assert.ok(failureScanner.snapshot().shots.every(shot=>!shot.editable),'Queued rescan initially locks all old clips');
+            await secondEntered;
+            const partial=failureScanner.snapshot();
+            assert.equal(partial.scans[0].state,'scanning');
+            const confirmed=partial.shots.find(shot=>shot.editable);
+            const waiting=partial.shots.find(shot=>!shot.editable);
+            assert.ok(confirmed && waiting,'Processed clips unlock while remaining clips stay inactive');
+            await assert.rejects(failureScanner.updateOrganization([waiting.id],{field:'notes',operation:'set',value:'Should not save'}),/locked/);
+            await failureScanner.updateOrganization([confirmed.id],{field:'notes',operation:'set',value:'Edited during rescan'});
+            releaseRescan(); await finishFailureScan();
+            assert.ok(failureScanner.snapshot().shots.every(shot=>shot.editable));
+            assert.equal(failureScanner.snapshot().shots.find(shot=>shot.id===confirmed.id).organization.notes,'Edited during rescan','Finishing the scan preserves edits made after a clip unlocked');
+            failureScanner.organization.scanned=scanned;
+
+        } finally { await failureScanner.close(); }
+
         const source = join(root, 'source'); await fs.mkdir(source);
         await fs.writeFile(join(source, 'clip.mp4'), 'synthetic unreadable video');
         const apiFile = join(root, 'api-organization.json');
@@ -202,7 +252,8 @@ const { tmpdir } = require('node:os');
         server = createServer('test-token', undefined, cache, join(root, 'fingerprints'), apiFile);
         assert.deepEqual((await server.inject({method:'GET',url:'/api/organization/vocabulary',headers})).json().context, [], 'Saved drafts do not contribute suggestions before sources are added');
         const rescanned = await scan(server, moved);
-        assert.notEqual(rescanned.id, shot.id);
+        assert.equal(rescanned.id, shot.id, 'Clip identity survives source/session changes');
+        assert.equal(rescanned.id,rescanned.fingerprint.value);
         assert.equal(rescanned.fingerprint.value, shot.fingerprint.value);
         assert.deepEqual(rescanned.organization.context, ['music/rock'], 'Fingerprint restores drafts after source/session changes');
         await server.inject({ method: 'PATCH', url: '/api/organization', headers, payload: { shotIds: [rescanned.id], action: { field: 'identity', operation: 'add', value: 'OWMO Name' } } });

@@ -2,7 +2,7 @@ import { useEffect, useReducer } from "react";
 import type { VideoShot } from "../../shared/shots";
 
 export function clipIdentity(shot: VideoShot): string {
-    return shot.fingerprint ? `${shot.fingerprint.scheme}:${shot.fingerprint.value}` : `shot:${shot.id}`;
+    return shot.id;
 }
 
 export function uniqueShots(shots: VideoShot[]): VideoShot[] {

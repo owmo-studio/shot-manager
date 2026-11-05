@@ -34,6 +34,7 @@ export interface VideoFingerprint {
 }
 
 export interface VideoShot {
+    // Published clips use fingerprint.value; paths describe occurrences, never clip identity.
     id: string;
     sourceId: string;
     filename: string;

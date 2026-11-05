@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { open, readdir, stat } from "node:fs/promises";
 import { extname, join, relative } from "node:path";
 import { promisify } from "node:util";
@@ -117,7 +116,7 @@ export async function discoverShots(source: ImportSource, signal: AbortSignal, f
                 original, mediaInfo, embeddedMetadata,
                 fileIdentity: [info.dev, info.ino, info.birthtimeMs, info.size, info.mtimeMs].join(":"),
                 shot: {
-                    id: createHash("sha256").update(source.id + "\0" + relativePath).digest("hex"),
+                    id: "", // Internal candidate; scanner assigns the fingerprint before publication.
                     sourceId: source.id, filename: original.split("/").pop()!, relativePath, bytes: info.size,
                     timestamp: normalized.timestamp?.value ?? info.mtime.toISOString(),
                     dateSource: normalized.timestamp?.capture ? "camera" : normalized.timestamp ? "embedded" : "file-modified",

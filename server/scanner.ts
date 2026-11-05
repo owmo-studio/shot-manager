@@ -18,6 +18,7 @@ interface ScanJob {
     shots: DiscoveredShot[];
     rootIdentity?: string;
     refreshing: boolean;
+    confirmed: Set<DiscoveredShot>;
 }
 
 export class ShotScanner {
@@ -149,9 +150,10 @@ export class ShotScanner {
             source,
             status: { sourceId: source.id, state: "queued", clipCount: 0, warnings: [] },
             controller: new AbortController(),
-            shots: previous?.shots ?? [],
+            shots: [...(previous?.shots ?? [])],
             rootIdentity: previous?.rootIdentity,
             refreshing: !!previous,
+            confirmed: new Set(),
         };
         for (const result of job.shots) {
             if (result.shot.thumbnailStatus === "pending" || result.shot.thumbnailStatus === "failed") result.shot.thumbnailStatus = undefined;
@@ -181,25 +183,37 @@ export class ShotScanner {
                         }
                     } catch {
                         job.controller.signal.throwIfAborted();
-                        shot.shot.fingerprint = undefined;
-                        shot.shot.warnings.push("Video fingerprint unavailable. Refresh this source to retry.");
+                        job.status.warnings.push(`Could not fingerprint ${shot.shot.filename}. File was skipped; refresh this source to retry.`);
+                        return;
                     }
-                    if (shot.shot.fingerprint) {
-                        try {
-                            shot.shot.organization = await this.organization.scanned(shot.shot.fingerprint, job.controller.signal, { name: shot.shot.filename, path: shot.original });
-                            await this.thumbnailQueue?.touch(shot.original, job.rootIdentity ?? "", shot.shot.metadata, shot.fingerprintMetadata);
-                        } catch {
-                            job.controller.signal.throwIfAborted();
-                            if (!shot.shot.organization) shot.shot.warnings.push("Saved tags unavailable. Refresh this source to retry.");
-                        }
+                    shot.shot.id = shot.shot.fingerprint.value;
+                    try {
+                        shot.shot.organization = await this.organization.scanned(shot.shot.fingerprint, job.controller.signal, { name: shot.shot.filename, path: shot.original });
+                    } catch {
+                        job.controller.signal.throwIfAborted();
+                        job.status.warnings.push(`Could not load attributes for ${shot.shot.filename}. File was skipped; refresh this source to retry.`);
+                        return;
                     }
+                    // Preview failures must not prevent a fully identified clip from appearing.
+                    try { await this.thumbnailQueue?.touch(shot.original, job.rootIdentity ?? "", shot.shot.metadata, shot.fingerprintMetadata); }
+                    catch { job.controller.signal.throwIfAborted(); }
                     const old = previous?.shots.find((result) => result.shot.id === shot.shot.id);
+                    if (old) {
+                        shot.shot.thumbnailRevision = old.shot.thumbnailRevision ?? 0;
+                        if (old.fileIdentity === shot.fileIdentity) shot.shot.hasThumbnail ||= old.shot.hasThumbnail;
+                        else shot.shot.thumbnailRevision += 1;
+                    }
                     if (old?.fileIdentity === shot.fileIdentity) {
                         this.thumbnailQueue?.rememberLegacyLocation(old.fileIdentity, old.original, previous?.rootIdentity ?? "");
                     }
                     job.controller.signal.throwIfAborted();
                     discovered.push(shot);
-                    if (!previous) job.shots.push(shot);
+                    const existingIndex = previous ? job.shots.findIndex(result => result.original === shot.original) : -1;
+                    const renamedIndex = existingIndex < 0 && previous ? job.shots.findIndex(result => result.shot.id === shot.shot.id && !job.confirmed.has(result)) : -1;
+                    const index = existingIndex >= 0 ? existingIndex : renamedIndex;
+                    if (index >= 0) job.shots[index] = shot;
+                    else job.shots.push(shot);
+                    job.confirmed.add(shot);
                     job.status.clipCount = discovered.length;
                     this.publishProgress();
                 }, (message) => {
@@ -216,16 +230,7 @@ export class ShotScanner {
                 job.controller.signal.throwIfAborted();
                 if (previous) {
                     if (job.status.warnings.length) throw new Error("Refresh was incomplete");
-                    const existing = new Map(previous.shots.map((result) => [result.shot.id, result]));
-                    job.shots = discovered.map((result) => {
-                        const old = existing.get(result.shot.id);
-                        if (old) {
-                            result.shot.thumbnailRevision = old.shot.thumbnailRevision ?? 0;
-                            if (old.fileIdentity === result.fileIdentity) result.shot.hasThumbnail ||= old.shot.hasThumbnail;
-                            else result.shot.thumbnailRevision += 1;
-                        }
-                        return result;
-                    });
+                    job.shots = discovered;
                 }
                 job.controller.signal.throwIfAborted();
                 job.status.state = "complete";
@@ -251,7 +256,7 @@ export class ShotScanner {
     async updateOrganization(ids: string[], action: OrganizationAction) {
         const targets = [...new Set(ids)].map(id => this.findShot(id));
         const valid = () => targets.every(({ job, result }) => this.jobs.get(job.source.id) === job &&
-            !this.isReconciling(job) && !!result.shot.fingerprint && !!result.shot.organization);
+            !this.isReconciling(job, result) && job.shots.includes(result) && !!result.shot.fingerprint && !!result.shot.organization);
         if (!valid()) throw Object.assign(new Error("Selected clips are locked or their drafts are unavailable."), { statusCode: 409 });
         const changed = await this.organization.update(targets.map(({ result }) => result.shot.fingerprint!), action, valid);
         for (const job of this.jobs.values()) for (const { shot } of job.shots) {
@@ -289,8 +294,8 @@ export class ShotScanner {
         return { vocabulary: await this.vocabulary(), collection: this.snapshot() };
     }
 
-    private isReconciling(job: ScanJob): boolean {
-        return job.refreshing && this.isBusy(job.source.id);
+    private isReconciling(job: ScanJob, result: DiscoveredShot): boolean {
+        return job.refreshing && this.isBusy(job.source.id) && !job.confirmed.has(result);
     }
 
     remove(id: string, publish = true) {
@@ -308,7 +313,7 @@ export class ShotScanner {
             shots: [...this.jobs.values()].flatMap((job) => job.shots.map((result) => ({
                 ...result.shot,
                 available: job.source.available,
-                editable: !this.isReconciling(job),
+                editable: !this.isReconciling(job, result),
             }))).sort((first, second) =>
                 first.timestamp.slice(0, 10).localeCompare(second.timestamp.slice(0, 10)) ||
                 Date.parse(first.timestamp) - Date.parse(second.timestamp) || first.id.localeCompare(second.id)),
@@ -317,10 +322,11 @@ export class ShotScanner {
     }
 
     private findShot(id: string) {
-        for (const job of this.jobs.values()) {
-            const result = job.shots.find((item) => item.shot.id === id);
-            if (result) return { job, result };
-        }
+        const matches = [...this.jobs.values()].flatMap(job => job.shots
+            .filter(item => item.shot.id === id).map(result => ({ job, result })));
+        matches.sort((a, b) => Number(b.job.source.available) - Number(a.job.source.available) ||
+            Number(this.isReconciling(a.job, a.result)) - Number(this.isReconciling(b.job, b.result)));
+        if (matches[0]) return matches[0];
         throw Object.assign(new Error("Clip is no longer available."), { statusCode: 404 });
     }
 
@@ -334,6 +340,10 @@ export class ShotScanner {
             const path = await realpath(asset);
             const withinRoot = relative(job.source.path, path);
             if (withinRoot.startsWith("..") || isAbsolute(withinRoot)) throw new Error("Asset outside source");
+            const info = await stat(path);
+            if ([info.dev, info.ino, info.birthtimeMs, info.size, info.mtimeMs].join(":") !== result.fileIdentity) {
+                throw new Error("Video changed; rescan before accessing it.");
+            }
             return { path, job, result };
         } catch {
             throw Object.assign(new Error("Source or file is no longer accessible."), { statusCode: 410 });
@@ -345,7 +355,9 @@ export class ShotScanner {
         let file: FileHandle | undefined;
         try {
             file = await open(asset.path, "r");
-            if (!(await file.stat()).isFile() || this.jobs.get(asset.job.source.id) !== asset.job || !asset.job.source.available) {
+            const info = await file.stat();
+            if (!info.isFile() || [info.dev, info.ino, info.birthtimeMs, info.size, info.mtimeMs].join(":") !== asset.result.fileIdentity ||
+                this.jobs.get(asset.job.source.id) !== asset.job || !asset.job.source.available) {
                 await file.close();
                 throw new Error("Asset changed");
             }
@@ -430,12 +442,12 @@ export class ShotScanner {
         this.updatingThumbnails.add(id);
         try {
             const asset = await this.videoPath(id);
-            if (this.isReconciling(asset.job)) throw Object.assign(new Error("Wait for rescanning to finish."), { statusCode: 409 });
+            if (this.isReconciling(asset.job, asset.result)) throw Object.assign(new Error("Wait for rescanning to finish."), { statusCode: 409 });
             if (!this.thumbnailQueue) throw new Error("Thumbnail cache is unavailable.");
             const valid = async () => {
                 try {
                     const current = await this.videoPath(id);
-                    return current.job === asset.job && current.path === asset.path && !this.isReconciling(asset.job);
+                    return current.job === asset.job && current.path === asset.path && !this.isReconciling(asset.job, asset.result);
                 } catch { return false; }
             };
             await this.thumbnailQueue.setCustomImage(asset.path, asset.job.rootIdentity ?? "", dataUrl, valid, asset.result.shot.metadata, asset.result.fingerprintMetadata);
