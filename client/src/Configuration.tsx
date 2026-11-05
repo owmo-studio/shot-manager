@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errors';
 import { useEffect, useRef, useState } from 'react';
 import type { AppConfiguration } from '../../shared/desktop';
 import { emptyVocabulary, OPTION_FIELDS } from '../../shared/organization';
@@ -62,7 +63,7 @@ export function Configuration({ onLocalDataReset }: { onLocalDataReset: (collect
         try {
             const next = await window.desktop.chooseLibrary();
             if (next) setConfiguration(next);
-        } catch { setLibraryError('Could not save Library location.'); }
+        } catch (error) { setLibraryError(errorMessage(error, 'Could not save Library location.')); }
         finally { mutation.current = false; setBusy(null); }
     }
 
@@ -90,9 +91,9 @@ export function Configuration({ onLocalDataReset }: { onLocalDataReset: (collect
             window.dispatchEvent(new Event('organization-options-changed'));
             setOpen(false);
             setRemovalPlan(null);
-        } catch {
+        } catch (error) {
             setRemovalPlan(null);
-            setOptionsError('Could not save changes. Wait for any scans to finish, then Save again to review.');
+            setOptionsError(errorMessage(error, 'Could not save changes. Wait for any scans to finish, then Save again to review.'));
         } finally {
             // Keep configuration controls locked while the confirmation is open.
             if (!reviewing) { mutation.current = false; setBusy(null); }

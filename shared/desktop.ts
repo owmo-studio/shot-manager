@@ -1,6 +1,7 @@
-import type { ShotCollection, ShotDetails } from './shots'
+import type { ShotChange, ShotCollection, ShotDetails } from './shots'
 import type { ViewingLut } from './viewing'
 import type { OptionRemovalPlan, OrganizationAction, TagVocabulary } from './organization'
+import type { IPCResult } from './errors'
 
 export interface BackendHealth {
   status: 'ok'
@@ -44,6 +45,9 @@ export interface LocalDataSummary extends CacheSummary {
 }
 
 export interface DesktopAPI {
+  getSaveStatus: () => Promise<SaveStatus>
+  onSaveStatusChanged: (listener: (status: SaveStatus) => void) => () => void
+  retryOrganizationSaves: () => Promise<void>
   previewConfigurationOptions: (removals: TagVocabulary) => Promise<OptionRemovalPlan>
   saveConfigurationOptions: (removals: TagVocabulary, reviewToken: string) => Promise<{ vocabulary: TagVocabulary; collection: ShotCollection }>
   flushNotes: () => Promise<void>
@@ -63,9 +67,15 @@ export interface DesktopAPI {
   refreshSource: (id: string) => Promise<{ source: ImportSource; collection: ShotCollection }>
   relinkSource: (id: string) => Promise<{ source: ImportSource; collection: ShotCollection } | null>
   getShots: () => Promise<ShotCollection>
-  onShotsChanged: (listener: (collection: ShotCollection) => void) => () => void
+  onShotsChanged: (listener: (change: ShotChange) => void) => () => void
   getShotThumbnail: (id: string) => Promise<string | null>
   setShotThumbnail: (id: string, dataUrl: string) => Promise<void>
   getShotDetails: (id: string) => Promise<ShotDetails>
   getShotLut: (id: string) => Promise<ViewingLut | null>
 }
+
+export interface SaveStatus { pending: number; failed: number; error?: string; closing?: boolean }
+
+// Error data crosses contextBridge as plain values; renderer constructs its own Error.
+export type DesktopBridge = { [K in keyof DesktopAPI]: DesktopAPI[K] extends (...args: infer A) => Promise<infer R>
+  ? (...args: A) => Promise<IPCResult<R>> : DesktopAPI[K] }

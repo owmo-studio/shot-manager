@@ -2,24 +2,29 @@
 const fs = require('node:fs');
 const { join } = require('node:path');
 if (!process.versions.electron) {
-    const root = fs.mkdtempSync(join(require('node:os').tmpdir(), 'shot-quit-check-'));
-    try {
-        const env = { ...process.env, SHOT_MANAGER_QUIT_TEST_ROOT: root };
-        delete env.ELECTRON_RUN_AS_NODE;
-        const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, stdio: 'inherit', timeout: 15000 });
-        if (result.error) console.error(result.error);
-        process.exitCode = result.status ?? 1;
-    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+    for (const mode of ['normal', 'failed-save', 'discard-failed-save']) {
+        const root = fs.mkdtempSync(join(require('node:os').tmpdir(), 'shot-quit-check-'));
+        try {
+            const env = { ...process.env, SHOT_MANAGER_QUIT_TEST_ROOT: root, SHOT_MANAGER_QUIT_TEST_MODE: mode };
+            delete env.ELECTRON_RUN_AS_NODE;
+            const result = require('node:child_process').spawnSync(require('electron'), [__filename], { env, stdio: 'inherit', timeout: 20000 });
+            if (result.error) console.error(result.error);
+            if (result.status !== 0) { process.exitCode = result.status ?? 1; break; }
+        } finally { fs.rmSync(root, { recursive: true, force: true }); }
+    }
 } else {
     const assert = require('node:assert/strict');
     const electron = require('electron');
     const { app, Menu } = electron;
     const root = process.env.SHOT_MANAGER_QUIT_TEST_ROOT;
     if (!root) throw new Error('Missing isolated test directory');
+    const failureMode = process.env.SHOT_MANAGER_QUIT_TEST_MODE !== 'normal';
+    const discardMode = process.env.SHOT_MANAGER_QUIT_TEST_MODE === 'discard-failed-save';
+    let allowWrites = !failureMode, prompts = 0;
     const profile = join(root, 'profile'); fs.mkdirSync(profile);
     app.setPath('userData', profile);
     let window, backend, backendURL, token, accepted = 0, noteRequests = 0, requested = false, observedQuit = false;
-    const timer = setTimeout(() => { console.error('Command+Q did not finish gracefully'); backend?.kill(); app.exit(1); }, 8000);
+    const timer = setTimeout(() => { console.error('Command+Q did not finish gracefully'); backend?.kill(); app.exit(1); }, 15000);
     let activeReads = 0, shutdownRequested = false, lateFetches = 0, failedFetches = 0;
     let vocabularyHandler, vocabularyArgs;
     const originalFetch = global.fetch;
@@ -29,7 +34,10 @@ if (!process.versions.electron) {
         if (vocabulary) activeReads++;
         try {
         if (vocabulary) await new Promise(resolve => setTimeout(resolve, 150));
-        if (String(url).endsWith('/api/organization') && options?.method === 'PATCH') { noteRequests++; await new Promise(resolve => setTimeout(resolve, 100)); }
+        if (String(url).endsWith('/api/organization') && options?.method === 'PATCH') {
+            noteRequests++; await new Promise(resolve => setTimeout(resolve, 100));
+            if (requested && !allowWrites) return new Response(JSON.stringify({message:'Synthetic disk failure'}), {status:503});
+        }
         return await originalFetch(url, options);
         } catch(error) { failedFetches++; throw error; }
         finally { if(vocabulary) activeReads--; }
@@ -39,6 +47,11 @@ if (!process.versions.electron) {
     const handle = electron.ipcMain.handle.bind(electron.ipcMain);
     const wrapped = {
         ...electron,
+        dialog: { ...electron.dialog, showMessageBox: async () => {
+            prompts++;
+            assert.ok(failureMode && !window.isDestroyed(), 'Failed saves keep the renderer available');
+            return {response:discardMode ? 2 : 0};
+        } },
         BrowserWindow: class extends electron.BrowserWindow {
             constructor(options) { super({ ...options, show: false }); window = this; }
         },
@@ -79,7 +92,8 @@ if (!process.versions.electron) {
             assert.equal(failedFetches,0,'Normal quit causes no refused backend requests');
             const saved = JSON.parse(fs.readFileSync(join(profile, 'organization.json'), 'utf8'));
             assert.equal(Object.values(saved.drafts)[0].data.notes, 'last accepted edit');
-            assert.equal(noteRequests, 2, 'Each typing burst writes once, including a pending burst flushed by Command+Q');
+            assert.equal(noteRequests, failureMode && !discardMode ? 3 : 2, 'Each typing burst writes once, including a pending burst flushed by Command+Q');
+            if (failureMode) assert.equal(prompts, 1, 'Failed quit requires an explicit choice');
             clearTimeout(timer);
             console.log('PASS: Command+Q stops renderer polling, drains accepted reads and pending saves, rejects late work, and quits real Electron/backend cleanly.');
         } catch (error) { console.error(error); app.exit(1); }
@@ -90,6 +104,11 @@ if (!process.versions.electron) {
             const wait = async condition => { for (let i = 0; i < 150; i++) { if (await condition()) return; await new Promise(resolve => setTimeout(resolve, 20)); } throw new Error('Quit fixture did not settle'); };
             await wait(() => backendURL && window && !window.webContents.isLoading());
             assert.equal(Menu.getApplicationMenu().getMenuItemById('quit-shot-manager').accelerator, 'CommandOrControl+Q');
+            const ipcError = await window.webContents.executeJavaScript(`window.desktop.refreshSource('missing-source').then(()=>null,error=>({message:error.message,code:error.code,status:error.status,outcome:error.outcome}))`);
+            assert.equal(ipcError.status,404,'HTTP status survives the real preload boundary');
+            assert.equal(ipcError.outcome,'failed');
+            assert.ok(ipcError.code && ipcError.message.includes('Source not found'));
+
             const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
             const source = join(root, 'dummy-source'); fs.mkdirSync(source); fs.writeFileSync(join(source, 'clip.mp4'), 'synthetic test video');
             await originalFetch(`${backendURL}/api/sources`, { method: 'POST', headers, body: JSON.stringify({ path: source }) });
@@ -112,6 +131,17 @@ if (!process.versions.electron) {
             requested = true;
             window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Q', modifiers: ['meta'] });
             if (!window.isDestroyed()) window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Q', modifiers: ['meta'] });
+            if (failureMode && !discardMode) {
+                await wait(() => prompts === 1);
+                await wait(async () => (await window.webContents.executeJavaScript('window.desktop.getSaveStatus()'))?.failed === 1);
+                await window.loadFile(join(__dirname, '../out/renderer/index.html'));
+                assert.equal((await window.webContents.executeJavaScript('window.desktop.getSaveStatus()')).failed, 1, 'Unsaved edits survive renderer reload');
+                await wait(() => window.webContents.executeJavaScript(`!!document.querySelector('[aria-label="Retry unsaved changes"]')`));
+                allowWrites = true;
+                await window.webContents.executeJavaScript('window.desktop.retryOrganizationSaves()');
+                assert.equal((await window.webContents.executeJavaScript('window.desktop.getSaveStatus()')).failed, 0);
+                app.quit();
+            }
         } catch (error) { console.error(error); backend?.kill(); app.exit(1); }
     });
 }

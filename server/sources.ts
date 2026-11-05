@@ -9,10 +9,14 @@ import { sonyMetadata } from "./videoMetadata";
 import type { TagVocabulary } from "../shared/organization";
 
 
+function rootFingerprint(info: { dev: number; ino: number; birthtimeMs: number }) {
+    return createHash('sha256').update(`${info.dev}:${info.ino}:${info.birthtimeMs}`).digest('hex');
+}
+
 export async function inspectSource(path: string) {
     const info = await stat(path);
     if (!info.isDirectory()) throw new Error("Choose a directory");
-    const fingerprint = createHash("sha256").update(`${info.dev}:${info.ino}:${info.birthtimeMs}`);
+    const fingerprint = rootFingerprint(info);
     const layout = await findSonyLayout(path);
     const sony = layout !== null;
     const models = new Set<string>();
@@ -31,8 +35,6 @@ export async function inspectSource(path: string) {
             try {
                 const metadataPath = join(clipPath, name);
                 const embedded = await readEmbeddedContainer(metadataPath);
-                fingerprint.update(name);
-                for (const xml of embedded.xml) fingerprint.update(xml);
                 const sony = sonyMetadata(embedded);
                 if (sony?.model) models.add(sony.model);
                 if (embedded.warnings.length) warning = "Some camera metadata could not be read.";
@@ -44,7 +46,7 @@ export async function inspectSource(path: string) {
     return {
         type: sony ? ("sony" as const) : ("folder" as const),
         cameraModels: [...models].sort(),
-        fingerprint: fingerprint.digest("hex"),
+        fingerprint,
         warning,
     };
 }
@@ -55,7 +57,10 @@ export class SourceRegistry {
     constructor(thumbnailCacheDirectory?: string, fingerprintDirectory?: string, organizationFile?: string) {
         this.scanner = new ShotScanner(thumbnailCacheDirectory, fingerprintDirectory, organizationFile);
     }
-    private sources = new Map<string, { source: ImportSource; fingerprint: string }>();
+    private sources = new Map<string, { source: ImportSource; fingerprint: string; inspectionWarning?: string }>();
+    private monitor?: ReturnType<typeof setTimeout>;
+    private availabilityCheck?: Promise<void>;
+    private closed = false;
     private pending: Promise<unknown> = Promise.resolve();
 
     private serialize<Result>(operation: () => Promise<Result>): Promise<Result> {
@@ -78,41 +83,65 @@ export class SourceRegistry {
                 available: true,
                 warning: inspection.warning,
             };
-            this.sources.set(path, { source, fingerprint: inspection.fingerprint });
+            this.sources.set(path, { source, fingerprint: inspection.fingerprint, inspectionWarning: inspection.warning });
             this.scanner.sync([...this.sources.values()].map((entry) => entry.source));
             return source;
         });
     }
 
-    list(): Promise<ImportSource[]> {
-        return this.serialize(async () => {
-            for (const [path, entry] of this.sources) {
-                try {
-                    const inspection = await inspectSource(path);
-                    entry.source = {
-                        ...entry.source,
-                        id: entry.fingerprint === inspection.fingerprint ? entry.source.id : randomUUID(),
-                        type: inspection.type,
-                        cameraModels: inspection.cameraModels,
-                        available: true,
-                        warning: inspection.warning,
-                    };
-                    entry.fingerprint = inspection.fingerprint;
-                } catch (error) {
-                    const missing = ["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "");
-                    entry.source = {
-                        ...entry.source,
-                        available: false,
-                        warning: missing
-                            ? "Source not found. It may have been disconnected, moved, or renamed. Please resolve to continue."
-                            : "Source is inaccessible. Check folder permissions.",
-                    };
-                }
+    // Listing never touches source media or waits behind source mutations.
+    list(): ImportSource[] { return structuredClone([...this.sources.values()].map(entry => entry.source)); }
+
+    startMonitoring(intervalMs = 5000) {
+        if (this.monitor || this.closed) return;
+        const tick = async () => {
+            try { await this.checkAvailability(); }
+            catch (error) { console.warn('Source availability check failed.', error); }
+            if (!this.closed) this.monitor = setTimeout(tick, intervalMs);
+            this.monitor?.unref();
+        };
+        this.monitor = setTimeout(tick, intervalMs);
+        this.monitor.unref();
+    }
+
+    checkAvailability(): Promise<void> {
+        if (this.closed) return Promise.resolve();
+        if (this.availabilityCheck) return this.availabilityCheck;
+        this.availabilityCheck = Promise.all([...this.sources].map(async ([path, entry]) => {
+            const expectedSource = entry.source;
+            let inspection: Awaited<ReturnType<typeof inspectSource>> | undefined;
+            let warning: string | undefined;
+            try {
+                const info = await stat(path);
+                if (!info.isDirectory()) throw Object.assign(new Error('Source is not a folder'), {code:'ENOTDIR'});
+                // Re-inspect camera presentation only if the actual source root changed.
+                if (rootFingerprint(info) !== entry.fingerprint) inspection = await inspectSource(path);
+            } catch (error) {
+                warning = ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')
+                    ? 'Source not found. It may have been disconnected, moved, or renamed. Please resolve to continue.'
+                    : 'Source is inaccessible. Check folder permissions.';
             }
-            const sources = [...this.sources.values()].map((entry) => entry.source);
-            this.scanner.sync(sources);
-            return sources;
-        });
+            await this.serialize(async () => {
+                // A slow check must not resurrect a removed/re-linked source or undo a reset.
+                if (this.closed || this.sources.get(path) !== entry || entry.source !== expectedSource) return;
+                const available = !warning;
+                if (!inspection && entry.source.available === available && (available || entry.source.warning === warning)) return;
+                if (inspection) {
+                    entry.fingerprint = inspection.fingerprint;
+                    entry.inspectionWarning = inspection.warning;
+                }
+                entry.source = { ...entry.source, ...(inspection ? {id:randomUUID(),type:inspection.type,cameraModels:inspection.cameraModels} : {}),
+                    available, warning: warning ?? entry.inspectionWarning };
+                this.scanner.sync([...this.sources.values()].map(item => item.source));
+            });
+        })).then(() => undefined).finally(() => { this.availabilityCheck = undefined; });
+        return this.availabilityCheck;
+    }
+
+    async close() {
+        this.closed = true;
+        clearTimeout(this.monitor);
+        await this.scanner.close();
     }
 
     refresh(id: string) {
@@ -143,6 +172,7 @@ export class SourceRegistry {
                 warning: inspection.warning,
             };
             entry.fingerprint = inspection.fingerprint;
+            entry.inspectionWarning = inspection.warning;
             if (entry.source.id === id) this.scanner.refresh(entry.source);
             this.scanner.sync([...this.sources.values()].map((item) => item.source));
             return { source: entry.source, collection: this.scanner.snapshot() };
@@ -170,7 +200,7 @@ export class SourceRegistry {
             };
             // Replace the map entry in place to preserve the user's source ordering.
             this.sources = new Map([...this.sources].map(([key, entry]) => entry === previous
-                ? [path, { source, fingerprint: inspection.fingerprint }] : [key, entry]));
+                ? [path, { source, fingerprint: inspection.fingerprint, inspectionWarning: inspection.warning }] : [key, entry]));
             if (source.id === id) this.scanner.refresh(source);
             this.scanner.sync([...this.sources.values()].map((item) => item.source));
             return { source, collection: this.scanner.snapshot() };

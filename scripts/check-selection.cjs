@@ -53,14 +53,15 @@ if (!process.versions.electron) {
                     identity:removals.identity.includes(shot.organization.identity)?null:shot.organization.identity,
                     projects:shot.organization.projects.filter(value=>!removals.projects.includes(value)),
                     context:shot.organization.context.filter(value=>!removals.context.includes(value))}}))};
-                window.webContents.send('shots:changed',collection);
+                window.webContents.send('shots:changed',{revision:collection.revision,vocabularyRevision:collection.revision});
                 for (const field of ['identity', 'projects', 'context']) vocabulary[field] = vocabulary[field].filter(value => !removals[field].includes(value));
                 return { vocabulary, collection };
             });
             const currentVocabulary = () => ({...vocabulary,context:[...new Set(collection.shots.flatMap(shot=>shot.organization.context))].sort()});
             ipcMain.handle('fixture:vocabulary', () => currentVocabulary());
-            ipcMain.handle('fixture:organization', (_, ids, action) => {
-                if (failOrganizationSave) { failOrganizationSave = false; throw new Error('Synthetic save failure'); }
+            let failedEdit;
+            const organize = (_, ids, action) => {
+                if (failOrganizationSave) { failOrganizationSave = false; failedEdit = {ids, action}; throw new Error('Synthetic save failure'); }
                 if (['identity', 'projects'].includes(action.field)) action = { ...action, value: vocabulary[action.field].find(value=>value.toLowerCase()===action.value.toLowerCase()) ?? action.value };
                 collection = { ...collection, revision: collection.revision + 1, shots: collection.shots.map(shot => {
                     if (!ids.includes(shot.id)) return shot;
@@ -75,6 +76,10 @@ if (!process.versions.electron) {
                 }) };
                 if (action.field !== 'notes' && action.operation === 'add' && !vocabulary[action.field].includes(action.value)) vocabulary[action.field].push(action.value);
                 return { collection, vocabulary: currentVocabulary() };
+            };
+            ipcMain.handle('fixture:organization', organize);
+            ipcMain.handle('fixture:retry-saves', () => {
+                if (failedEdit) { const {ids, action} = failedEdit; failedEdit = undefined; return organize(null, ids, action); }
             });
             let cancelRelink = true;
             let relinkCalls = 0;
@@ -109,7 +114,7 @@ if (!process.versions.electron) {
             ipcMain.handle('fixture:clear-cache', () => (cache = { bytes: 0, files: 0 }));
             ipcMain.handle('fixture:remove', (_, id) => { sources = sources.filter((source) => source.id !== id); collection = { ...collection, revision: collection.revision + 1, shots: collection.shots.filter((shot) => shot.sourceId !== id) }; });
             await writeFile(join(root, 'preload.cjs'), `const {contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('desktop',{
-                flushNotes:async()=>{},
+                flushNotes:async()=>{},getSaveStatus:async()=>({pending:0,failed:0}),onSaveStatusChanged:()=>()=>{},retryOrganizationSaves:()=>ipcRenderer.invoke('fixture:retry-saves'),
                 getConfiguration:()=>ipcRenderer.invoke('fixture:configuration'),chooseLibrary:()=>ipcRenderer.invoke('fixture:choose-library'),
                 getCacheSummary:()=>ipcRenderer.invoke('fixture:cache'),clearCache:()=>ipcRenderer.invoke('fixture:clear-cache'),
                 getLocalDataSummary:()=>ipcRenderer.invoke('fixture:local-summary'),clearLocalData:()=>ipcRenderer.invoke('fixture:local-clear'),
@@ -149,7 +154,7 @@ if (!process.versions.electron) {
                 await js(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
                 for (let i = 0; i < previous.length; i++) await inspect(previous[i], i ? {metaKey:true} : {});
             }
-            const push = async (shots) => { collection = { ...collection, revision: collection.revision + 1, shots }; window.webContents.send('shots:changed', collection); await new Promise((resolve) => setTimeout(resolve, 30)); };
+            const push = async (shots) => { collection = { ...collection, revision: collection.revision + 1, shots }; window.webContents.send('shots:changed', {revision:collection.revision,vocabularyRevision:collection.revision}); await new Promise((resolve) => setTimeout(resolve, 280)); };
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
             const originals=structuredClone(collection.shots);
             const duplicate={...structuredClone(originals[0]),id:originals[0].id,sourceId:'B',filename:'Copied Clip.mp4'};

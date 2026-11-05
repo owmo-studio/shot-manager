@@ -118,6 +118,74 @@ const { tmpdir } = require('node:os');
             assert.equal(await contentQueue.customImage(copiedLegacy, 'third-root'), customUrl, 'Promoted captures become location independent');
         } finally { await contentQueue.close(); }
 
+        const previewSource = join(root, 'queued-preview-source');
+        const previewCache = join(root, 'queued-preview-cache');
+        await fs.mkdir(previewSource);
+        const previewOriginals = new Map();
+        for (const [name, color] of [['red.mp4','red'],['blue.mp4','blue'],['green.mp4','green']]) {
+            const path = join(previewSource,name);
+            require('node:child_process').execFileSync('ffmpeg',['-nostdin','-hide_banner','-loglevel','error','-f','lavfi','-i',`color=c=${color}:s=64x36:d=0.1`,'-c:v','libx264','-pix_fmt','yuv420p',path]);
+            previewOriginals.set(path,await fs.readFile(path));
+        }
+        const damagedPath = join(previewSource,'damaged.mp4');
+        await fs.writeFile(damagedPath,'synthetic unreadable video');
+        previewOriginals.set(damagedPath,await fs.readFile(damagedPath));
+        const previewRegistry = new SourceRegistry(previewCache,join(root,'queued-preview-fingerprints'),join(root,'queued-preview-drafts.json'));
+        const previewWorker = previewRegistry.scanner.thumbnailQueue;
+        const extractPreview = previewWorker.extract.bind(previewWorker);
+        const queued = [];
+        const enqueuePreview = previewWorker.enqueue.bind(previewWorker);
+        previewWorker.enqueue = (...args) => { queued.push(args[0][0]); return enqueuePreview(...args); };
+        const waitPreview = async predicate => {
+            for (let i=0;i<500;i++) { if (predicate()) return; await new Promise(resolve=>setTimeout(resolve,20)); }
+            throw new Error('Background preview fixture did not settle');
+        };
+        let releasePreview, previewEntered;
+        const previewGate = new Promise(resolve=>{releasePreview=resolve;});
+        const previewStarted = new Promise(resolve=>{previewEntered=resolve;});
+        previewWorker.extract = async (...args) => { previewEntered(); await previewGate; return extractPreview(...args); };
+        try {
+            const source = await previewRegistry.add(previewSource);
+            await previewStarted;
+            await waitPreview(()=>!previewRegistry.scanner.isBusy(source.id));
+            const pending = previewRegistry.scanner.snapshot().shots;
+            assert.equal(pending.length,4);
+            assert.equal(queued.length,4,'Discovery queues every clip without a renderer or thumbnail request');
+            assert.ok(pending.every(shot=>shot.thumbnailStatus==='pending'),'Scanning completes while the serial preview worker is blocked');
+            assert.equal(await previewRegistry.scanner.thumbnail(pending[0].id),null);
+            assert.equal(queued.length,4,'Reading a missing preview does not enqueue duplicate generation');
+            const queuedRed = pending.find(shot=>shot.filename==='red.mp4');
+            await previewRegistry.scanner.setThumbnail(queuedRed.id,customUrl);
+            assert.equal(await previewRegistry.scanner.thumbnail(queuedRed.id),customUrl,'A custom capture is readable while other thumbnails remain queued');
+            releasePreview();
+            await waitPreview(()=>previewRegistry.scanner.snapshot().shots.every(shot=>['ready','failed'].includes(shot.thumbnailStatus)));
+            const completed = previewRegistry.scanner.snapshot().shots;
+            assert.equal(completed.filter(shot=>shot.thumbnailStatus==='ready').length,3,'All off-screen synthetic videos finish generating');
+            assert.equal(completed.find(shot=>shot.filename==='damaged.mp4').thumbnailStatus,'failed','A damaged preview does not block the queue or clip publication');
+            for (const shot of completed.filter(shot=>shot.thumbnailStatus==='ready')) assert.match(await previewRegistry.scanner.thumbnail(shot.id),/^data:image\/jpeg;base64,/);
+            assert.equal(queued.length,4,'Ready images are read directly from disk without joining the generation queue');
+            const red = completed.find(shot=>shot.filename==='red.mp4');
+            assert.equal(await previewRegistry.scanner.thumbnail(red.id),customUrl,'A queued generation task cannot overwrite a newer custom capture');
+            await previewRegistry.refresh(source.id);
+            await waitPreview(()=>!previewRegistry.scanner.isBusy(source.id) && previewRegistry.scanner.snapshot().shots.every(shot=>['ready','failed'].includes(shot.thumbnailStatus)));
+            assert.equal(await previewRegistry.scanner.thumbnail(red.id),customUrl,'Background generation preserves custom captures on rescan');
+
+            let cancellationEntered, cancelled=false;
+            const cancellationStarted = new Promise(resolve=>{cancellationEntered=resolve;});
+            previewWorker.extract = async (_input,_identity,signal) => {
+                cancellationEntered();
+                await new Promise(resolve=>signal.addEventListener('abort',()=>{cancelled=true;resolve();},{once:true}));
+                signal.throwIfAborted();
+            };
+            await previewRegistry.refresh(source.id);
+            await cancellationStarted;
+            await previewRegistry.clearLocalData();
+            assert.equal(cancelled,true,'Reset cancels background extraction');
+            assert.equal(previewRegistry.scanner.snapshot().shots.length,0);
+            assert.deepEqual(await previewRegistry.scanner.cacheSummary(),{bytes:0,files:0},'Cancelled tasks cannot repopulate the reset cache');
+            for (const [path,bytes] of previewOriginals) assert.deepEqual(await fs.readFile(path),bytes,'Automatic previews never alter original media');
+        } finally { releasePreview(); await previewRegistry.close(); }
+
         const recordDirectory = join(root, 'fingerprints');
         const fingerprintStore = new VideoFingerprintStore(recordDirectory);
         const sampledVideo = join(root, 'sampled-video.mp4');
@@ -201,7 +269,7 @@ const { tmpdir } = require('node:os');
             assert.ok(snapshot.scans[0].warnings.some(warning => warning.includes('saved fingerprint') && warning.includes('preserved')), 'Scan issues report the preserved fingerprint failure');
             assert.equal(await fs.readFile(corruptRecord, 'utf8'), '{broken');
             assert.equal(await fs.readFile(corruptVideo, 'utf8'), 'synthetic invalid video');
-        } finally { await corruptRegistry.scanner.close(); }
+        } finally { await corruptRegistry.close(); }
 
         // Metadata inspection can fail or recover without changing sampled clip identity.
         const probeTools = join(root, 'probe-tools');
@@ -232,7 +300,7 @@ const { tmpdir } = require('node:os');
             await probeRegistry.scanner.updateOrganization([unprobed.id], { field: 'notes', operation: 'set', value: 'Preserve this draft' });
             await probeRegistry.scanner.updateOrganization([unprobed.id], { field: 'skip', operation: 'set', value: 'true' });
             const savedOrganization = probeRegistry.scanner.snapshot().shots[0].organization;
-            await probeRegistry.scanner.close();
+            await probeRegistry.close();
             await fs.rm(probeRecords, { recursive: true }); // Require a fresh byte read in the next session.
             const probeInfo = { streams: [{ codec_type: 'video', codec_name: 'h264', width: 1920, height: 1080,
                 r_frame_rate: '25/1', avg_frame_rate: '25/1', nb_frames: '250' }],
@@ -247,7 +315,7 @@ const { tmpdir } = require('node:os');
             assert.equal(probed.id, unprobed.id, 'Recovering metadata does not change clip identity');
             assert.deepEqual(probed.organization, savedOrganization, 'Drafts and Skip restore across metadata availability changes and restart');
         } finally {
-            await probeRegistry?.scanner.close();
+            await probeRegistry?.close();
             if (originalPath === undefined) delete process.env.PATH;
             else process.env.PATH = originalPath;
         }
@@ -294,7 +362,12 @@ const { tmpdir } = require('node:os');
             assert.equal(clipFingerprint.scheme, 'sampled-sha256-v2', 'Every discovered video retains its fingerprint');
             await assert.rejects(registry.relink(first.id, moved), /unavailable/);
             await fs.rename(original, moved);
-            assert.equal((await registry.list())[0].available, false);
+            assert.equal(registry.list()[0].available, true, 'Listing returns cached state without checking the moved source');
+            const detached = registry.list(); detached[0].name = 'Renderer mutation';
+            assert.notEqual(registry.list()[0].name, 'Renderer mutation', 'Listings do not expose mutable backend records');
+            registry.startMonitoring(10);
+            for (let i = 0; i < 250 && registry.list()[0].available; i++) await new Promise(resolve => setTimeout(resolve, 10));
+            assert.equal(registry.list()[0].available, false, 'Backend monitoring detects disconnection independently of polling');
             assert.equal(registry.scanner.snapshot().shots[0].editable, true, 'Offline clips remain editable');
             assert.equal((await registry.scanner.details(clipId)).file.filename, 'clip.mp4', 'Offline inspection uses cached metadata');
             await assert.rejects(registry.scanner.openVideo(clipId), /unavailable/);
@@ -312,6 +385,15 @@ const { tmpdir } = require('node:os');
             assert.equal(registry.scanner.snapshot().shots[0].editable, true);
             assert.equal((await registry.scanner.details(clipId)).file.path, join(moved, 'clip.mp4'));
             await registry.scanner.updateOrganization([clipId],{field:'notes',operation:'set',value:'Original clip note'});
+            const notices = [];
+            registry.scanner.onChange = change => notices.push(change);
+            await registry.scanner.updateOrganization([clipId],{field:'notes',operation:'set',value:'Original clip note'});
+            await registry.scanner.updateOrganization([clipId],{field:'skip',operation:'set',value:'false'});
+            assert.equal(notices[0].vocabularyRevision,notices[1].vocabularyRevision,'Notes and Skip do not invalidate vocabulary');
+            await registry.scanner.updateOrganization([clipId],{field:'context',operation:'add',value:'notice-check'});
+            assert.ok(notices.at(-1).vocabularyRevision > notices[0].vocabularyRevision,'Context suggestions have an independent revision');
+            assert.deepEqual(Object.keys(notices[0]).sort(),['revision','vocabularyRevision'],'Change events contain no clip snapshots');
+            registry.scanner.onChange = undefined;
             await fs.rename(join(moved,'clip.mp4'),join(moved,'renamed.mp4'));
             await registry.refresh(first.id); await settle(first.id);
             assert.equal(registry.scanner.snapshot().shots[0].id,clipId,'Renaming preserves clip identity');
@@ -330,12 +412,12 @@ const { tmpdir } = require('node:os');
             assert.equal(registry.scanner.snapshot().shots[0].id,clipId);
             assert.equal(registry.scanner.snapshot().shots[0].organization.notes,'Original clip note','Restoring original content restores its attributes');
             await fs.rename(moved, join(root, 'moved-again'));
-            await registry.list();
+            await registry.checkAvailability();
             const changed = await registry.relink(first.id, replacement);
             assert.notEqual(changed.source.id, first.id, 'Different directory must not inherit old identity');
             await settle(changed.source.id);
             assert.equal(registry.scanner.snapshot().shots.length, 0);
-        } finally { await registry.scanner.close(); }
+        } finally { await registry.close(); }
         console.log('Configuration, cache, and source relink/rescan identity and recovery checks passed.');
     } finally {
         await server?.close();

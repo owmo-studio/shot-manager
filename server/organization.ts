@@ -14,6 +14,10 @@ interface OrganizationState { version: 1 | 2 | 3 | 4 | 5; vocabulary: TagVocabul
 export class OrganizationStore {
     private state?: OrganizationState;
     private pending: Promise<unknown> = Promise.resolve();
+    private scanTouches = new Map<string, { scannedAt: number; clip?: { name: string; path: string } }>();
+    private vocabularyKey = '';
+    private optionsRevision = 0;
+    get vocabularyRevision() { return this.optionsRevision; }
     constructor(private path?: string, private now = () => Date.now()) {}
 
     private serialize<T>(operation: () => Promise<T>): Promise<T> {
@@ -58,7 +62,25 @@ export class OrganizationStore {
             }
         }
         this.state = state;
+        this.vocabularyKey = JSON.stringify([state.vocabulary.identity, state.vocabulary.projects]);
         return state;
+    }
+
+    private async nextState() {
+        const next = structuredClone(await this.load());
+        for (const [key, touch] of this.scanTouches) {
+            const record = next.drafts[key] ?? { data: emptyOrganization(), lastScannedAt: 0, lastEditedAt: 0 };
+            record.lastScannedAt = touch.scannedAt;
+            if (touch.clip) record.clip = touch.clip;
+            next.drafts[key] = record;
+        }
+        return next;
+    }
+
+    flushScans() {
+        return this.serialize(async () => {
+            if (this.scanTouches.size) await this.save(await this.nextState());
+        });
     }
 
     private async save(next: OrganizationState, validate: () => boolean = () => true) {
@@ -74,6 +96,9 @@ export class OrganizationStore {
             } finally { await unlink(temporary).catch(() => undefined); }
         }
         this.state = next;
+        this.scanTouches.clear();
+        const key = JSON.stringify([next.vocabulary.identity, next.vocabulary.projects]);
+        if (key !== this.vocabularyKey) { this.vocabularyKey = key; this.optionsRevision++; }
     }
 
     private options(state: OrganizationState): TagVocabulary {
@@ -82,7 +107,7 @@ export class OrganizationStore {
 
     vocabulary() { return this.serialize(async () => this.options(await this.load())); }
 
-    recordCount() { return this.serialize(async () => Object.keys((await this.load()).drafts).length); }
+    recordCount() { return this.serialize(async () => new Set([...Object.keys((await this.load()).drafts), ...this.scanTouches.keys()]).size); }
 
     reset() {
         return this.serialize(async () => {
@@ -92,22 +117,27 @@ export class OrganizationStore {
 
     scanned(fingerprint: VideoFingerprint, signal: AbortSignal, clip?: { name: string; path: string }) {
         return this.serialize(async () => {
-            const next = structuredClone(await this.load());
+            signal.throwIfAborted();
+            const state = await this.load();
+            signal.throwIfAborted();
             const key = organizationKey(fingerprint);
-            const record = next.drafts[key] ?? { data: emptyOrganization(), lastScannedAt: 0, lastEditedAt: 0 };
-            if (clip) record.clip = clip;
-            record.lastScannedAt = this.now();
-            next.drafts[key] = record;
-            this.collectOptions(next.vocabulary, record.data);
-            await this.save(next, () => !signal.aborted);
-            return structuredClone(record.data);
+            const data = state.drafts[key]?.data ?? emptyOrganization();
+            this.scanTouches.set(key, { scannedAt: this.now(), clip });
+            const missingOptions = (data.identity && !state.vocabulary.identity.includes(data.identity)) ||
+                data.projects.some(project => !state.vocabulary.projects.includes(project));
+            if (this.scanTouches.size >= 64 || missingOptions) {
+                const next = await this.nextState();
+                this.collectOptions(next.vocabulary, data);
+                await this.save(next, () => !signal.aborted);
+            }
+            return structuredClone(data);
         });
     }
 
     update(fingerprints: VideoFingerprint[], change: OrganizationAction, validate: () => boolean) {
         return this.serialize(async () => {
             let action = validateOrganizationAction(change);
-            const next = structuredClone(await this.load());
+            const next = await this.nextState();
             if (action.field === 'identity' || action.field === 'projects') {
                 const existing = next.vocabulary[action.field].find(value => value.toLocaleLowerCase() === action.value.toLocaleLowerCase());
                 if (existing) action = { ...action, value: existing };
@@ -143,7 +173,7 @@ export class OrganizationStore {
 
     clearOptions() {
         return this.serialize(async () => {
-            const next = structuredClone(await this.load());
+            const next = await this.nextState();
             next.vocabulary = emptyVocabulary();
             await this.save(next);
         });
@@ -165,13 +195,13 @@ export class OrganizationStore {
     }
 
     previewOptions(value: unknown, active = new Set<string>()) {
-        return this.serialize(async () => this.removalPlan(await this.load(), validateOptionRemovals(value), active));
+        return this.serialize(async () => this.removalPlan(await this.nextState(), validateOptionRemovals(value), active));
     }
 
     removeOptions(value: unknown, reviewToken: string, validate: () => boolean = () => true, active = new Set<string>()) {
         return this.serialize(async () => {
             const removals = validateOptionRemovals(value);
-            const next = structuredClone(await this.load());
+            const next = await this.nextState();
             const plan = this.removalPlan(next, removals, active);
             if (plan.reviewToken !== reviewToken) throw Object.assign(new Error('Affected clips changed. Review the removal again.'), { statusCode: 409 });
             for (const field of TAG_FIELDS) {
@@ -201,7 +231,7 @@ export class OrganizationStore {
     // Run at session end, after scans have had the opportunity to renew returning drafts.
     prune() {
         return this.serialize(async () => {
-            const next = structuredClone(await this.load());
+            const next = await this.nextState();
             const cutoff = this.now() - DRAFT_RETENTION_DAYS * 86400000;
             let removed = 0;
             for (const [key, record] of Object.entries(next.drafts)) {

@@ -1,6 +1,6 @@
 import Fastify from 'fastify'
 import type { BackendHealth } from '../shared/desktop'
-import type { ShotCollection } from '../shared/shots'
+import type { ShotChange } from '../shared/shots'
 import { SourceRegistry } from './sources'
 import { pruneThumbnailCache } from './thumbnails'
 import { sendVideo } from './media'
@@ -9,10 +9,11 @@ import { loadViewingLut } from './viewing'
 import { validateOptionRemovals, validateOrganizationAction } from '../shared/organization'
 import type { OrganizationAction, TagVocabulary } from '../shared/organization'
 
-export function createServer(token: string, onShotsChanged?: (collection: ShotCollection) => void, thumbnailCacheDirectory?: string, fingerprintDirectory?: string, organizationFile?: string) {
+export function createServer(token: string, onShotsChanged?: (change: ShotChange) => void, thumbnailCacheDirectory?: string, fingerprintDirectory?: string, organizationFile?: string) {
   const server = Fastify({ logger: true })
   const sources = new SourceRegistry(thumbnailCacheDirectory, fingerprintDirectory, organizationFile)
   sources.scanner.onChange = onShotsChanged
+  server.addHook('onReady', async () => { sources.startMonitoring() })
 
   if (thumbnailCacheDirectory) {
     server.addHook('onClose', async () => {
@@ -119,7 +120,7 @@ export function createServer(token: string, onShotsChanged?: (collection: ShotCo
     await sources.scanner.setThumbnail(request.params.id, request.body.dataUrl)
     return reply.code(204).send()
   })
-  server.addHook('onClose', () => sources.scanner.close())
+  server.addHook('onClose', () => sources.close())
   server.post<{ Body: { path: string } }>('/api/sources', {
     schema: { body: { type: 'object', required: ['path'], additionalProperties: false, properties: { path: { type: 'string', minLength: 1 } } } }
   }, (request) => sources.add(request.body.path))

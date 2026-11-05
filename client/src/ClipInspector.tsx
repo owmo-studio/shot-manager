@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errors';
 import { useEffect, useRef, useState } from "react";
 import type { ImportSource } from "../../shared/desktop";
 import type { ShotCollection, ShotDetails, VideoShot } from "../../shared/shots";
@@ -85,8 +86,8 @@ export function ClipInspector({
         try {
             if (!preview.current) throw new Error("Wait for a preview frame.");
             await window.desktop.setShotThumbnail(shot.id, preview.current.captureThumbnail());
-        } catch {
-            setThumbnailError("Thumbnail could not be updated. Check the preview and try again.");
+        } catch (error) {
+            setThumbnailError(errorMessage(error, "Thumbnail could not be updated. Check the preview and try again."));
         } finally {
             setThumbnailBusy(false);
         }

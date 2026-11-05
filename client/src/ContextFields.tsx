@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errors';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ShotCollection, VideoShot } from '../../shared/shots';
 import { emptyVocabulary, normalizeOption, normalizeTag, TAG_FIELDS } from '../../shared/organization';
@@ -141,7 +142,7 @@ export function ContextFields({ shots = [], onUpdated }: { shots?: VideoShot[]; 
 function OrganizeFields({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: (collection: ShotCollection) => void }) {
     const [vocabulary, setVocabulary] = useState<TagVocabulary>(emptyVocabulary);
     const [pending, setPending] = useState(0);
-    const [failure, setFailure] = useState<{ message: string; action: OrganizationAction } | null>(null);
+    const [failure, setFailure] = useState<string | null>(null);
     const mixedNotes = shots.some(shot => shot.organization?.notes !== shots[0]?.organization?.notes);
     const [notes, setNotes] = useState(mixedNotes ? '' : shots[0]?.organization?.notes ?? '');
     const mounted = useRef(true);
@@ -160,16 +161,24 @@ function OrganizeFields({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: (
             if (shots.some(shot => ids.includes(shot.id))) setNotes('');
             reload();
         };
+        const retried = () => { setFailure(null); reload(); };
         reload();
-        const unsubscribe = window.desktop.onShotsChanged(reload);
+        let vocabularyRevision = -1;
+        const unsubscribe = window.desktop.onShotsChanged(change => {
+            if (change.vocabularyRevision === vocabularyRevision) return;
+            vocabularyRevision = change.vocabularyRevision;
+            reload();
+        });
         window.addEventListener('organization-options-changed', reload);
         window.addEventListener('organization-cleared', cleared);
+        window.addEventListener('organization-saves-retried', retried);
         return () => {
             disposed = true; mounted.current = false;
             unsubscribe();
             void window.desktop.flushNotes().catch(() => undefined);
             window.removeEventListener('organization-options-changed', reload);
             window.removeEventListener('organization-cleared', cleared);
+            window.removeEventListener('organization-saves-retried', retried);
         };
     }, [disabled]);
 
@@ -181,8 +190,8 @@ function OrganizeFields({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: (
             const result = await window.desktop.updateOrganization(shots.map(shot => shot.id), action);
             onUpdated(result.collection);
             if (mounted.current) setVocabulary(result.vocabulary);
-        } catch {
-            if (mounted.current) setFailure({ message: 'Could not save this change. Your saved information has been preserved.', action });
+        } catch (error) {
+            if (mounted.current) setFailure(errorMessage(error, 'Could not save this change. Your saved information has been preserved.'));
         } finally { if (mounted.current) setPending(count => count - 1); }
     }
 
@@ -200,7 +209,14 @@ function OrganizeFields({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: (
         {!!shots.length && disabled && <p className="text-[11px] text-zinc-500">{shots.some(shot => !shot.editable) ? 'Editing paused during rescan.' : 'Saved tags unavailable. Refresh the source to retry.'}</p>}
         {pending > 0 && <p role="status" className="text-[11px] text-zinc-500">Saving…</p>}
         {failure && <div role="alert" className="text-xs text-red-300">
-            {failure.message}<button type="button" aria-label="Retry organization save" onClick={() => void submit(failure.action)} className="ml-2 underline hover:text-red-100">Retry</button>
+            {failure}<button type="button" aria-label="Retry organization save" onClick={async () => {
+                try {
+                    await window.desktop.retryOrganizationSaves();
+                    onUpdated(await window.desktop.getShots());
+                    setVocabulary(await window.desktop.getTagVocabulary());
+                    setFailure(null);
+                } catch { /* Both the inspector and app-level banner keep the failure visible. */ }
+            }} className="ml-2 underline hover:text-red-100">Retry</button>
         </div>}
     </div>;
 }

@@ -149,10 +149,19 @@ export class ThumbnailQueue {
         return (await this.cachePaths(input, sourceIdentity, metadata, this.shutdown.signal)).custom;
     }
 
-    async customImage(input: string, sourceIdentity: string, metadata?: VideoMetadata): Promise<string | null> {
+    customImage(input: string, sourceIdentity: string, metadata?: VideoMetadata) {
+        return this.readImage(input, sourceIdentity, metadata, true);
+    }
+
+    image(input: string, sourceIdentity: string, metadata?: VideoMetadata) {
+        return this.readImage(input, sourceIdentity, metadata, false);
+    }
+
+    private async readImage(input: string, sourceIdentity: string, metadata: VideoMetadata | undefined, customOnly: boolean): Promise<string | null> {
         try {
             const paths = await this.cachePaths(input, sourceIdentity, metadata, this.shutdown.signal);
-            const bytes = await this.cachedImage(paths.custom, paths.legacyCustom);
+            const bytes = await this.cachedImage(paths.custom, paths.legacyCustom) ??
+                (customOnly ? null : await this.cachedImage(paths.generated, paths.legacyGenerated));
             const current = await stat(input);
             if (fileIdentity(current) !== paths.identity || current.ctimeMs !== paths.ctimeMs) return null;
             return bytes ? `data:image/jpeg;base64,${bytes.toString("base64")}` : null;
@@ -205,8 +214,8 @@ export class ThumbnailQueue {
         const cached = await this.cachedImage(paths.custom, paths.legacyCustom) ?? await this.cachedImage(cachedPath, paths.legacyGenerated);
         signal.throwIfAborted();
         const current = await stat(input);
-        if (fileIdentity(current) !== identity || current.ctimeMs !== paths.ctimeMs) return null;
-        if (cached && await validate()) return `data:image/jpeg;base64,${cached.toString("base64")}`;
+        if (fileIdentity(current) !== identity || current.ctimeMs !== paths.ctimeMs || !await validate()) return null;
+        if (cached) return `data:image/jpeg;base64,${cached.toString("base64")}`;
 
         // Escape filter-language characters; execFile still receives an argument array.
         const lutPath = profile ? viewingLutPath(profile).replace(/[\\':,;\[\]]/g, "\\$&") : null;

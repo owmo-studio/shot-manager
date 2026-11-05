@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errors';
 import { useEffect, useRef, useState } from 'react';
 import type { ShotCollection, VideoShot } from '../../shared/shots';
 
@@ -23,7 +24,7 @@ export function ClearOrganizationButton({ shots, onUpdated }: { shots: VideoShot
             onUpdated(result.collection);
             window.dispatchEvent(new CustomEvent('organization-cleared', { detail: ids }));
             setTargets(null);
-        } catch { setError('Could not clear the selected clips. Please try again.'); }
+        } catch (error) { setError(errorMessage(error, 'Could not clear the selected clips. Please try again.')); }
         finally { setBusy(false); }
     }
 

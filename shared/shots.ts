@@ -75,6 +75,8 @@ export interface ShotCollection {
     scans: SourceScan[];
 }
 
+export interface ShotChange { revision: number; vocabularyRevision: number }
+
 export interface ShotDetails {
     file: { filename: string; path: string; bytes: number };
     metadata: VideoMetadata;

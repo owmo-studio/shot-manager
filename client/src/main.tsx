@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errors';
 import type { DragEvent } from "react";
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -5,6 +6,9 @@ import type { BackendStatus, ImportSource } from "../../shared/desktop";
 import type { ShotCollection } from "../../shared/shots";
 import { ClipInspector } from "./ClipInspector";
 import { Configuration } from "./Configuration";
+import { SaveStatusBanner } from "./SaveStatusBanner";
+import { initializeDesktop } from "./desktop";
+import { CollectionUpdates } from "./collectionUpdates";
 import { MultiClipInspector } from "./MultiClipInspector";
 import { clipIdentity, uniqueShots, orderedShots, useShotSelection } from "./shotSelection";
 import { deviceLabel } from "./mediaInfo";
@@ -90,7 +94,7 @@ function App() {
         try {
             const result = await window.desktop.updateOrganization([...new Set(ids)], { field: 'skip', operation: 'set', value: skipped ? 'true' : 'false' });
             receiveShots(result.collection);
-        } catch { setSkipError('Could not save the Skip choice. Please try again.'); }
+        } catch (error) { setSkipError(errorMessage(error, 'Could not save the Skip choice. Please try again.')); }
         finally { ids.forEach(id => skipPending.current.delete(id)); }
     }
 
@@ -178,7 +182,11 @@ function App() {
         setShotCollection(collection);
     }
 
-    useEffect(() => window.desktop.onShotsChanged(receiveShots), []);
+    useEffect(() => {
+        const updates = new CollectionUpdates(() => window.desktop.getShots(), receiveShots, () => latestShotRevision.current);
+        const unsubscribe = window.desktop.onShotsChanged(change => updates.notify(change.revision));
+        return () => { unsubscribe(); updates.dispose(); };
+    }, []);
 
     async function refreshSource(id: string) {
         if (sourceMutation.current) return;
@@ -190,8 +198,8 @@ function App() {
             const result = await window.desktop.refreshSource(id);
             rememberSource(result.source);
             receiveShots(result.collection);
-        } catch {
-            setSourceError("Could not refresh this source. Check that it is available and not already scanning.");
+        } catch (error) {
+            setSourceError(errorMessage(error, "Could not refresh this source. Check that it is available and not already scanning."));
         } finally {
             sourceRevision.current += 1;
             sourceMutation.current = false;
@@ -212,8 +220,8 @@ function App() {
             setSelectedSourceIds((current) => current.map((selected) => selected === id ? result.source.id : selected));
             setUnavailableSources((current) => current.filter((source) => source.id !== id));
             receiveShots(result.collection);
-        } catch {
-            setSourceError("Could not re-link this source. Choose a readable folder that has not already been added.");
+        } catch (error) {
+            setSourceError(errorMessage(error, "Could not re-link this source. Choose a readable folder that has not already been added."));
         } finally {
             sourceRevision.current += 1;
             sourceMutation.current = false;
@@ -274,8 +282,8 @@ function App() {
                 if (!source) return;
                 rememberSource(source);
             }
-        } catch {
-            setSourceError("Could not inspect this source. Check that it is connected and readable, then try again.");
+        } catch (error) {
+            setSourceError(errorMessage(error, "Could not inspect this source. Check that it is connected and readable, then try again."));
         } finally {
             setChoosingSource(false);
             sourceRevision.current += 1;
@@ -325,8 +333,8 @@ function App() {
             await window.desktop.removeSource(id);
             setSources((current) => current.filter((source) => source.id !== id));
             setRemovalSourceId(null);
-        } catch {
-            setRemovalError("Could not remove the source. If it is scanning, wait for it to finish, then try again.");
+        } catch (error) {
+            setRemovalError(errorMessage(error, "Could not remove the source. If it is scanning, wait for it to finish, then try again."));
         } finally {
             setRemovingSource(false);
             sourceRevision.current += 1;
@@ -373,6 +381,7 @@ function App() {
 
     return (
         <div className="flex h-screen flex-col bg-[#111318] text-sm text-zinc-200">
+            <SaveStatusBanner />
             <header className="grid grid-cols-[1fr_auto_1fr] items-center gap-6 border-b border-white/8 px-6 py-4">
                 <h1 className="font-semibold tracking-tight">
                     OWMO <span className="font-normal text-zinc-400">Shot Manager</span>
@@ -557,6 +566,7 @@ function App() {
     );
 }
 
+initializeDesktop();
 createRoot(document.getElementById("root")!).render(
     <StrictMode>
         <App />

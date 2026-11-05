@@ -12,6 +12,7 @@
     "build": "npm run typecheck && electron-vite build && node scripts/copy-luts.cjs",
     "check:selection": "npm run build && node scripts/check-selection.cjs",
     "check:configuration": "node scripts/check-configuration.cjs",
+    "check:communication": "node scripts/check-communication.cjs",
     "check:organization": "node scripts/check-organization.cjs",
     "check:quit": "npm run build && node scripts/check-quit.cjs"
   },

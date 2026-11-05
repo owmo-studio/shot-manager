@@ -7,8 +7,10 @@ import { realpath, stat } from 'node:fs/promises'
 import { readConfiguration, saveConfiguration } from './configuration'
 import { validateOptionRemovals, validateOrganizationAction } from '../shared/organization'
 import type { OrganizationAction } from '../shared/organization'
-import { DebouncedWrites, WriteQueue } from './writeQueue'
+import { DebouncedWrites, RetainedWrites, WriteQueue } from './writeQueue'
 import { installApplicationMenu } from './menu'
+import { requestBackend } from './backendRequest'
+import { AppError, errorDetails } from '../shared/errors'
 import type { BackendHealth, BackendStatus } from '../shared/desktop'
 
 let mainWindow: BrowserWindow | null = null
@@ -21,17 +23,29 @@ const token = randomBytes(32).toString('hex')
 let choosingSource = false
 let choosingLibrary = false
 const organizationWrites = new WriteQueue()
-const noteWrites = new DebouncedWrites(organizationWrites, 500)
+const draftWrites = new RetainedWrites(organizationWrites, publishSaveStatus)
+const noteWrites = new DebouncedWrites(draftWrites, 500)
+let backendStopping = false
+
+function publishSaveStatus() {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('organization:save-status', { ...draftWrites.status(), closing: quitting })
+}
+
+async function flushDrafts() {
+  await noteWrites.flush()
+  await draftWrites.drain()
+}
 const pendingIPC = new Set<Promise<unknown>>()
 const mediaShutdown = new AbortController()
 
 function handle(channel: string, listener: Parameters<typeof ipcMain.handle>[1]) {
   ipcMain.handle(channel, (event, ...args) => {
     // Calls already accepted are drained; late renderer calls must not restart work.
-    if (quitting) return undefined
-    const request = Promise.resolve(listener(event, ...args))
+    if (quitting) return { ok: false, error: errorDetails(new AppError('The app is closing.', 'APP_CLOSING')) }
+    const request = Promise.resolve().then(() => listener(event, ...args))
     pendingIPC.add(request)
-    return request.finally(() => pendingIPC.delete(request))
+    return request.then(value => ({ ok: true, value }), error => ({ ok: false, error: errorDetails(error) }))
+      .finally(() => pendingIPC.delete(request))
   })
 }
 
@@ -39,18 +53,8 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'shot-media', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, corsEnabled: true } }
 ])
 
-async function backendRequest(path: string, options: RequestInit = {}) {
-  if (!backendURL) throw new Error('Backend is not ready')
-  const response = await fetch(`${backendURL}${path}`, {
-    ...options,
-    headers: {
-      ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-      Authorization: `Bearer ${token}`
-    },
-    signal: AbortSignal.timeout(15000)
-  })
-  if (!response.ok) throw new Error(`Backend request failed (${response.status})`)
-  if (response.status !== 204) return response.json()
+function backendRequest<T = unknown>(path: string, options: RequestInit = {}) {
+  return requestBackend<T>(backendURL, token, path, options)
 }
 
 function requireMainWindow(event: IpcMainInvokeEvent): BrowserWindow {
@@ -70,8 +74,8 @@ function startBackend() {
   })
   backend.on('message', (message: unknown) => {
     if (typeof message === 'object' && message !== null && 'type' in message &&
-        message.type === 'shots:changed' && 'collection' in message) {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('shots:changed', message.collection)
+        message.type === 'shots:changed' && 'change' in message) {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('shots:changed', message.change)
       return
     }
     if (typeof message === 'object' && message !== null && 'type' in message &&
@@ -85,7 +89,7 @@ function startBackend() {
     backendURL = null
     backendState = 'unavailable'
     console.info(`Backend exited (${code})`)
-    if (quitting) {
+    if (backendStopping) {
       shutdownComplete = true
       app.quit()
     }
@@ -115,6 +119,9 @@ function createWindow() {
       app.quit()
     }
   })
+  mainWindow.on('close', event => {
+    if (!shutdownComplete) { event.preventDefault(); app.quit() }
+  })
   mainWindow.on('closed', () => { mainWindow = null })
 
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -135,16 +142,22 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     installApplicationMenu()
-    handle('configuration:preview-options', (event, value: unknown) => {
+    handle('organization:save-status', event => { requireMainWindow(event); return { ...draftWrites.status(), closing: quitting } })
+    handle('organization:retry-saves', async event => {
+      requireMainWindow(event)
+      await noteWrites.flush().catch(() => undefined)
+      await draftWrites.retry()
+    })
+    handle('configuration:preview-options', async (event, value: unknown) => {
       requireMainWindow(event)
       const removals = validateOptionRemovals(value)
-      void noteWrites.flush()
+      await flushDrafts()
       return organizationWrites.run(() => backendRequest('/api/organization/vocabulary/preview', { method: 'POST', body: JSON.stringify(removals) }))
     })
-    handle('configuration:save-options', (event, value: unknown, reviewToken: unknown) => {
+    handle('configuration:save-options', async (event, value: unknown, reviewToken: unknown) => {
       requireMainWindow(event)
       const removals = validateOptionRemovals(value)
-      void noteWrites.flush()
+      await flushDrafts()
       if (typeof reviewToken !== 'string' || !/^[a-f0-9]{64}$/.test(reviewToken)) throw new Error('Invalid removal review.')
       return organizationWrites.run(() => backendRequest('/api/organization/vocabulary', {
         method: 'PATCH', body: JSON.stringify({ ...removals, reviewToken })
@@ -154,9 +167,9 @@ if (!app.requestSingleInstanceLock()) {
       requireMainWindow(event)
       return backendRequest('/api/local-data')
     })
-    handle('local-data:clear', (event) => {
+    handle('local-data:clear', async (event) => {
       requireMainWindow(event)
-      void noteWrites.flush()
+      await flushDrafts()
       return organizationWrites.run(() => backendRequest('/api/local-data', { method: 'DELETE', body: JSON.stringify({ confirm: true }) }))
     })
     handle('organization:flush-notes', event => {
@@ -175,8 +188,8 @@ if (!app.requestSingleInstanceLock()) {
         method: 'PATCH', body: JSON.stringify({ shotIds, action: normalized })
       })
       if (normalized.field === 'notes') return noteWrites.schedule([...new Set(shotIds)].sort().join(','), operation)
-      void noteWrites.flush()
-      return organizationWrites.run(operation)
+      void noteWrites.flush().catch(() => undefined)
+      return draftWrites.run(operation)
     })
     const configurationPath = join(app.getPath('userData'), 'configuration.json')
     handle('configuration:get', (event) => {
@@ -244,7 +257,7 @@ if (!app.requestSingleInstanceLock()) {
     handle('shots:thumbnail', async (event, id: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid shot ID')
-      const result = await backendRequest(`/api/shots/${id}/thumbnail`)
+      const result = await backendRequest<{ dataUrl: string | null }>(`/api/shots/${id}/thumbnail`)
       return result.dataUrl
     })
     handle('shots:set-thumbnail', async (event, id: unknown, dataUrl: unknown) => {
@@ -256,7 +269,7 @@ if (!app.requestSingleInstanceLock()) {
     handle('sources:refresh', async (event, id: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Invalid source ID')
-      await noteWrites.flush()
+      await flushDrafts()
       return backendRequest(`/api/sources/${encodeURIComponent(id)}/refresh`, { method: 'POST' })
     })
     handle('sources:relink', async (event, id: unknown) => {
@@ -269,7 +282,7 @@ if (!app.requestSingleInstanceLock()) {
           title: 'Re-link Source', buttonLabel: 'Re-link Source', properties: ['openDirectory']
         })
         if (result.canceled || !result.filePaths[0]) return null
-        await noteWrites.flush()
+        await flushDrafts()
         return await backendRequest(`/api/sources/${encodeURIComponent(id)}/relink`, {
           method: 'POST', body: JSON.stringify({ path: result.filePaths[0] })
         })
@@ -284,13 +297,13 @@ if (!app.requestSingleInstanceLock()) {
       if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) {
         throw new Error('Drop a folder from your computer')
       }
-      await noteWrites.flush()
+      await flushDrafts()
       return backendRequest('/api/sources', { method: 'POST', body: JSON.stringify({ path }) })
     })
     handle('sources:remove', async (event, id: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Invalid source ID')
-      await noteWrites.flush()
+      await flushDrafts()
       await backendRequest(`/api/sources/${encodeURIComponent(id)}`, { method: 'DELETE' })
     })
     handle('sources:choose', async (event) => {
@@ -305,7 +318,7 @@ if (!app.requestSingleInstanceLock()) {
           properties: ['openDirectory']
         })
         if (result.canceled || !result.filePaths[0]) return null
-        await noteWrites.flush()
+        await flushDrafts()
         return await backendRequest('/api/sources', { method: 'POST', body: JSON.stringify({ path: result.filePaths[0] }) })
       } finally {
         choosingSource = false
@@ -336,25 +349,38 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('window-all-closed', () => app.quit())
   app.on('before-quit', (event) => {
-    if (shutdownComplete || !backend) return
+    if (shutdownComplete) return
     event.preventDefault()
     if (quitting) return
     quitting = true
-    // Stop polling, event-driven reads, and playback before the backend begins closing.
-    mediaShutdown.abort()
-    mainWindow?.destroy()
-    // Accepted inline edits live in the main process and survive renderer destruction.
-    void noteWrites.flush()
+    publishSaveStatus()
     void (async () => {
+      await noteWrites.flush().catch(() => undefined)
       await Promise.allSettled([...pendingIPC])
       await organizationWrites.drain()
-      backend?.postMessage('shutdown')
-    })()
-    setTimeout(() => {
-      backend?.kill()
-      shutdownComplete = true
-      app.exit(0)
-    }, 10000).unref()
+      while (draftWrites.status().failed) {
+        const choice = await dialog.showMessageBox({
+          type: 'warning', title: 'Unsaved changes',
+          message: 'Some clip changes could not be saved.',
+          detail: 'Keep working to review them, retry saving, or explicitly discard them before quitting.',
+          buttons: ['Keep Working', 'Retry Saves', 'Quit Without Saving'], defaultId: 0, cancelId: 0
+        })
+        if (choice.response === 0) { quitting = false; publishSaveStatus(); return }
+        if (choice.response === 2) { draftWrites.discard(); break }
+        await draftWrites.retry().catch(() => undefined)
+      }
+      // Accepted edits have settled successfully or were explicitly discarded.
+      mediaShutdown.abort()
+      mainWindow?.destroy()
+      backendStopping = true
+      if (!backend) { shutdownComplete = true; app.quit(); return }
+      backend.postMessage('shutdown')
+      setTimeout(() => {
+        backend?.kill()
+        shutdownComplete = true
+        app.exit(0)
+      }, 10000).unref()
+    })().catch(error => { console.error(error); quitting = false; publishSaveStatus() })
   })
   process.on('SIGINT', () => app.quit())
   process.on('SIGTERM', () => app.quit())

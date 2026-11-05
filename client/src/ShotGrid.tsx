@@ -29,6 +29,7 @@ function ShotCard({ shot, source, selected, skipped, onSelect }: {
     }, [shot.thumbnailRevision]);
 
     useEffect(() => {
+        // Discovery queues generation; visibility only controls loading cached image data.
         if (unavailable || thumbnail || shot.thumbnailStatus === "pending" || shot.thumbnailStatus === "failed" || !card.current) return;
         let disposed = false;
         const observer = new IntersectionObserver((entries) => {

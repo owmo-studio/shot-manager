@@ -2,7 +2,7 @@ import { open, realpath, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { isAbsolute, relative } from "node:path";
 import type { ImportSource } from "../shared/desktop";
-import type { ShotCollection, ShotDetails, SourceScan } from "../shared/shots";
+import type { ShotChange, ShotCollection, ShotDetails, SourceScan } from "../shared/shots";
 import { discoverShots } from "./discovery";
 import type { DiscoveredShot } from "./discovery";
 import { ThumbnailQueue } from "./thumbnails";
@@ -26,11 +26,12 @@ export class ShotScanner {
     private pending: Promise<void> = Promise.resolve();
     private revision = 0;
     private progressTimer?: ReturnType<typeof setTimeout>;
-    onChange?: (collection: ShotCollection) => void;
+    onChange?: (change: ShotChange) => void;
+    private vocabularyRevision = 0;
+    private vocabularyKey = '';
     private thumbnailQueue?: ThumbnailQueue;
     private fingerprints: VideoFingerprintStore;
     readonly organization: OrganizationStore;
-    private generatedImages = new Map<string, string>();
     private updatingThumbnails = new Set<string>();
     private clearingCache = false;
 
@@ -68,7 +69,6 @@ export class ShotScanner {
             await this.fingerprints.reset();
             await this.organization.reset();
         } finally {
-            this.generatedImages.clear();
             this.clearingCache = false;
             this.publish();
         }
@@ -83,7 +83,6 @@ export class ShotScanner {
             await this.thumbnailQueue?.clearCache();
             return await this.cacheSummary();
         } finally {
-            this.generatedImages.clear();
             for (const job of this.jobs.values()) for (const { shot } of job.shots) {
                 shot.hasThumbnail = false;
                 shot.hasCustomThumbnail = false;
@@ -91,6 +90,7 @@ export class ShotScanner {
                 shot.thumbnailRevision = (shot.thumbnailRevision ?? 0) + 1;
             }
             this.clearingCache = false;
+            for (const job of this.jobs.values()) for (const result of job.shots) this.queueThumbnail(job, result);
             this.publish();
         }
     }
@@ -105,7 +105,11 @@ export class ShotScanner {
         clearTimeout(this.progressTimer);
         this.progressTimer = undefined;
         this.revision += 1;
-        this.onChange?.(this.snapshot());
+        const context = [...new Set([...this.jobs.values()].flatMap(job =>
+            job.shots.flatMap(({shot}) => shot.organization?.context ?? [])))].sort();
+        const vocabularyKey = JSON.stringify([this.organization.vocabularyRevision, context]);
+        if (vocabularyKey !== this.vocabularyKey) { this.vocabularyKey = vocabularyKey; this.vocabularyRevision++; }
+        this.onChange?.({ revision: this.revision, vocabularyRevision: this.vocabularyRevision });
     }
 
     private publishProgress() {
@@ -128,7 +132,10 @@ export class ShotScanner {
                     job.status.error = "Scan interrupted because the source became unavailable. Previously discovered clips have been retained.";
                     job.controller.abort();
                 }
-                if (availabilityChanged) this.publish();
+                if (availabilityChanged) {
+                    if (source.available) for (const result of job.shots) this.queueThumbnail(job, result);
+                    this.publish();
+                }
             } else if (source.available) {
                 this.schedule(source);
             }
@@ -208,11 +215,13 @@ export class ShotScanner {
                     if (index >= 0) job.shots[index] = shot;
                     else job.shots.push(shot);
                     job.confirmed.add(shot);
+                    this.queueThumbnail(job, shot);
                     job.status.clipCount = discovered.length;
                     this.publishProgress();
                 }, (message) => {
                     if (job.status.warnings.length < 100) job.status.warnings.push(message);
                 });
+                await this.organization.flushScans();
                 const currentRoot = await stat(source.path);
                 if (`${currentRoot.dev}:${currentRoot.ino}:${currentRoot.birthtimeMs}` !== job.rootIdentity) {
                     if (!previous) {
@@ -295,9 +304,6 @@ export class ShotScanner {
     remove(id: string, publish = true) {
         const job = this.jobs.get(id);
         job?.controller.abort();
-        for (const result of job?.shots ?? []) {
-            this.generatedImages.delete(result.shot.id);
-        }
         if (this.jobs.delete(id) && publish) this.publish();
     }
 
@@ -378,54 +384,52 @@ export class ShotScanner {
         return details;
     }
 
+    private thumbnailCurrent(job: ScanJob, result: DiscoveredShot, revision: number | undefined) {
+        return !this.clearingCache && this.jobs.get(job.source.id) === job && job.source.available &&
+            !job.controller.signal.aborted && job.shots.includes(result) && !this.isReconciling(job, result) &&
+            result.shot.thumbnailRevision === revision;
+    }
+
+    private async thumbnailSourceValid(job: ScanJob, result: DiscoveredShot, revision: number | undefined) {
+        if (!this.thumbnailCurrent(job, result, revision)) return false;
+        try {
+            const root = await stat(job.source.path);
+            if (`${root.dev}:${root.ino}:${root.birthtimeMs}` !== job.rootIdentity) return false;
+            const path = await realpath(result.original);
+            const withinRoot = relative(job.source.path, path);
+            if (withinRoot.startsWith('..') || isAbsolute(withinRoot)) return false;
+            const info = await stat(path);
+            return info.isFile() && [info.dev, info.ino, info.birthtimeMs, info.size, info.mtimeMs].join(':') === result.fileIdentity &&
+                this.thumbnailCurrent(job, result, revision);
+        } catch { return false; }
+    }
+
+    // Generation belongs to discovery, independently of which cards the renderer has displayed.
+    private queueThumbnail(job: ScanJob, result: DiscoveredShot) {
+        const revision = result.shot.thumbnailRevision;
+        if (!this.thumbnailQueue || !this.thumbnailCurrent(job, result, revision) || result.shot.thumbnailStatus) return;
+        result.shot.thumbnailStatus = 'pending';
+        const valid = () => this.thumbnailSourceValid(job, result, revision);
+        this.thumbnailQueue.enqueue([result.original], job.rootIdentity ?? '', job.controller.signal, valid, image => {
+            if (this.jobs.get(job.source.id) !== job || !job.shots.includes(result) || result.shot.thumbnailRevision !== revision) return;
+            if (!job.source.available) result.shot.thumbnailStatus = undefined;
+            else {
+                result.shot.thumbnailStatus = image ? 'ready' : 'failed';
+                result.shot.hasThumbnail = !!image;
+            }
+            // Images remain in the disk cache; scanning does not retain every data URL in memory.
+            this.publishProgress();
+        }, result.shot.metadata);
+    }
+
     async thumbnail(id: string): Promise<string | null> {
-        if (this.clearingCache) return null;
-        for (const job of this.jobs.values()) {
-            if (!job.source.available) continue;
-            const result = job.shots.find((item) => item.shot.id === id);
-            if (!result) continue;
-            try {
-                const valid = async () => {
-                    if (this.clearingCache) return false;
-                    if (this.jobs.get(job.source.id) !== job || !job.source.available || job.controller.signal.aborted) return false;
-                    try {
-                        const info = await stat(job.source.path);
-                        return `${info.dev}:${info.ino}:${info.birthtimeMs}` === job.rootIdentity;
-                    } catch { return false; }
-                };
-                if (!await valid()) return null;
-                const resolveAsset = async (asset: string) => {
-                    const path = await realpath(asset);
-                    const withinRoot = relative(job.source.path, path);
-                    return !withinRoot.startsWith("..") && !isAbsolute(withinRoot) ? path : null;
-                };
-                const original = await resolveAsset(result.original);
-                const generated = this.generatedImages.get(id);
-                if (generated) return generated;
-                if (!this.thumbnailQueue) return null;
-                const inputs = original ? [original] : [];
-                if (!await valid()) return null;
-                if (!inputs.length) return null;
-                if (result.shot.thumbnailStatus === "pending" || result.shot.thumbnailStatus === "failed") return null;
-                result.shot.thumbnailStatus = "pending";
-                const thumbnailRevision = result.shot.thumbnailRevision;
-                this.publishProgress();
-                this.thumbnailQueue.enqueue(inputs, job.rootIdentity ?? "", job.controller.signal, valid, (image) => {
-                    if (this.jobs.get(job.source.id) !== job || result.shot.thumbnailRevision !== thumbnailRevision) return;
-                    if (!job.source.available) {
-                        result.shot.thumbnailStatus = undefined;
-                        this.publishProgress();
-                        return;
-                    }
-                    result.shot.thumbnailStatus = image ? "ready" : "failed";
-                    if (image) {
-                        this.generatedImages.set(id, image);
-                        result.shot.hasThumbnail = true;
-                    }
-                    this.publishProgress();
-                }, result.shot.metadata);
-                return null;
-            } catch { return null; }
+        if (!this.thumbnailQueue || this.clearingCache) return null;
+        for (const job of this.jobs.values()) for (const result of job.shots) {
+            if (result.shot.id !== id) continue;
+            const revision = result.shot.thumbnailRevision;
+            if (!await this.thumbnailSourceValid(job, result, revision)) continue;
+            const image = await this.thumbnailQueue.image(result.original, job.rootIdentity ?? '', result.shot.metadata);
+            if (image && await this.thumbnailSourceValid(job, result, revision)) return image;
         }
         return null;
     }
@@ -446,10 +450,9 @@ export class ShotScanner {
             };
             await this.thumbnailQueue.setCustomImage(asset.path, asset.job.rootIdentity ?? "", dataUrl, valid, asset.result.shot.metadata);
             if (!await valid()) throw new Error("Source changed while updating the thumbnail.");
-            this.generatedImages.delete(id);
             asset.result.shot.hasCustomThumbnail = true;
             asset.result.shot.hasThumbnail = true;
-            asset.result.shot.thumbnailStatus = undefined;
+            asset.result.shot.thumbnailStatus = "ready";
             asset.result.shot.thumbnailRevision = (asset.result.shot.thumbnailRevision ?? 0) + 1;
             this.publish();
         } finally { this.updatingThumbnails.delete(id); }
@@ -461,6 +464,7 @@ export class ShotScanner {
         for (const id of this.jobs.keys()) this.remove(id);
         await this.thumbnailQueue?.close();
         await this.pending;
+        await this.organization.flushScans().catch(error => console.warn('Scan bookkeeping could not be saved; existing drafts preserved.', error));
         await this.organization.prune().catch(error => console.warn('Draft retention cleanup failed; saved drafts preserved.', error));
     }
 }

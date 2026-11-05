@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errors';
 import { useEffect, useRef, useState } from 'react';
 import type { LocalDataSummary } from '../../shared/desktop';
 import type { ShotCollection } from '../../shared/shots';
@@ -38,8 +39,8 @@ export function ResetLocalDataButton({ disabled, onBusyChange, onReset }: {
             const result = await window.desktop.clearLocalData();
             setOpen(false);
             onReset(result.collection);
-        } catch {
-            setError('Reset could not finish. Some local data may already have been cleared. Try again.');
+        } catch (error) {
+            setError(errorMessage(error, 'Reset could not finish. Some local data may already have been cleared. Try again.'));
         } finally { mutation.current = false; setBusy(false); }
     }
 
