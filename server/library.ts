@@ -1,11 +1,18 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { lstat, readdir, realpath, stat } from 'node:fs/promises';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { constants } from 'node:fs';
+import { lstat, open, readdir, realpath, stat } from 'node:fs/promises';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { validateClipAttributes } from '../shared/organization';
 
 const execute = promisify(execFile);
 export interface LibraryLocation { path: string; identity: string; mount: string }
 export interface LibraryPresence { existing: Set<string>; complete: Set<string> }
+
+export function libraryAssetName(id: string, role: 'source' | 'thumb' | 'metadata' | 'proxy', extension: string) {
+    if (!/^[a-f0-9]{64}$/.test(id) || !/^[a-z0-9]+$/.test(extension)) throw new Error('Invalid Library asset identifier.');
+    return `${id}.${role}.${extension}`;
+}
 
 // One flat directory listing; no video, thumbnail, or JSON contents are opened.
 export async function listLibrary(location: LibraryLocation) {
@@ -59,4 +66,34 @@ export async function libraryFileIdentity(path: string): Promise<string | null> 
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
         throw error;
     }
+}
+
+// Explicit Revert reads only the selected metadata, never media or arbitrary paths.
+export async function readLibraryAttributes(location: LibraryLocation, id: string) {
+    if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid clip ID.');
+    const path = join(location.path, libraryAssetName(id, 'metadata', 'json'));
+    const identity = await libraryFileIdentity(path);
+    if (!identity) throw new Error(`Library metadata is missing for clip ${id}.`);
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+        const info = await file.stat();
+        const limit = 1024 * 1024;
+        if (!info.isFile() || info.size > limit) throw new Error('Library metadata is not a supported JSON file.');
+        const buffer = Buffer.alloc(limit + 1);
+        let length = 0;
+        while (length < buffer.length) {
+            const { bytesRead } = await file.read(buffer, length, buffer.length - length, length);
+            if (!bytesRead) break;
+            length += bytesRead;
+        }
+        if (length > limit) throw new Error('Library metadata exceeds the size limit.');
+        const current = await file.stat();
+        if ([current.dev, current.ino, current.size, current.mtimeMs, current.ctimeMs].join(':') !== identity ||
+            await libraryFileIdentity(path) !== identity) throw new Error('Library metadata changed while reading. Try Revert again.');
+        let data: Record<string, unknown>;
+        try { data = JSON.parse(buffer.subarray(0, length).toString('utf8')); }
+        catch { throw new Error('Library metadata contains invalid JSON. Local attributes have been preserved.'); }
+        if (!data || data.id !== id) throw new Error('Library metadata does not match this clip.');
+        return validateClipAttributes(data);
+    } finally { await file.close(); }
 }

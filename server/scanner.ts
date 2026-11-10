@@ -13,7 +13,7 @@ import { ThumbnailQueue } from "./thumbnails";
 import { VideoFingerprintStore } from "./fingerprints";
 import { OrganizationStore } from "./organization";
 import { organizationKey } from "../shared/organization";
-import type { OrganizationAction, TagVocabulary } from "../shared/organization";
+import type { ClipAttributes, OrganizationAction, TagVocabulary } from "../shared/organization";
 
 interface ScanJob {
     source: ImportSource;
@@ -335,6 +335,28 @@ export class ShotScanner {
             !this.ingestLocks.has(result.shot.id) && !this.isReconciling(job, result) && job.shots.includes(result) && !!result.shot.fingerprint && !!result.shot.organization);
         if (!valid()) throw Object.assign(new Error("Selected clips are locked or their drafts are unavailable."), { statusCode: 409 });
         const changed = await this.organization.update(targets.map(({ result }) => result.shot.fingerprint!), action, valid);
+        for (const job of this.jobs.values()) for (const { shot } of job.shots) {
+            if (shot.fingerprint) {
+                const data = changed.drafts[organizationKey(shot.fingerprint)];
+                if (data) shot.organization = structuredClone(data);
+            }
+        }
+        this.publish();
+        return { collection: this.snapshot(), vocabulary: await this.vocabulary() };
+    }
+
+    async revertOrganization(ids: string[], read: () => Promise<ClipAttributes[]>) {
+        const targets = [...new Set(ids)].map(id => {
+            const asset = this.findShot(id);
+            return { ...asset, organization: JSON.stringify(asset.result.shot.organization) };
+        });
+        const valid = () => !this.clearingCache && targets.every(({ job, result, organization }) => this.jobs.get(job.source.id) === job &&
+            !this.ingestLocks.has(result.shot.id) && !this.isReconciling(job, result) && job.shots.includes(result) &&
+            !!result.shot.fingerprint && !!result.shot.organization && JSON.stringify(result.shot.organization) === organization);
+        if (!targets.length || !valid()) throw new Error('Selected clips are locked or their attributes are unavailable.');
+        const attributes = await read();
+        if (attributes.length !== targets.length) throw new Error('Library attributes are incomplete.');
+        const changed = await this.organization.restore(targets.map(({ result }, index) => ({ fingerprint: result.shot.fingerprint!, attributes: attributes[index] })), valid);
         for (const job of this.jobs.values()) for (const { shot } of job.shots) {
             if (shot.fingerprint) {
                 const data = changed.drafts[organizationKey(shot.fingerprint)];

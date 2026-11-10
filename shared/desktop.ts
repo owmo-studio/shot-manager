@@ -64,6 +64,7 @@ export interface DesktopAPI {
   clearLocalData: () => Promise<{ summary: LocalDataSummary; collection: ShotCollection }>
   getTagVocabulary: () => Promise<TagVocabulary>
   updateOrganization: (shotIds: string[], action: OrganizationAction) => Promise<{ collection: ShotCollection; vocabulary: TagVocabulary }>
+  revertOrganization: (shotIds: string[]) => Promise<{ collection: ShotCollection; vocabulary: TagVocabulary }>
   getConfiguration: () => Promise<AppConfiguration>
   chooseLibrary: () => Promise<AppConfiguration | null>
   getCacheSummary: () => Promise<CacheSummary>

@@ -583,7 +583,7 @@ if (!process.versions.electron) {
             await wait(`!document.querySelector('#clear-organization-title')`);
             assert.deepEqual(collection.shots.find(shot=>shot.filename==='Clip 4.mp4').organization, beforeClipClear);
             await inspect(5, {metaKey:true});
-            assert.ok(await js(`(()=>{const button=document.querySelector('[aria-label="Clear selected clip information"]'),viewport=document.querySelector('#clip-inspector-content'),bounds=button.getBoundingClientRect(),panel=viewport.getBoundingClientRect();return !!button.closest('[role="tabpanel"]')&&!button.closest('header')&&Math.abs(bounds.right-(panel.right-16))<25&&Math.abs(bounds.bottom-(panel.bottom-16))<3})()`), 'Clear stays at the bottom right of the Attributes panel');
+            assert.ok(await js(`(()=>{const button=document.querySelector('[aria-label="Clear selected clip information"]'),viewport=document.querySelector('#clip-inspector-content'),bounds=button.getBoundingClientRect(),panel=viewport.getBoundingClientRect();return !!button.closest('[role="tabpanel"]')&&!button.closest('header')&&Math.abs(bounds.left-(panel.left+16))<25&&Math.abs(bounds.bottom-(panel.bottom-16))<3})()`), 'Clear stays at the bottom left of the Attributes panel');
             await click('Clear selected clip information');
             await wait(`document.querySelector('#clear-organization-description').textContent.includes('2 selected clips')`);
             assert.equal(await js(`document.querySelector('#clear-organization-description').textContent.trim()`), 'Attributes will be cleared for 2 selected clips.');

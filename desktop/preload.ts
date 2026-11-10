@@ -32,6 +32,7 @@ const desktop: DesktopBridge = {
   clearLocalData: () => invoke('local-data:clear'),
   getTagVocabulary: () => invoke('organization:vocabulary'),
   updateOrganization: (shotIds, action) => invoke('organization:update', shotIds, action),
+  revertOrganization: shotIds => invoke('organization:revert', shotIds),
   getConfiguration: () => invoke('configuration:get'),
   chooseLibrary: () => invoke('configuration:choose-library'),
   getCacheSummary: () => invoke('cache:summary'),

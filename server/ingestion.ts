@@ -5,7 +5,7 @@ import { extname, join } from 'node:path';
 import { ingestAttributes } from '../shared/ingestion';
 import type { IngestReview, IngestStatus } from '../shared/ingestion';
 import { ShotScanner } from './scanner';
-import { inspectLibrary, libraryFileIdentity, listLibrary } from './library';
+import { inspectLibrary, libraryAssetName, libraryFileIdentity, listLibrary, readLibraryAttributes } from './library';
 import type { LibraryLocation, LibraryPresence } from './library';
 import { rsyncFile } from './rsync';
 
@@ -93,6 +93,20 @@ export class IngestQueue {
         } finally { this.working = false; }
     }
 
+    async revert(ids: string[]) {
+        if (this.closing) throw new Error('The app is closing.');
+        const unique = [...new Set(ids)];
+        const location = await this.location();
+        // This only restores local drafts. Scanner guards protect the selected clips;
+        // unrelated transfers can continue using their immutable snapshots.
+        return this.scanner.revertOrganization(unique, async () => {
+            const attributes = [];
+            for (const id of unique) attributes.push(await readLibraryAttributes(location, id));
+            await this.location(location);
+            return attributes;
+        });
+    }
+
     // Progress notifications are bounded and carry snapshots, avoiding HTTP/config reads.
     private publish(progress = false) {
         this.state.revision++;
@@ -127,7 +141,7 @@ export class IngestQueue {
     private names(capture: Capture): Entry['names'] {
         const extension = extname(capture.shot.filename).toLowerCase();
         if (!/^\.[a-z0-9]+$/.test(extension)) throw new Error('Unsupported source filename extension.');
-        return [`${capture.shot.id}.source${extension}`, `${capture.shot.id}.thumb.jpg`, `${capture.shot.id}.metadata.json`];
+        return [libraryAssetName(capture.shot.id, 'source', extension.slice(1)), libraryAssetName(capture.shot.id, 'thumb', 'jpg'), libraryAssetName(capture.shot.id, 'metadata', 'json')];
     }
 
     private async existing(location: LibraryLocation, id: string, names: Entry['names'], listing?: string[]) {

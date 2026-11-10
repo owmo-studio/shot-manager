@@ -31,6 +31,17 @@ export const emptyAttributes = (): ClipAttributes => ({ identity: null, project:
 export const emptyOrganization = (): ShotOrganization => ({ ...emptyAttributes(), skipped: false });
 export const emptyVocabulary = (): TagVocabulary => ({ identity: [], project: [], tags: [] });
 
+export function validateClipAttributes(value: unknown): ClipAttributes {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid Library attributes.');
+    const data = value as Record<string, unknown>;
+    if (!(data.identity === null || (typeof data.identity === 'string' && normalizeOption(data.identity) === data.identity)) ||
+        !(data.project === null || (typeof data.project === 'string' && normalizeOption(data.project) === data.project)) ||
+        typeof data.scene !== 'string' || normalizeScene(data.scene) !== data.scene ||
+        typeof data.notes !== 'string' || data.notes.length > 10000 || !Array.isArray(data.tags) ||
+        data.tags.some(tag => typeof tag !== 'string' || normalizeTag(tag) !== tag)) throw new Error('Invalid Library attributes.');
+    return { identity: data.identity, project: data.project, scene: data.scene, notes: data.notes, tags: [...data.tags] } as ClipAttributes;
+}
+
 export function validateOptionRemovals(value: unknown): TagVocabulary {
     if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !TAG_FIELDS.includes(key as TagField))) throw new Error('Invalid option lists.');
     const lists = value as Record<string, unknown>;

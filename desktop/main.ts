@@ -177,6 +177,12 @@ if (!app.requestSingleInstanceLock()) {
       return backendRequest(`/api/ingestion/errors/${id}`, { method: 'DELETE' })
     })
     handle('organization:save-status', event => { requireMainWindow(event); return { ...draftWrites.status(), closing: quitting } })
+    handle('organization:revert', async (event, value: unknown) => {
+      requireMainWindow(event)
+      const shotIds = validateIngestIds(value)
+      await flushDrafts()
+      return organizationWrites.run(() => backendRequest('/api/organization/revert', { method: 'POST', body: JSON.stringify({ shotIds }) }))
+    })
     handle('organization:retry-saves', async event => {
       requireMainWindow(event)
       await textWrites.flush().catch(() => undefined)

@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute } from 'node:path';
-import { DRAFT_RETENTION_DAYS, emptyAttributes, emptyOrganization, emptyVocabulary, normalizeOption, normalizeScene, normalizeTag, organizationKey, TAG_FIELDS, validateOptionRemovals, validateOrganizationAction } from '../shared/organization';
-import type { OptionRemovalPlan, OrganizationAction, ShotOrganization, TagVocabulary } from '../shared/organization';
+import { DRAFT_RETENTION_DAYS, emptyAttributes, emptyOrganization, emptyVocabulary, normalizeOption, normalizeScene, normalizeTag, organizationKey, TAG_FIELDS, validateClipAttributes, validateOptionRemovals, validateOrganizationAction } from '../shared/organization';
+import type { ClipAttributes, OptionRemovalPlan, OrganizationAction, ShotOrganization, TagVocabulary } from '../shared/organization';
 import { VIDEO_SAMPLE_SCHEME } from '../shared/shots';
 import type { IngestionReceipt } from '../shared/ingestion';
 import type { VideoFingerprint } from '../shared/shots';
@@ -204,6 +204,26 @@ export class OrganizationStore {
             }
             if (action.field !== 'notes' && action.field !== 'scene' && action.field !== 'all' && action.field !== 'skip' && action.operation === 'add') {
                 next.vocabulary[action.field] = [...new Set([...next.vocabulary[action.field], action.value])].sort();
+            }
+            await this.save(next, validate);
+            return { drafts: Object.fromEntries(keys.map(key => [key, structuredClone(next.drafts[key].data)])), vocabulary: this.options(next) };
+        });
+    }
+
+    restore(entries: { fingerprint: VideoFingerprint; attributes: ClipAttributes }[], validate: () => boolean) {
+        return this.serialize(async () => {
+            const next = await this.nextState();
+            if (!validate()) throw new Error('Selected clips changed. Try Revert again.');
+            const keys: string[] = [];
+            for (const entry of entries) {
+                const key = organizationKey(entry.fingerprint);
+                const record = next.drafts[key];
+                if (!record) throw new Error('Local attributes are unavailable. Refresh the source to retry.');
+                record.data = { ...validateClipAttributes(entry.attributes), skipped: record.data.skipped };
+                delete record.previousProjects;
+                record.lastEditedAt = this.now();
+                this.collectOptions(next.vocabulary, record.data);
+                keys.push(key);
             }
             await this.save(next, validate);
             return { drafts: Object.fromEntries(keys.map(key => [key, structuredClone(next.drafts[key].data)])), vocabulary: this.options(next) };

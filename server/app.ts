@@ -26,6 +26,12 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
   })
   ingestion.onChange = onIngestChanged
   const ids = { type: 'array', minItems: 1, maxItems: 1000, uniqueItems: true, items: { type: 'string', pattern: '^[a-f0-9]{64}$' } }
+  server.post<{ Body: { shotIds: string[] } }>('/api/organization/revert', {
+    schema: { body: { type: 'object', required: ['shotIds'], additionalProperties: false, properties: { shotIds: ids } } }
+  }, async request => {
+    try { return await ingestion.revert(request.body.shotIds) }
+    catch (error) { throw Object.assign(error as Error, { statusCode: 409 }) }
+  })
   server.get('/api/ingestion', () => ingestion.status())
   server.post('/api/ingestion/library/refresh', () => ingestion.refreshLibrary())
   server.post<{ Body: { shotIds: string[] } }>('/api/ingestion/review', {

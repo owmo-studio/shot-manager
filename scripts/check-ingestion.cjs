@@ -82,6 +82,7 @@ async function until(test, description) {
         await assert.rejects(scanner.setThumbnail(a.id, 'data:image/jpeg;base64,/9j/2Q=='), /queued/);
         await assert.rejects(scanner.clearCache(), /Stop the processing queue/);
         await assert.rejects(scanner.clearLocalData(), /Stop the processing queue/);
+        await assert.rejects(queue.revert([a.id]), /Selected clips are locked/);
         assert.throws(() => scanner.previewOptions({ identity: [], project: [], tags: [] }), /Wait for scanning/);
         gate = false; release();
         await finish();
@@ -103,6 +104,55 @@ async function until(test, description) {
         assert.equal(scanner.snapshot().shots.find(shot => shot.id === a.id).ingestState, 'synced');
         assert.ok(!await fs.stat(join(library, `${c.id}.metadata.json`)).catch(() => null));
         assert.ok((await scanner.snapshot()).shots.every(shot => shot.editable));
+        // Revert reads the Library JSON, atomically restoring only descriptive attributes.
+        const revertReceipt = scanner.snapshot().shots.find(shot => shot.id === a.id).ingestion;
+        const libraryJSON = await fs.readFile(jsonPath);
+        for (const action of [
+            { field: 'identity', operation: 'add', value: 'Changed Identity' },
+            { field: 'project', operation: 'add', value: 'Changed Project' },
+            { field: 'scene', operation: 'set', value: 'Changed scene' },
+            { field: 'notes', operation: 'set', value: 'Changed notes' },
+            { field: 'tags', operation: 'add', value: 'changed' },
+            { field: 'skip', operation: 'set', value: 'true' },
+        ]) await scanner.updateOrganization([a.id], action);
+        await queue.revert([a.id]);
+        let reverted = scanner.snapshot().shots.find(shot => shot.id === a.id);
+        assert.deepEqual(reverted.organization, { identity: null, project: null, scene: '', notes: '', tags: [], skipped: true });
+        assert.deepEqual(reverted.ingestion, revertReceipt, 'Revert preserves the successful processing record');
+        assert.equal(reverted.ingestState, 'synced', 'Restoring Library attributes restores Synced');
+        assert.deepEqual(await fs.readFile(jsonPath), libraryJSON, 'Revert never writes Library metadata');
+        await scanner.updateOrganization([a.id], { field: 'skip', operation: 'set', value: 'false' });
+
+        await scanner.updateOrganization([a.id], { field: 'notes', operation: 'set', value: 'Keep if restore fails' });
+        const bJSONPath = join(library, `${b.id}.metadata.json`);
+        const bJSON = await fs.readFile(bJSONPath);
+        await fs.writeFile(bJSONPath, '{broken');
+        await assert.rejects(queue.revert([a.id, b.id]), /invalid JSON/);
+        assert.equal(scanner.snapshot().shots.find(shot => shot.id === a.id).organization.notes, 'Keep if restore fails', 'Bulk revert is all-or-nothing');
+        await fs.writeFile(bJSONPath, JSON.stringify({ ...JSON.parse(bJSON), id: a.id }));
+        await assert.rejects(queue.revert([b.id]), /does not match/);
+        await fs.writeFile(bJSONPath, JSON.stringify({ ...JSON.parse(bJSON), tags: 'invalid' }));
+        await assert.rejects(queue.revert([b.id]), /Invalid Library attributes/);
+        await fs.unlink(bJSONPath);
+        await assert.rejects(queue.revert([b.id]), /metadata is missing/);
+        await fs.symlink(jsonPath, bJSONPath);
+        await assert.rejects(queue.revert([b.id]), /not a regular file/);
+        await fs.unlink(bJSONPath);
+        await fs.writeFile(bJSONPath, bJSON);
+        const externalAttributes = { identity: 'Library Identity', project: 'Library Project', scene: 'Library scene', notes: 'Library notes', tags: ['library/value'] };
+        await fs.writeFile(bJSONPath, JSON.stringify({ ...JSON.parse(bJSON), ...externalAttributes }));
+        const restoredExternal = await queue.revert([b.id]);
+        assert.deepEqual(scanner.snapshot().shots.find(shot => shot.id === b.id).organization, { ...externalAttributes, skipped: false }, 'Revert restores current Library values, including nonempty attributes');
+        assert.ok(restoredExternal.vocabulary.identity.includes('Library Identity') && restoredExternal.vocabulary.project.includes('Library Project'), 'Restored Identity and Project remain available as options');
+        await fs.writeFile(bJSONPath, bJSON);
+        await assert.rejects(queue.revert(['../arbitrary']), /no longer available|Invalid clip ID/);
+        await assert.rejects(scanner.revertOrganization([a.id], async () => {
+            await scanner.updateOrganization([a.id], { field: 'notes', operation: 'set', value: 'Newer local edit' });
+            return [json];
+        }), /Selected clips changed/);
+        assert.equal(scanner.snapshot().shots.find(shot => shot.id === a.id).organization.notes, 'Newer local edit', 'Revert does not overwrite concurrent local edits');
+        await queue.revert([a.id, b.id]);
+        assert.ok(scanner.snapshot().shots.filter(shot => [a.id, b.id].includes(shot.id)).every(shot => shot.ingestState === 'synced'), 'Bulk revert restores both clips');
         const sourceBefore = await fs.stat(join(library, `${a.id}.source.mp4`));
         await fs.writeFile(join(library, `${a.id}.proxy.mov`), 'leave proxy untouched');
         await scanner.updateOrganization([a.id], { field: 'notes', operation: 'set', value: 'Later notes' });
@@ -246,6 +296,7 @@ async function until(test, description) {
         await until(async () => (await offlineQueue.status()).libraryScan?.state === 'unavailable', 'offline Library');
         assert.equal(scanner.snapshot().shots.find(shot => shot.id === a.id).ingestState, 'unverified');
         assert.deepEqual(scanner.snapshot().shots.find(shot => shot.id === a.id).ingestion, presentReceipt, 'Unavailability preserves receipts');
+        await assert.rejects(offlineQueue.revert([a.id]), /Synthetic offline Library/);
         await offlineQueue.close();
         await queue.refreshLibrary();
 
@@ -310,6 +361,8 @@ async function until(test, description) {
         await fs.writeFile(configuration, JSON.stringify({ version: 1, libraryPath: library, libraryMount: (await inspectLibrary(library)).mount }));
         server = createServer('test-token', undefined, join(root, 'api-thumbs'), join(root, 'api-fps'), join(root, 'api-drafts.json'), configuration);
         assert.equal((await server.inject({ method: 'GET', url: '/api/ingestion' })).statusCode, 401);
+        assert.equal((await server.inject({ method: 'POST', url: '/api/organization/revert', payload: { shotIds: [a.id] } })).statusCode, 401);
+        assert.equal((await server.inject({ method: 'POST', url: '/api/organization/revert', headers: { authorization: 'Bearer test-token' }, payload: { shotIds: ['../../arbitrary'] } })).statusCode, 400, 'Revert accepts clip IDs, never paths');
         assert.equal((await server.inject({ method: 'POST', url: '/api/ingestion/review', headers: { authorization: 'Bearer test-token' }, payload: { shotIds: [a.id], path: source } })).statusCode, 409);
         assert.equal((await server.inject({ method: 'GET', url: '/api/ingestion', headers: { authorization: 'Bearer test-token' } })).json().active, false);
         await server.close(); server = null;

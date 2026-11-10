@@ -4,7 +4,6 @@ import { ResizableInspector } from "./ResizableInspector";
 import type { ShotCollection, VideoShot } from "../../shared/shots";
 import type { ImportSource } from "../../shared/desktop";
 import { sourceFilePath } from "./mediaInfo";
-import { ClearOrganizationButton } from "./ClearOrganizationButton";
 
 export function MultiClipInspector({ shots, sources, skippedCount, disabled, width, onResize, onSkipChange, onOrganizationUpdated }: {
     shots: VideoShot[]; sources: ImportSource[]; skippedCount: number; disabled: boolean; width: number; onResize: (width: number) => void;
@@ -31,7 +30,6 @@ export function MultiClipInspector({ shots, sources, skippedCount, disabled, wid
         </div>
         <section role="tabpanel" id="multi-attributes-panel" aria-labelledby="multi-attributes-tab" className="attribute-panel mt-3 flex flex-1 flex-col">
             <AttributeFields shots={shots} onUpdated={onOrganizationUpdated} />
-            <div className="attribute-clear mt-auto flex justify-start pt-3"><ClearOrganizationButton shots={shots} onUpdated={onOrganizationUpdated} /></div>
         </section>
         </div>
     </ResizableInspector>;

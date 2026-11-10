@@ -3,6 +3,8 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { ShotCollection, VideoShot } from '../../shared/shots';
 import { emptyVocabulary, normalizeOption, normalizeScene, normalizeTag, SCENE_MAX_LENGTH } from '../../shared/organization';
 import type { OrganizationAction, TagField, TagVocabulary } from '../../shared/organization';
+import { ClearOrganizationButton } from './ClearOrganizationButton';
+import { RevertOrganizationButton } from './RevertOrganizationButton';
 
 const labels: Record<TagField, string> = { identity: 'Identity', project: 'Project', tags: 'Tags' };
 
@@ -217,7 +219,7 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
         }
     }
 
-    return <div className="attribute-fields space-y-2">
+    return <div className="attribute-fields flex flex-1 flex-col gap-2">
         <fieldset disabled={disabled} className={`flex min-w-0 flex-col gap-3 ${disabled ? 'opacity-50' : ''}`}>
             {(['identity', 'project'] as const).map(field => <TagFieldInput key={field} field={field} shots={shots} vocabulary={vocabulary[field]} disabled={disabled} submit={action => void submit(action)} />)}
             <label data-attribute-field="scene" className="block text-xs text-zinc-400">
@@ -250,7 +252,6 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
             <TagFieldInput field="tags" shots={shots} vocabulary={vocabulary.tags} disabled={disabled} submit={action => void submit(action)} />
         </fieldset>
         {!!shots.length && disabled && <p className="text-[11px] text-zinc-500">{shots.some(shot => !shot.editable) ? 'Editing paused during rescan.' : 'Saved tags unavailable. Refresh the source to retry.'}</p>}
-        {pending > 0 && <p role="status" className="text-[11px] text-zinc-500">Saving…</p>}
         {failure && <div role="alert" className="text-xs text-red-300">
             {failure}<button type="button" aria-label="Retry organization save" onClick={async () => {
                 try {
@@ -261,5 +262,19 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
                 } catch { /* Both the inspector and app-level banner keep the failure visible. */ }
             }} className="ml-2 underline hover:text-red-100">Retry</button>
         </div>}
+        <div className="attribute-clear mt-auto flex items-center justify-between gap-3 pt-3">
+            <div className="flex items-center gap-2">
+                <ClearOrganizationButton shots={shots} onUpdated={onUpdated} />
+                <RevertOrganizationButton shots={shots} onReverted={result => {
+                    textGeneration.current++;
+                    const drafts = shots.map(shot => result.collection.shots.find(current => current.id === shot.id)?.organization);
+                    setNotes(drafts.every(draft => draft?.notes === drafts[0]?.notes) ? drafts[0]?.notes ?? '' : '');
+                    setScene(drafts.every(draft => draft?.scene === drafts[0]?.scene) ? drafts[0]?.scene ?? '' : '');
+                    setSceneError(null); setFailure(null); setVocabulary(result.vocabulary);
+                    onUpdated(result.collection);
+                }} />
+            </div>
+            {pending > 0 && <p role="status" className="text-right text-[11px] text-zinc-500">Saving…</p>}
+        </div>
     </div>;
 }
