@@ -96,7 +96,7 @@ export async function discoverShots(source: ImportSource, signal: AbortSignal, f
             }
             const normalized = normalizeVideoMetadata(mediaInfo, embedded, sony);
             warnings.push(...embedded.warnings);
-            if (mediaInfo && !normalized.hasVideo) warnings.push("No video stream was confirmed; inspect this file before ingestion.");
+            if (mediaInfo && !normalized.hasVideo) warnings.push("No video stream was confirmed; inspect this file before processing.");
             const durationValue = (mediaInfo?.format as { duration?: unknown } | undefined)?.duration;
             const duration = durationValue === undefined ? NaN : Number(durationValue);
             const durationSeconds = Number.isFinite(duration) && duration >= 0 ? duration : null;

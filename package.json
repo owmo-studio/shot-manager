@@ -2,7 +2,7 @@
   "name": "owmo-shot-manager",
   "version": "0.1.0",
   "private": true,
-  "description": "A local desktop workspace for video ingestion",
+  "description": "A local desktop workspace for video processing",
   "main": "out/main/index.cjs",
   "scripts": {
     "postinstall": "install-electron",
@@ -14,7 +14,9 @@
     "check:configuration": "node scripts/check-configuration.cjs",
     "check:communication": "node scripts/check-communication.cjs",
     "check:organization": "node scripts/check-organization.cjs",
-    "check:quit": "npm run build && node scripts/check-quit.cjs"
+    "check:quit": "npm run build && node scripts/check-quit.cjs",
+    "check:ingestion": "node scripts/check-ingestion.cjs",
+    "check:ingestion-ui": "npm run build && node scripts/check-ingestion-ui.cjs"
   },
   "engines": {
     "node": ">=22.12.0"

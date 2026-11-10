@@ -289,7 +289,7 @@ if (!process.versions.electron) {
             assert.equal(await js(`document.querySelector('p[aria-label="Total clips"]').textContent.trim()`), '6 clips total');
             assert.equal(await js(`document.querySelector('button[aria-label="Reverse order"]')`), null);
             assert.equal(await js(`document.querySelector('main > section header')`), null);
-            assert.ok(await js(`document.querySelector('footer').textContent.includes('6 clips to ingest · 0 skipped')`));
+            assert.ok(await js(`document.querySelector('footer').textContent.includes('6 clips to process · 0 skipped')`));
             assert.equal(await js(`document.querySelectorAll('[data-shot-card] button').length`), 6);
             assert.equal(await js(`document.querySelectorAll('button[aria-label^="Skip Clip "]').length`), 0);
             window.webContents.focus();
@@ -348,11 +348,11 @@ if (!process.versions.electron) {
             await arrow('Left'); assert.deepEqual(await selected(), [4]);
             await inspect(2); await inspect(3, {metaKey:true}); await check(1); await check(2);
             assert.deepEqual(await selected(), [2, 3]); assert.deepEqual(await skipped(), [1, 2]);
-            await wait(`getComputedStyle(document.querySelector('button[aria-label="Inspect Clip 1.mp4"] [data-shot-thumbnail]')).opacity==='0.45'`);
+            await wait(`getComputedStyle(document.querySelector('button[aria-label="Inspect Clip 1.mp4"] [data-shot-preview]')).opacity==='0.45'`);
             assert.equal(await js(`getComputedStyle(document.querySelector('button[aria-label="Inspect Clip 1.mp4"]')).opacity`), '1');
             assert.equal(await js(`document.querySelector('button[aria-label="Inspect Clip 1.mp4"]').disabled`), false);
             assert.equal(await js(`document.querySelectorAll('button[aria-label^="Skip Clip "]').length`), 0);
-            assert.ok(await js(`document.querySelector('footer').textContent.includes('4 clips to ingest · 2 skipped')`));
+            assert.ok(await js(`document.querySelector('footer').textContent.includes('4 clips to process · 2 skipped')`));
 
             assert.equal(await js(`document.querySelector('input[aria-label="Skip selected clips"]').indeterminate`), true);
             if (process.env.SHOT_MANAGER_SELECTION_SCREENSHOT) {
@@ -420,7 +420,7 @@ if (!process.versions.electron) {
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===3`);
             assert.equal(await js(`document.querySelector('p[aria-label="Total clips"]').textContent.trim()`), '3 clips total');
             await wait(`document.querySelector('footer').textContent.includes('0 skipped')`); assert.deepEqual(await selected(), []);
-            assert.equal(await js(`Array.from(document.querySelectorAll('footer button')).find(b=>b.textContent==='Review & Ingest').disabled`), true);
+            assert.equal(await js(`Array.from(document.querySelectorAll('footer button')).find(b=>b.textContent==='Process').disabled`), true);
             Object.assign(vocabulary, { identity:['cmsh','owmo'], project:['crystal-brigade'], tags:['music','music/edm','music/rock','studio',...Array.from({length:20},(_,i)=>`topic-${String(i).padStart(2,'0')}`)] });
             await push(collection.shots.map(shot=>shot.filename==='Clip 6.mp4'?{...shot,organization:{...shot.organization,tags:[...vocabulary.tags]}}:shot));
             const fill = async (label, value) => {

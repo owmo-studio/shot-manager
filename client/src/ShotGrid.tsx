@@ -17,12 +17,33 @@ function ShotCard({ shot, source, selected, skipped, onSelect }: {
     const cardStyle = unavailable
         ? `${selected ? "ring-red-400" : "ring-red-500/30"} bg-red-500/8 group-hover/shot:bg-red-500/15 group-hover/shot:ring-red-400/60`
         : inactive
-          ? `cursor-not-allowed grayscale opacity-50 ${selected ? "ring-zinc-300" : "ring-transparent"}`
+          ? `cursor-not-allowed ${selected ? "ring-zinc-300" : "ring-transparent"}`
           : skipped
             ? `${selected ? "ring-red-400/80 group-hover/shot:ring-red-300" : "ring-transparent group-hover/shot:ring-red-400/35"} bg-red-700/25 group-hover/shot:bg-red-700/35`
             : selected
               ? "bg-blue-400/5 ring-blue-400/80 group-hover/shot:bg-blue-400/15 group-hover/shot:ring-blue-300"
               : "ring-transparent group-hover/shot:bg-white/10 group-hover/shot:ring-white/25";
+    const ingestBusy = shot.ingestState === 'queued' || shot.ingestState === 'processing';
+    const needsSyncing = shot.ingestState === 'changes-pending';
+    const statusCardStyle = unavailable || skipped ? ''
+        : shot.ingestState === 'processing' ? 'ingest-card-busy ingest-card-active'
+        : shot.ingestState === 'queued' ? 'ingest-card-busy'
+        : shot.ingestState === 'synced' ? 'ingest-card-synced'
+        : needsSyncing && !inactive ? 'ingest-card-needs-sync' : '';
+    const statusLabel = shot.ingestState === 'synced' ? 'Synced'
+        : shot.ingestState === 'processing' ? 'Processing…'
+        : shot.ingestState === 'queued' ? 'Queued'
+        : shot.ingestState === 'unverified' ? 'Library not verified'
+        : needsSyncing ? 'Needs Syncing' : null;
+    const statusIcon = shot.ingestState === 'synced' ? '✓' : needsSyncing ? (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="size-4" aria-hidden="true">
+            <path d="m16 4 4 4M4 16l-1 5 5-1L20 8a2.83 2.83 0 0 0-4-4Z" />
+        </svg>
+    ) : null;
+    const statusLabelStyle = ingestBusy ? 'bg-black/80 text-zinc-400'
+        : shot.ingestState === 'synced' ? 'bg-emerald-600 text-emerald-50 shadow-md shadow-black/40'
+        : needsSyncing ? 'bg-yellow-600 text-white shadow-md shadow-black/40' : 'bg-black/80 text-amber-200';
+
     useEffect(() => {
         setThumbnail(null);
         setFailedImage(false);
@@ -50,18 +71,24 @@ function ShotCard({ shot, source, selected, skipped, onSelect }: {
     return (
         <div data-shot-card className="shot-card-enter group/shot relative min-w-0">
         <button id={`shot-${shot.id}`} ref={card} type="button" onClick={onSelect} disabled={!shot.editable} aria-label={`Inspect ${shot.filename}`} aria-pressed={selected} aria-controls="clip-inspector" data-editable={shot.editable} data-skipped={skipped}
-            className={`-m-2 w-[calc(100%+16px)] min-w-0 rounded-lg p-2 text-left ring-1 transition duration-75 focus-visible:outline-2 focus-visible:outline-offset-2 ${skipped ? "focus-visible:outline-red-400" : "focus-visible:outline-blue-400"} disabled:cursor-not-allowed ${cardStyle}`}
-            title={[sourceFilePath(source?.path, shot.relativePath), ...(unavailable ? ["Source unavailable. Attributes and cached file information remain accessible."] : inactive ? ["Source rescan is queued or running. Editing is unavailable until it finishes."] : []), ...shot.warnings].join("\n")}>
-            <span data-shot-thumbnail className={`relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg border transition-opacity duration-150 ${skipped && !inactive ? "opacity-45" : ""} ${unavailable ? "border-red-500/30 bg-red-500/5" : "border-white/8 bg-white/4"}`}>
-                {thumbnail && !failedImage ? <img src={thumbnail} alt="" onError={thumbnailFailed} className="size-full bg-black object-contain" /> : shot.thumbnailStatus !== "failed" && !failedImage && !unavailable ? (
-                    <span aria-hidden="true" className="absolute inset-0 bg-linear-to-r from-transparent via-white/8 to-transparent bg-[length:200%_100%] motion-safe:animate-[thumbnail-shimmer_1.8s_linear_infinite]" />
-                ) : null}
+            className={`-m-2 w-[calc(100%+16px)] min-w-0 rounded-lg p-2 text-left ring-1 transition duration-75 focus-visible:outline-2 focus-visible:outline-offset-2 ${skipped ? "focus-visible:outline-red-400" : "focus-visible:outline-blue-400"} disabled:cursor-not-allowed ${cardStyle} ${statusCardStyle}`}
+            title={[sourceFilePath(source?.path, shot.relativePath), ...(unavailable ? ["Source unavailable. Attributes and cached file information remain accessible."] : inactive ? ["Clip is queued for processing or being rescanned. Editing is temporarily locked."] : []), ...shot.warnings].join("\n")}>
+            <span data-shot-thumbnail className={`relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg border transition-opacity duration-150 ${unavailable ? "border-red-500/30 bg-red-500/5" : "border-white/8 bg-white/4"}`}>
+                {statusLabel && <span data-shot-status={shot.ingestState} role={statusIcon ? 'img' : undefined} aria-label={statusIcon ? statusLabel : undefined} title={statusLabel}
+                    className={`absolute top-2 z-10 rounded ${statusIcon ? 'right-2 grid size-6 place-items-center text-xs font-bold' : 'left-2 px-2 py-1 text-[10px]'} ${statusLabelStyle}`}>
+                    {statusIcon ? <span aria-hidden="true">{statusIcon}</span> : statusLabel}
+                </span>}
+                <span data-shot-preview aria-hidden="true" className={`absolute inset-0 ${skipped && !inactive ? "opacity-45" : ""}`}>
+                    {thumbnail && !failedImage ? <img data-shot-image src={thumbnail} alt="" onError={thumbnailFailed} className="size-full bg-black object-contain" /> : shot.thumbnailStatus !== "failed" && !failedImage && !unavailable ? (
+                        <span aria-hidden="true" className="absolute inset-0 bg-linear-to-r from-transparent via-white/8 to-transparent bg-[length:200%_100%] motion-safe:animate-[thumbnail-shimmer_1.8s_linear_infinite]" />
+                    ) : null}
+                </span>
                 {unavailable && <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-red-950/30">
                     <span aria-hidden="true" className="absolute top-2 left-2 grid size-6 place-items-center rounded-full bg-red-400 font-bold text-[#1b2029]">!</span>
                     <span className="rounded-md bg-[#111318]/80 px-3 py-1.5 text-center text-xs font-medium text-red-300">source unavailable</span>
                 </span>}
             </span>
-            <span className="mt-2 block truncate text-[13px] text-zinc-200">{shot.filename}</span>
+            <span data-shot-filename className="mt-2 block truncate text-[13px] text-zinc-200">{shot.filename}</span>
             <span className="mt-0.5 flex items-baseline justify-between gap-2 text-xs text-zinc-500">
                 <span className="min-w-0 truncate">{deviceLabel(shot.metadata.device) ?? "Video"}</span>
                 <span className="shrink-0 text-right" title="Duration">{cardDuration(shot.durationSeconds)}</span>

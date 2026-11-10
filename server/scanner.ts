@@ -1,8 +1,12 @@
+import { createHash } from 'node:crypto';
+import { ingestAttributes } from '../shared/ingestion';
+import type { IngestionReceipt, IngestState } from '../shared/ingestion';
+import type { LibraryPresence } from './library';
 import { open, realpath, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { isAbsolute, relative } from "node:path";
 import type { ImportSource } from "../shared/desktop";
-import type { ShotChange, ShotCollection, ShotDetails, SourceScan } from "../shared/shots";
+import type { ShotChange, ShotCollection, ShotDetails, SourceScan, VideoShot } from "../shared/shots";
 import { discoverShots } from "./discovery";
 import type { DiscoveredShot } from "./discovery";
 import { ThumbnailQueue } from "./thumbnails";
@@ -34,6 +38,72 @@ export class ShotScanner {
     readonly organization: OrganizationStore;
     private updatingThumbnails = new Set<string>();
     private clearingCache = false;
+    private ingestLocks = new Map<string, 'queued' | 'processing'>();
+    private ingestLibrary: string | null = null;
+    private libraryPresence: LibraryPresence | null = null;
+
+    assertNoIngestion() {
+        if (this.ingestLocks.size) throw Object.assign(new Error('Stop the processing queue before changing sources, options, or local data.'), { statusCode: 409 });
+    }
+
+    setIngestLibrary(path: string | null) {
+        if (this.ingestLibrary === path) return;
+        this.assertNoIngestion();
+        this.ingestLibrary = path;
+        this.libraryPresence = null;
+        this.publish();
+    }
+
+    setLibraryPresence(path: string, presence: LibraryPresence | null) {
+        if (path !== this.ingestLibrary) return;
+        this.libraryPresence = presence ? { existing: new Set(presence.existing), complete: new Set(presence.complete) } : null;
+        this.publish();
+    }
+
+    lockIngest(ids: string[]) {
+        if (this.clearingCache || this.updatingThumbnails.size) throw new Error('Wait for thumbnail changes to finish.');
+        for (const id of ids) {
+            const { job, result } = this.findShot(id);
+            if (this.ingestLocks.has(id) || !job.source.available || this.isReconciling(job, result)) throw new Error('Clips are unavailable or already queued.');
+        }
+        ids.forEach(id => this.ingestLocks.set(id, 'queued'));
+        this.publish();
+    }
+
+    processingIngest(id: string) { this.ingestLocks.set(id, 'processing'); this.publish(); }
+    unlockIngest(ids: string[]) { ids.forEach(id => this.ingestLocks.delete(id)); this.publish(); }
+
+    async captureIngest(id: string) {
+        const asset = await this.videoPath(id);
+        const shot = structuredClone(asset.result.shot);
+        if (this.clearingCache || this.updatingThumbnails.has(id) || this.isReconciling(asset.job, asset.result) || !shot.organization || !shot.fingerprint || shot.organization.skipped) throw new Error('Clip is not ready for processing.');
+        const image = await this.thumbnail(id);
+        if (!image) throw new Error(`Thumbnail is unavailable for ${shot.filename}.`);
+        const thumbnail = Buffer.from(image.slice(image.indexOf(',') + 1), 'base64');
+        shot.thumbnailDigest = createHash('sha256').update(thumbnail).digest('hex');
+        asset.result.shot.thumbnailDigest = shot.thumbnailDigest;
+        const signature = ingestionSignature(shot.organization, shot.thumbnailDigest);
+        return { shot, path: asset.path, fileIdentity: asset.result.fileIdentity, thumbnail, signature };
+    }
+
+    async validateIngest(id: string, path: string, identity: string) {
+        const asset = await this.videoPath(id);
+        if (asset.path !== path || asset.result.fileIdentity !== identity) throw new Error('Source changed since review.');
+    }
+
+    async markIngested(id: string, receipt: IngestionReceipt) {
+        const { result } = this.findShot(id);
+        await this.organization.markIngested(result.shot.fingerprint!, receipt);
+        if (receipt.libraryPath === this.ingestLibrary) {
+            this.libraryPresence?.existing.add(id);
+            this.libraryPresence?.complete.add(id);
+        }
+        for (const job of this.jobs.values()) for (const { shot } of job.shots) if (shot.id === id) shot.ingestion = structuredClone(receipt);
+        this.publish();
+    }
+
+    sourceRoots() { return [...this.jobs.values()].map(job => job.source.path); }
+
 
     async cacheSummary() {
         return this.thumbnailQueue?.cacheSummary() ?? { bytes: 0, files: 0 };
@@ -57,6 +127,7 @@ export class ShotScanner {
     }
 
     async clearLocalData() {
+        this.assertNoIngestion();
         if (this.clearingCache || this.updatingThumbnails.size) {
             throw Object.assign(new Error("A thumbnail update is in progress. Try again shortly."), { statusCode: 409 });
         }
@@ -75,6 +146,7 @@ export class ShotScanner {
     }
 
     async clearCache() {
+        this.assertNoIngestion();
         if (this.clearingCache || this.updatingThumbnails.size) {
             throw Object.assign(new Error("A thumbnail update is in progress. Try again shortly."), { statusCode: 409 });
         }
@@ -190,6 +262,7 @@ export class ShotScanner {
                     shot.shot.id = shot.shot.fingerprint.value;
                     try {
                         shot.shot.organization = await this.organization.scanned(shot.shot.fingerprint, job.controller.signal, { name: shot.shot.filename, path: shot.original });
+                        shot.shot.ingestion = await this.organization.ingestion(shot.shot.fingerprint);
                     } catch {
                         job.controller.signal.throwIfAborted();
                         if (job.status.warnings.length < 100) job.status.warnings.push(`Could not load attributes for ${shot.shot.filename}. Saved data has been preserved. File was skipped; refresh this source to retry.`);
@@ -259,7 +332,7 @@ export class ShotScanner {
     async updateOrganization(ids: string[], action: OrganizationAction) {
         const targets = [...new Set(ids)].map(id => this.findShot(id));
         const valid = () => targets.every(({ job, result }) => this.jobs.get(job.source.id) === job &&
-            !this.isReconciling(job, result) && job.shots.includes(result) && !!result.shot.fingerprint && !!result.shot.organization);
+            !this.ingestLocks.has(result.shot.id) && !this.isReconciling(job, result) && job.shots.includes(result) && !!result.shot.fingerprint && !!result.shot.organization);
         if (!valid()) throw Object.assign(new Error("Selected clips are locked or their drafts are unavailable."), { statusCode: 409 });
         const changed = await this.organization.update(targets.map(({ result }) => result.shot.fingerprint!), action, valid);
         for (const job of this.jobs.values()) for (const { shot } of job.shots) {
@@ -272,7 +345,7 @@ export class ShotScanner {
         return { collection: this.snapshot(), vocabulary: await this.vocabulary() };
     }
 
-    private optionsEditable = () => ![...this.jobs.keys()].some(id => this.isBusy(id)) && !this.clearingCache;
+    private optionsEditable = () => ![...this.jobs.keys()].some(id => this.isBusy(id)) && !this.clearingCache && !this.ingestLocks.size;
 
     private activeDraftKeys() {
         return new Set([...this.jobs.values()].flatMap(job => job.shots.flatMap(({ shot }) =>
@@ -307,13 +380,26 @@ export class ShotScanner {
         if (this.jobs.delete(id) && publish) this.publish();
     }
 
+    private ingestState(shot: VideoShot): IngestState | undefined {
+        const locked = this.ingestLocks.get(shot.id);
+        if (locked) return locked;
+        const receipt = shot.ingestion?.libraryPath === this.ingestLibrary ? shot.ingestion : undefined;
+        if (!this.libraryPresence) return receipt ? 'unverified' : undefined;
+        // Presence determines New versus Update, even without a local receipt.
+        // Only a complete asset set and matching receipt can prove Synced.
+        if (!this.libraryPresence.existing.has(shot.id)) return undefined;
+        return this.libraryPresence.complete.has(shot.id) && receipt && shot.organization && shot.thumbnailDigest &&
+            receipt.signature === ingestionSignature(shot.organization, shot.thumbnailDigest) ? 'synced' : 'changes-pending';
+    }
+
     snapshot(): ShotCollection {
         return {
             revision: this.revision,
             shots: [...this.jobs.values()].flatMap((job) => job.shots.map((result) => ({
                 ...result.shot,
                 available: job.source.available,
-                editable: !this.isReconciling(job, result),
+                editable: !this.isReconciling(job, result) && !this.ingestLocks.has(result.shot.id),
+                ingestState: this.ingestState(result.shot),
             }))).sort((first, second) =>
                 first.timestamp.slice(0, 10).localeCompare(second.timestamp.slice(0, 10)) ||
                 Date.parse(first.timestamp) - Date.parse(second.timestamp) || first.id.localeCompare(second.id)),
@@ -416,6 +502,7 @@ export class ShotScanner {
             else {
                 result.shot.thumbnailStatus = image ? 'ready' : 'failed';
                 result.shot.hasThumbnail = !!image;
+                if (image) result.shot.thumbnailDigest = createHash('sha256').update(Buffer.from(image.slice(image.indexOf(',') + 1), 'base64')).digest('hex');
             }
             // Images remain in the disk cache; scanning does not retain every data URL in memory.
             this.publishProgress();
@@ -439,17 +526,19 @@ export class ShotScanner {
         if (this.updatingThumbnails.has(id)) throw Object.assign(new Error("Thumbnail update is already in progress."), { statusCode: 409 });
         this.updatingThumbnails.add(id);
         try {
+            if (this.ingestLocks.has(id)) throw new Error('Clip is queued for processing.');
             const asset = await this.videoPath(id);
             if (this.isReconciling(asset.job, asset.result)) throw Object.assign(new Error("Wait for rescanning to finish."), { statusCode: 409 });
             if (!this.thumbnailQueue) throw new Error("Thumbnail cache is unavailable.");
             const valid = async () => {
                 try {
                     const current = await this.videoPath(id);
-                    return current.job === asset.job && current.path === asset.path && !this.isReconciling(asset.job, asset.result);
+                    return !this.ingestLocks.has(id) && current.job === asset.job && current.path === asset.path && !this.isReconciling(asset.job, asset.result);
                 } catch { return false; }
             };
             await this.thumbnailQueue.setCustomImage(asset.path, asset.job.rootIdentity ?? "", dataUrl, valid, asset.result.shot.metadata);
             if (!await valid()) throw new Error("Source changed while updating the thumbnail.");
+            asset.result.shot.thumbnailDigest = createHash('sha256').update(Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64')).digest('hex');
             asset.result.shot.hasCustomThumbnail = true;
             asset.result.shot.hasThumbnail = true;
             asset.result.shot.thumbnailStatus = "ready";
@@ -467,4 +556,8 @@ export class ShotScanner {
         await this.organization.flushScans().catch(error => console.warn('Scan bookkeeping could not be saved; existing drafts preserved.', error));
         await this.organization.prune().catch(error => console.warn('Draft retention cleanup failed; saved drafts preserved.', error));
     }
+}
+
+export function ingestionSignature(attributes: import('../shared/organization').ClipAttributes, thumbnailDigest: string) {
+    return createHash('sha256').update(JSON.stringify([ingestAttributes(attributes), thumbnailDigest])).digest('hex');
 }

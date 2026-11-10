@@ -1,5 +1,6 @@
 import { errorMessage } from '../../shared/errors';
 import { useEffect, useRef, useState } from 'react';
+import type { Ref } from 'react';
 import type { AppConfiguration } from '../../shared/desktop';
 import { emptyVocabulary, OPTION_FIELDS } from '../../shared/organization';
 import type { OptionRemovalPlan, TagField, TagVocabulary } from '../../shared/organization';
@@ -8,7 +9,7 @@ import { RemoveOptionsDialog } from './RemoveOptionsDialog';
 import type { ShotCollection } from '../../shared/shots';
 import { ResetLocalDataButton } from './ResetLocalDataButton';
 
-export function Configuration({ onLocalDataReset }: { onLocalDataReset: (collection: ShotCollection) => void }) {
+export function Configuration({ onLocalDataReset, libraryActionsRef }: { onLocalDataReset: (collection: ShotCollection) => void; libraryActionsRef?: Ref<HTMLDivElement> }) {
     const [configuration, setConfiguration] = useState<AppConfiguration | null>(null);
     const [open, setOpen] = useState(false);
     const [libraryError, setLibraryError] = useState<string | null>(null);
@@ -108,6 +109,7 @@ export function Configuration({ onLocalDataReset }: { onLocalDataReset: (collect
                 aria-label="Library location" className={`max-w-72 truncate px-2 py-1 text-xs ${libraryPath ? 'text-zinc-400' : 'text-red-400'}`}>
                 {configuration ? libraryPath ?? 'library needs to be set' : libraryError ? 'configuration unavailable' : 'Loading configuration…'}
             </span>
+            <div ref={libraryActionsRef} className="flex shrink-0 items-center" />
             <button aria-label="Configuration" title="Configuration" onClick={showConfiguration}
                 className="grid size-8 shrink-0 place-items-center rounded-md text-zinc-400 transition hover:bg-white/8 hover:text-zinc-100">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" className="size-5" aria-hidden="true">

@@ -31,6 +31,58 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* Dim in-flight media without animating the status label's opacity. */
+.ingest-card-busy {
+  background-color: rgb(255 255 255 / 2%);
+}
+
+.ingest-card-busy [data-shot-preview] {
+  opacity: 0.45;
+  filter: grayscale(80%);
+}
+
+.ingest-card-busy [data-shot-filename] {
+  color: #a1a1aa;
+}
+
+.ingest-card-needs-sync {
+  background-color: rgb(234 179 8 / 6%);
+  box-shadow: 0 0 0 1px rgb(250 204 21 / 30%);
+}
+
+.ingest-card-synced {
+  background-color: rgb(16 185 129 / 6%);
+  box-shadow: 0 0 0 1px rgb(52 211 153 / 30%);
+}
+
+.ingest-card-active {
+  background-color: rgb(161 161 170 / 6%);
+  box-shadow: 0 0 0 1px rgb(161 161 170 / 30%);
+}
+
+/* Keep editing selection visible over each persistent status color. */
+.ingest-card-synced[aria-pressed="true"],
+.ingest-card-needs-sync[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px rgb(96 165 250 / 80%);
+}
+
+@keyframes ingest-card-pulse {
+  0%, 100% {
+    background-color: rgb(161 161 170 / 3%);
+    box-shadow: 0 0 0 1px rgb(161 161 170 / 20%), 0 0 8px rgb(161 161 170 / 0%);
+  }
+  50% {
+    background-color: rgb(161 161 170 / 10%);
+    box-shadow: 0 0 0 1px rgb(161 161 170 / 50%), 0 0 14px rgb(161 161 170 / 10%);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ingest-card-active {
+    animation: ingest-card-pulse 2.4s ease-in-out infinite;
+  }
+}
+
 @keyframes thumbnail-shimmer {
   from { background-position: 200% 0; }
   to { background-position: -200% 0; }
@@ -95,4 +147,24 @@ textarea,
 [data-inspector-preview] > [role="status"] {
   height: 100%;
   aspect-ratio: auto;
+}
+
+/* Keep the centered ingestion track prominent without a surrounding card. */
+.ingest-progress {
+  appearance: none;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: #24352e;
+}
+
+.ingest-progress::-webkit-progress-bar {
+  border-radius: 999px;
+  background: #24352e;
+  box-shadow: inset 0 1px 3px rgb(0 0 0 / 25%);
+}
+
+.ingest-progress::-webkit-progress-value {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #10b981, #34d399);
 }

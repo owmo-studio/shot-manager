@@ -7,6 +7,17 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<IPCResult<T>> {
 }
 
 const desktop: DesktopBridge = {
+  getIngestStatus: () => invoke('ingestion:status'),
+  refreshLibrary: () => invoke('ingestion:refresh-library'),
+  onIngestChanged: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, status: Parameters<typeof listener>[0]) => listener(status)
+    ipcRenderer.on('ingestion:changed', handler)
+    return () => ipcRenderer.removeListener('ingestion:changed', handler)
+  },
+  reviewIngest: shotIds => invoke('ingestion:review', shotIds),
+  startIngest: (token, shotIds) => invoke('ingestion:start', token, shotIds),
+  stopIngest: () => invoke('ingestion:stop'),
+  dismissIngestError: eventId => invoke('ingestion:dismiss-error', eventId),
   getSaveStatus: () => invoke('organization:save-status'),
   retryOrganizationSaves: () => invoke('organization:retry-saves'),
   onSaveStatusChanged: listener => {

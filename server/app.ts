@@ -1,5 +1,9 @@
+import { readConfiguration } from '../desktop/configuration';
+import { inspectLibrary } from './library';
+import { IngestQueue } from './ingestion';
 import Fastify from 'fastify'
 import type { BackendHealth } from '../shared/desktop'
+import type { IngestStatus } from '../shared/ingestion';
 import type { ShotChange } from '../shared/shots'
 import { SourceRegistry } from './sources'
 import { pruneThumbnailCache } from './thumbnails'
@@ -9,14 +13,44 @@ import { loadViewingLut } from './viewing'
 import { validateOptionRemovals, validateOrganizationAction } from '../shared/organization'
 import type { OrganizationAction, TagVocabulary } from '../shared/organization'
 
-export function createServer(token: string, onShotsChanged?: (change: ShotChange) => void, thumbnailCacheDirectory?: string, fingerprintDirectory?: string, organizationFile?: string) {
+export function createServer(token: string, onShotsChanged?: (change: ShotChange) => void, thumbnailCacheDirectory?: string, fingerprintDirectory?: string, organizationFile?: string, configurationFile?: string, onIngestChanged?: (status: IngestStatus) => void) {
   const server = Fastify({ logger: true })
   const sources = new SourceRegistry(thumbnailCacheDirectory, fingerprintDirectory, organizationFile)
+  const configuration = async () => configurationFile ? readConfiguration(configurationFile) : { version: 1 as const, libraryPath: null, libraryMount: undefined }
+  const ingestion = new IngestQueue(sources.scanner, async () => (await configuration()).libraryPath, async (path, roots) => {
+    const configured = await configuration()
+    if (!configured.libraryMount) throw new Error('Choose the Library location again in Configuration to confirm its volume.')
+    const location = await inspectLibrary(path, roots)
+    if (configured.libraryPath !== path || configured.libraryMount !== location.mount) throw new Error('The configured Library volume is not mounted at its expected location. Choose the Library again if it has changed.')
+    return location
+  })
+  ingestion.onChange = onIngestChanged
+  const ids = { type: 'array', minItems: 1, maxItems: 1000, uniqueItems: true, items: { type: 'string', pattern: '^[a-f0-9]{64}$' } }
+  server.get('/api/ingestion', () => ingestion.status())
+  server.post('/api/ingestion/library/refresh', () => ingestion.refreshLibrary())
+  server.post<{ Body: { shotIds: string[] } }>('/api/ingestion/review', {
+    schema: { body: { type: 'object', required: ['shotIds'], additionalProperties: false, properties: { shotIds: ids } } }
+  }, async request => {
+    try { return await ingestion.preview(request.body.shotIds) }
+    catch (error) { throw Object.assign(error as Error, { statusCode: 409 }) }
+  })
+  server.post<{ Body: { token: string; shotIds: string[] } }>('/api/ingestion', {
+    schema: { body: { type: 'object', required: ['token', 'shotIds'], additionalProperties: false,
+      properties: { shotIds: ids, token: { type: 'string', maxLength: 64 } } } }
+  }, async request => {
+    try { return await ingestion.submit(request.body.token, request.body.shotIds) }
+    catch (error) { throw Object.assign(error as Error, { statusCode: 409 }) }
+  })
+  server.post('/api/ingestion/stop', () => ingestion.stop())
+  server.delete<{ Params: { id: string } }>('/api/ingestion/errors/:id', {
+    schema: { params: { type: 'object', required: ['id'], properties: { id: { type: 'string', maxLength: 64 } } } }
+  }, (request, reply) => { ingestion.dismissError(request.params.id); return reply.code(204).send() })
   sources.scanner.onChange = onShotsChanged
   server.addHook('onReady', async () => { sources.startMonitoring() })
 
   if (thumbnailCacheDirectory) {
     server.addHook('onClose', async () => {
+      await ingestion.close()
       try {
         const result = await pruneThumbnailCache(thumbnailCacheDirectory)
         if (result.removed) server.log.info({ removed: result.removed }, 'Expired thumbnail cache files removed')
@@ -120,7 +154,7 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     await sources.scanner.setThumbnail(request.params.id, request.body.dataUrl)
     return reply.code(204).send()
   })
-  server.addHook('onClose', () => sources.close())
+  server.addHook('onClose', async () => { await ingestion.close(); await sources.close() })
   server.post<{ Body: { path: string } }>('/api/sources', {
     schema: { body: { type: 'object', required: ['path'], additionalProperties: false, properties: { path: { type: 'string', minLength: 1 } } } }
   }, (request) => sources.add(request.body.path))

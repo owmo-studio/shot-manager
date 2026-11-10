@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import { realpath, stat } from 'node:fs/promises'
+import { inspectLibrary } from '../server/library'
 import { readConfiguration, saveConfiguration } from './configuration'
 import { validateOptionRemovals, validateOrganizationAction } from '../shared/organization'
 import type { OrganizationAction } from '../shared/organization'
@@ -72,9 +73,14 @@ function startBackend() {
   const lutDirectory = existsSync(sourceLuts) ? sourceLuts : join(__dirname, '..', 'resources', 'luts')
   backend = utilityProcess.fork(join(__dirname, 'backend.cjs'), [], {
     serviceName: 'Shot Manager Backend',
-    env: { ...process.env, SHOT_MANAGER_TOKEN: token, SHOT_MANAGER_THUMBNAIL_CACHE: join(app.getPath('userData'), 'cache', 'thumbnails'), SHOT_MANAGER_FINGERPRINT_DIRECTORY: join(app.getPath('userData'), 'fingerprints'), SHOT_MANAGER_ORGANIZATION_FILE: join(app.getPath('userData'), 'organization.json'), SHOT_MANAGER_LUT_DIRECTORY: lutDirectory }
+    env: { ...process.env, SHOT_MANAGER_TOKEN: token, SHOT_MANAGER_THUMBNAIL_CACHE: join(app.getPath('userData'), 'cache', 'thumbnails'), SHOT_MANAGER_FINGERPRINT_DIRECTORY: join(app.getPath('userData'), 'fingerprints'), SHOT_MANAGER_ORGANIZATION_FILE: join(app.getPath('userData'), 'organization.json'), SHOT_MANAGER_CONFIGURATION_FILE: join(app.getPath('userData'), 'configuration.json'), SHOT_MANAGER_LUT_DIRECTORY: lutDirectory }
   })
   backend.on('message', (message: unknown) => {
+    if (typeof message === 'object' && message !== null && 'type' in message &&
+        message.type === 'ingestion:changed' && 'status' in message) {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('ingestion:changed', message.status)
+      return
+    }
     if (typeof message === 'object' && message !== null && 'type' in message &&
         message.type === 'shots:changed' && 'change' in message) {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('shots:changed', message.change)
@@ -145,6 +151,31 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     installApplicationMenu()
+    const validateIngestIds = (value: unknown): string[] => {
+      if (!Array.isArray(value) || !value.length || value.length > 1000 || value.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id))) throw new Error('Invalid processing selection')
+      return [...new Set(value)]
+    }
+    handle('ingestion:status', event => { requireMainWindow(event); return backendRequest('/api/ingestion') })
+    handle('ingestion:refresh-library', event => { requireMainWindow(event); return backendRequest('/api/ingestion/library/refresh', { method: 'POST' }) })
+    handle('ingestion:review', async (event, value: unknown) => {
+      requireMainWindow(event)
+      const shotIds = validateIngestIds(value)
+      await flushDrafts()
+      return backendRequest('/api/ingestion/review', { method: 'POST', body: JSON.stringify({ shotIds }) })
+    })
+    handle('ingestion:start', async (event, token: unknown, value: unknown) => {
+      requireMainWindow(event)
+      const shotIds = validateIngestIds(value)
+      if (typeof token !== 'string' || token.length > 64) throw new Error('Invalid processing review')
+      await flushDrafts()
+      return backendRequest('/api/ingestion', { method: 'POST', body: JSON.stringify({ token, shotIds }) })
+    })
+    handle('ingestion:stop', event => { requireMainWindow(event); return backendRequest('/api/ingestion/stop', { method: 'POST' }) })
+    handle('ingestion:dismiss-error', (event, id: unknown) => {
+      requireMainWindow(event)
+      if (typeof id !== 'string' || !/^[a-zA-Z0-9-]{1,64}$/.test(id)) throw new Error('Invalid error ID')
+      return backendRequest(`/api/ingestion/errors/${id}`, { method: 'DELETE' })
+    })
     handle('organization:save-status', event => { requireMainWindow(event); return { ...draftWrites.status(), closing: quitting } })
     handle('organization:retry-saves', async event => {
       requireMainWindow(event)
@@ -204,6 +235,7 @@ if (!app.requestSingleInstanceLock()) {
       if (choosingLibrary) return null
       choosingLibrary = true
       try {
+        if ((await backendRequest<{ active: boolean }>('/api/ingestion')).active) throw new Error('Stop the processing queue before changing the Library.')
         const current = await readConfiguration(configurationPath)
         const result = await dialog.showOpenDialog(owner, {
           title: 'Set Library Location', buttonLabel: 'Set Library',
@@ -213,8 +245,11 @@ if (!app.requestSingleInstanceLock()) {
         if (result.canceled || !result.filePaths[0]) return null
         const libraryPath = await realpath(result.filePaths[0])
         if (!(await stat(libraryPath)).isDirectory()) throw new Error('Choose a folder')
-        const next = { ...current, libraryPath }
+        const location = await inspectLibrary(libraryPath)
+        const next = { ...current, libraryPath, libraryMount: location.mount }
+        if ((await backendRequest<{ active: boolean }>('/api/ingestion')).active) throw new Error('Stop the processing queue before changing the Library.')
         await saveConfiguration(configurationPath, next)
+        await backendRequest('/api/ingestion/library/refresh', { method: 'POST' })
         return next
       } finally { choosingLibrary = false }
     })

@@ -254,7 +254,7 @@ export function ClipInspector({
                         className="attribute-panel mt-3 flex flex-1 flex-col"
                     >
                         <AttributeFields shots={selectedShot ? [selectedShot] : []} onUpdated={onOrganizationUpdated} />
-                        <div className="attribute-clear mt-auto flex justify-end pt-3">
+                        <div className="attribute-clear mt-auto flex justify-start pt-3">
                             <ClearOrganizationButton shots={selectedShot ? [selectedShot] : []} onUpdated={onOrganizationUpdated} />
                         </div>
                     </section>

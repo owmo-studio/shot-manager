@@ -1,14 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, isAbsolute } from 'node:path';
 import { DRAFT_RETENTION_DAYS, emptyAttributes, emptyOrganization, emptyVocabulary, normalizeOption, normalizeScene, normalizeTag, organizationKey, TAG_FIELDS, validateOptionRemovals, validateOrganizationAction } from '../shared/organization';
 import type { OptionRemovalPlan, OrganizationAction, ShotOrganization, TagVocabulary } from '../shared/organization';
 import { VIDEO_SAMPLE_SCHEME } from '../shared/shots';
+import type { IngestionReceipt } from '../shared/ingestion';
 import type { VideoFingerprint } from '../shared/shots';
 
 const draftKeyPattern = new RegExp(`^${VIDEO_SAMPLE_SCHEME}:[a-f0-9]{64}$`);
 
-interface DraftRecord { data: ShotOrganization; lastScannedAt: number; lastEditedAt: number; previousProjects?: string[]; clip?: { name: string; path: string } }
+interface DraftRecord { ingestion?: IngestionReceipt; data: ShotOrganization; lastScannedAt: number; lastEditedAt: number; previousProjects?: string[]; clip?: { name: string; path: string } }
 interface OrganizationState { version: 1 | 2 | 3 | 4 | 5 | 6 | 7; vocabulary: TagVocabulary; drafts: Record<string, DraftRecord> }
 
 function migrateKey(value: object, oldKey: string, newKey: string) {
@@ -50,6 +51,8 @@ export class OrganizationStore {
                 }
                 for (const [key, record] of Object.entries(state.drafts)) {
                     if (!draftKeyPattern.test(key) || !record || !Number.isFinite(record.lastScannedAt) || !Number.isFinite(record.lastEditedAt)) throw new Error('Invalid draft');
+                    if (record.ingestion !== undefined && (!record.ingestion || typeof record.ingestion.libraryPath !== 'string' || !isAbsolute(record.ingestion.libraryPath) || record.ingestion.libraryPath.includes('\0') ||
+                        !/^[a-f0-9]{64}$/.test(record.ingestion.signature) || typeof record.ingestion.ingestedAt !== 'string' || !Number.isFinite(Date.parse(record.ingestion.ingestedAt)))) throw new Error('Invalid processing record');
                     const data = record.data;
                     if (record.previousProjects !== undefined && (!Array.isArray(record.previousProjects) ||
                         record.previousProjects.some(value => typeof value !== 'string' || normalizeOption(value) !== value))) throw new Error('Invalid retained projects');
@@ -135,6 +138,21 @@ export class OrganizationStore {
     reset() {
         return this.serialize(async () => {
             await this.save({ version: 7, vocabulary: emptyVocabulary(), drafts: {} });
+        });
+    }
+
+    ingestion(fingerprint: VideoFingerprint) {
+        return this.serialize(async () => structuredClone((await this.load()).drafts[organizationKey(fingerprint)]?.ingestion));
+    }
+
+    markIngested(fingerprint: VideoFingerprint, receipt: IngestionReceipt) {
+        return this.serialize(async () => {
+            const next = await this.nextState();
+            const record = next.drafts[organizationKey(fingerprint)];
+            if (!record) throw new Error('Local draft no longer exists.');
+            record.ingestion = structuredClone(receipt);
+            record.lastEditedAt = this.now();
+            await this.save(next);
         });
     }
 
@@ -256,7 +274,7 @@ export class OrganizationStore {
             const cutoff = this.now() - DRAFT_RETENTION_DAYS * 86400000;
             let removed = 0;
             for (const [key, record] of Object.entries(next.drafts)) {
-                if (Math.max(record.lastScannedAt, record.lastEditedAt) <= cutoff) { delete next.drafts[key]; removed++; }
+                if (!record.ingestion && Math.max(record.lastScannedAt, record.lastEditedAt) <= cutoff) { delete next.drafts[key]; removed++; }
             }
             if (removed) await this.save(next);
             return removed;

@@ -1,3 +1,4 @@
+import type { IngestReview, IngestStatus } from './ingestion'
 import type { ShotChange, ShotCollection, ShotDetails } from './shots'
 import type { ViewingLut } from './viewing'
 import type { OptionRemovalPlan, OrganizationAction, TagVocabulary } from './organization'
@@ -26,6 +27,7 @@ export interface ImportSource {
 export interface AppConfiguration {
   version: 1
   libraryPath: string | null
+  libraryMount?: string
 }
 
 export interface CacheSummary {
@@ -45,6 +47,13 @@ export interface LocalDataSummary extends CacheSummary {
 }
 
 export interface DesktopAPI {
+  getIngestStatus: () => Promise<IngestStatus>
+  refreshLibrary: () => Promise<IngestStatus>
+  onIngestChanged: (listener: (status: IngestStatus) => void) => () => void
+  reviewIngest: (shotIds: string[]) => Promise<IngestReview>
+  startIngest: (token: string, shotIds: string[]) => Promise<IngestStatus>
+  stopIngest: () => Promise<IngestStatus>
+  dismissIngestError: (eventId: string) => Promise<void>
   getSaveStatus: () => Promise<SaveStatus>
   onSaveStatusChanged: (listener: (status: SaveStatus) => void) => () => void
   retryOrganizationSaves: () => Promise<void>

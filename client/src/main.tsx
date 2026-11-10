@@ -14,6 +14,7 @@ import { clipIdentity, uniqueShots, orderedShots, useShotSelection } from "./sho
 import { deviceLabel } from "./mediaInfo";
 import { RemoveSourceDialog } from "./RemoveSourceDialog";
 import { MIN_INSPECTOR_WIDTH } from "./ResizableInspector";
+import { IngestFooter } from "./IngestFooter";
 import { ShotGrid } from "./ShotGrid";
 import { scrollShotIntoView } from "./scrollShotIntoView";
 import { newlyUnavailableSources } from "./sourceAvailability";
@@ -29,6 +30,7 @@ function App() {
     const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
     const [selectedDevices, setSelectedDevices] = useState<string[]>([]);
     const newestFirst = true;
+    const [libraryActions, setLibraryActions] = useState<HTMLDivElement | null>(null);
     const [inspectorWidth, setInspectorWidth] = useState(MIN_INSPECTOR_WIDTH);
     const [shotCollection, setShotCollection] = useState<ShotCollection>({ revision: 0, shots: [], scans: [] });
     const latestShotRevision = useRef(-1);
@@ -63,9 +65,6 @@ function App() {
     const skippedKeys = new Set(shotCollection.shots.filter(shot => selection.skippedIds.includes(shot.id)).map(clipIdentity));
     const skippedShotIds = shotCollection.shots.filter(shot => skippedKeys.has(clipIdentity(shot))).map(shot => shot.id);
     const selectedSkippedCount = selectedShots.filter(shot => skippedKeys.has(clipIdentity(shot))).length;
-    const ingestShots = allUniqueShots.filter(shot => !skippedKeys.has(clipIdentity(shot)));
-    const skippedCount = allUniqueShots.length - ingestShots.length;
-    const blockedIngestCount = ingestShots.filter((shot) => !shot.available || !shot.editable || !availableSourceIds.has(shot.sourceId)).length;
     const navigationKey = JSON.stringify({ orderedIds: displayedShots.map((shot) => shot.id), selectableIds: selectableShots.map((shot) => shot.id) });
     const keyboardNavigation = useRef(false);
     const skipPending = useRef(new Set<string>());
@@ -264,18 +263,18 @@ function App() {
         setSourceError(null);
         try {
             if (droppedFiles) {
-                let rejected = 0;
+                const errors: string[] = [];
                 for (const file of droppedFiles) {
                     try {
                         const source = await window.desktop.addDroppedSource(file);
                         rememberSource(source);
-                    } catch {
-                        rejected += 1;
+                    } catch (error) {
+                        errors.push(errorMessage(error, "Drop readable folders or card roots, rather than individual files."));
                     }
                 }
-                if (rejected)
+                if (errors.length)
                     setSourceError(
-                        `${rejected} dropped item${rejected === 1 ? " could" : "s could"} not be added. Drop readable folders or card roots, rather than individual files.`,
+                        `${errors.length} dropped item${errors.length === 1 ? " could" : "s could"} not be added. ${[...new Set(errors)].join(" ")}`,
                     );
             } else {
                 const source = await window.desktop.chooseSource();
@@ -398,7 +397,7 @@ function App() {
                         Library
                     </button>
                 </nav>
-                <Configuration onLocalDataReset={collection => {
+                <Configuration libraryActionsRef={setLibraryActions} onLocalDataReset={collection => {
                     sourceRevision.current++;
                     setSources([]); setSelectedSourceIds([]); setSelectedDevices([]);
                     setSourceError(null); setRemovalSourceId(null); setUnavailableSources([]);
@@ -549,18 +548,14 @@ function App() {
                     onDismiss={() => setUnavailableSources([])}
                 />
             )}
-            <footer className="flex items-center justify-between border-t border-white/8 px-5 py-3 text-xs text-zinc-500">
-                <div role="status" className="flex items-center gap-2">
+            <footer className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-5 border-t border-white/8 px-5 py-3 text-xs text-zinc-500">
+                <div role="status" className="col-start-1 row-start-1 flex min-w-0 items-center gap-2">
                     <span
-                        className={`size-1.5 rounded-full ${status.state === "connected" ? "bg-emerald-400" : status.state === "starting" ? "bg-amber-400" : "bg-red-400"}`}
+                        className={`size-1.5 shrink-0 rounded-full ${status.state === "connected" ? "bg-emerald-400" : status.state === "starting" ? "bg-amber-400" : "bg-red-400"}`}
                     />
-                    {status.state === "connected" ? "Backend connected" : status.message}
+                    <span className="truncate">{status.state === "connected" ? "Backend connected" : status.message}</span>
                 </div>
-                <div className="flex items-center gap-4">
-                    <span role="status">{ingestShots.length} {ingestShots.length === 1 ? "clip" : "clips"} to ingest · {skippedCount} skipped{blockedIngestCount ? ` · ${blockedIngestCount} temporarily unavailable` : ""}</span>
-                    <button disabled title="Review and ingestion will be implemented next; skipping clips does not start processing"
-                        className="rounded-md border border-white/10 bg-white/4 px-3 py-1.5 text-xs text-zinc-500 disabled:cursor-not-allowed">Review &amp; Ingest</button>
-                </div>
+                <IngestFooter refreshTarget={libraryActions} shots={allUniqueShots} connected={status.state === 'connected'} onRefresh={async () => receiveShots(await window.desktop.getShots())} />
             </footer>
         </div>
     );

@@ -1,3 +1,4 @@
+import type { IngestionReceipt, IngestState } from './ingestion';
 import type { ShotOrganization } from './organization';
 
 export interface VideoMetadata {
@@ -59,6 +60,9 @@ export interface VideoShot {
     available: boolean;
     // Draft-edit eligibility is independent of source availability; rescans/queue locks block edits.
     editable: boolean;
+    ingestion?: IngestionReceipt;
+    ingestState?: IngestState;
+    thumbnailDigest?: string;
 }
 
 export interface SourceScan {

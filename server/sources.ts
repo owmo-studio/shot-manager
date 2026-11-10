@@ -71,6 +71,7 @@ export class SourceRegistry {
 
     add(selectedPath: string): Promise<ImportSource> {
         return this.serialize(async () => {
+            this.scanner.assertNoIngestion();
             const path = await realpath(selectedPath);
             const inspection = await inspectSource(path);
             const existing = this.sources.get(path);
@@ -83,6 +84,7 @@ export class SourceRegistry {
                 available: true,
                 warning: inspection.warning,
             };
+            this.scanner.assertNoIngestion();
             this.sources.set(path, { source, fingerprint: inspection.fingerprint, inspectionWarning: inspection.warning });
             this.scanner.sync([...this.sources.values()].map((entry) => entry.source));
             return source;
@@ -146,6 +148,7 @@ export class SourceRegistry {
 
     refresh(id: string) {
         return this.serialize(async () => {
+            this.scanner.assertNoIngestion();
             const entry = [...this.sources.values()].find((item) => item.source.id === id);
             if (!entry) throw Object.assign(new Error("Source not found."), { statusCode: 404 });
             if (this.scanner.isBusy(id)) {
@@ -163,6 +166,7 @@ export class SourceRegistry {
                 this.scanner.sync([...this.sources.values()].map((item) => item.source));
                 throw Object.assign(new Error("Source is unavailable."), { statusCode: 409 });
             }
+            this.scanner.assertNoIngestion();
             entry.source = {
                 ...entry.source,
                 id: entry.fingerprint === inspection.fingerprint ? id : randomUUID(),
@@ -181,6 +185,7 @@ export class SourceRegistry {
 
     relink(id: string, selectedPath: string) {
         return this.serialize(async () => {
+            this.scanner.assertNoIngestion();
             const previous = [...this.sources.values()].find((item) => item.source.id === id);
             if (!previous) throw Object.assign(new Error("Source not found."), { statusCode: 404 });
             if (previous.source.available || this.scanner.isBusy(id)) {
@@ -198,6 +203,7 @@ export class SourceRegistry {
                 path, name: basename(path) || path, type: inspection.type,
                 cameraModels: inspection.cameraModels, available: true, warning: inspection.warning,
             };
+            this.scanner.assertNoIngestion();
             // Replace the map entry in place to preserve the user's source ordering.
             this.sources = new Map([...this.sources].map(([key, entry]) => entry === previous
                 ? [path, { source, fingerprint: inspection.fingerprint, inspectionWarning: inspection.warning }] : [key, entry]));
@@ -209,6 +215,7 @@ export class SourceRegistry {
 
     remove(id: string): Promise<void> {
         return this.serialize(async () => {
+            this.scanner.assertNoIngestion();
             if (this.scanner.isBusy(id)) {
                 throw Object.assign(new Error("Wait for scanning to finish before removing this source."), { statusCode: 409 });
             }
