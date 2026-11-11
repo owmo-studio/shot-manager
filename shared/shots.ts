@@ -1,4 +1,4 @@
-import type { IngestionReceipt, IngestState } from './ingestion';
+import type { IngestionReceipt, IngestState, ProxyState } from './ingestion';
 import type { ShotOrganization } from './organization';
 
 export interface VideoMetadata {
@@ -63,6 +63,10 @@ export interface VideoShot {
     ingestion?: IngestionReceipt;
     ingestState?: IngestState;
     thumbnailDigest?: string;
+    proxyState?: ProxyState;
+    proxyPercent?: number;
+    proxyError?: string;
+    transferPercent?: number;
 }
 
 export interface SourceScan {

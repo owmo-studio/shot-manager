@@ -30,7 +30,7 @@ export function rsyncFile(source: string, destination: string, signal: AbortSign
         child.once('close', (code, killedBy) => {
             signal.removeEventListener('abort', stop);
             clearTimeout(escalation);
-            if (signal.aborted) reject(new Error('Processing stopped.'));
+            if (signal.aborted) reject(new Error('Commit stopped.'));
             else if (code !== 0) reject(new Error(`rsync failed (${code ?? killedBy}). ${output.trim()}`));
             else { progress(100); resolve(); }
         });

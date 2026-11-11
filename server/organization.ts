@@ -27,7 +27,7 @@ export class OrganizationStore {
     private vocabularyKey = '';
     private optionsRevision = 0;
     get vocabularyRevision() { return this.optionsRevision; }
-    constructor(private path?: string, private now = () => Date.now()) {}
+    constructor(private path?: string, private now = () => Date.now(), private assertWritable?: () => Promise<void>) {}
 
     private serialize<T>(operation: () => Promise<T>): Promise<T> {
         const result = this.pending.then(operation);
@@ -113,11 +113,13 @@ export class OrganizationStore {
         if (!validate()) throw new Error('Selected clips are now locked.');
         next.vocabulary.tags = [];
         if (this.path) {
+            await this.assertWritable?.();
             await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
             const temporary = `${this.path}.${randomUUID()}.tmp`;
             try {
                 await writeFile(temporary, JSON.stringify(next) + '\n', { mode: 0o600, flush: true });
                 if (!validate()) throw new Error('Selected clips are now locked.');
+                await this.assertWritable?.();
                 await rename(temporary, this.path);
             } finally { await unlink(temporary).catch(() => undefined); }
         }
@@ -294,7 +296,9 @@ export class OrganizationStore {
             const cutoff = this.now() - DRAFT_RETENTION_DAYS * 86400000;
             let removed = 0;
             for (const [key, record] of Object.entries(next.drafts)) {
-                if (!record.ingestion && Math.max(record.lastScannedAt, record.lastEditedAt) <= cutoff) { delete next.drafts[key]; removed++; }
+                const lastUse = Math.max(record.lastScannedAt, record.lastEditedAt,
+                    record.ingestion ? Date.parse(record.ingestion.ingestedAt) : 0);
+                if (lastUse <= cutoff) { delete next.drafts[key]; removed++; }
             }
             if (removed) await this.save(next);
             return removed;

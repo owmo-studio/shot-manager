@@ -80,8 +80,8 @@ async function until(test, description) {
         assert.equal(scanner.snapshot().shots.find(shot => shot.id === c.id).organization.skipped, false);
         await assert.rejects(scanner.updateOrganization([a.id], { field: 'notes', operation: 'set', value: 'locked' }), /locked/);
         await assert.rejects(scanner.setThumbnail(a.id, 'data:image/jpeg;base64,/9j/2Q=='), /queued/);
-        await assert.rejects(scanner.clearCache(), /Stop the processing queue/);
-        await assert.rejects(scanner.clearLocalData(), /Stop the processing queue/);
+        await assert.rejects(scanner.clearCache(), /Stop the commit queue/);
+        await assert.rejects(scanner.clearLocalData(), /Stop the commit queue/);
         await assert.rejects(queue.revert([a.id]), /Selected clips are locked/);
         assert.throws(() => scanner.previewOptions({ identity: [], project: [], tags: [] }), /Wait for scanning/);
         gate = false; release();
@@ -191,7 +191,7 @@ async function until(test, description) {
         await fs.writeFile(join(library, `${c.id}.source.mov`), 'conflicting role');
         await assert.rejects(queue.preview([c.id]), /different extension/);
         await fs.unlink(join(library, `${c.id}.source.mov`));
-        await assert.rejects(inspectLibrary(source, [source]), /separate/);
+        await assert.rejects(inspectLibrary(source, [source]), /different folders/);
         await assert.rejects(inspectLibrary(join('/Volumes', `owmo-absent-${process.pid}`)), /not mounted/);
 
         // A renderer can see and stop a queue even while submission validation is still running.

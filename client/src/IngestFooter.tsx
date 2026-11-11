@@ -56,12 +56,14 @@ function IngestDialog({
 
 function ReviewDialog({
     review,
+    shots,
     busy,
     error,
     onCancel,
     onStart,
 }: {
     review: IngestReview;
+    shots: VideoShot[];
     busy: boolean;
     error: string | null;
     onCancel: () => void;
@@ -71,21 +73,31 @@ function ReviewDialog({
     const clips = review.clips.filter((clip) => ids.includes(clip.id));
     const replacements = clips.filter((clip) => clip.mode === "replace").length;
     return (
-        <IngestDialog title="Ready to Process?" busy={busy} onCancel={onCancel}>
+        <IngestDialog title="Ready to Commit?" busy={busy} onCancel={onCancel}>
             <p className="mt-3 text-sm text-zinc-400">
                 {clips.length} {clips.length === 1 ? "clip" : "clips"} ·{" "}
                 {bytes(clips.reduce((sum, clip) => sum + clip.bytes, 0))}
+                {review.proxyPreparation && (
+                    <span className="ml-1 text-xs text-zinc-500">in sources and thumbnails; proxies additional</span>
+                )}
             </p>
             <p className="mt-2 break-all text-xs text-zinc-500">{review.libraryPath}</p>
             <div className="mt-4 max-h-[45vh] overflow-y-auto rounded-lg border border-white/10">
-                {clips.map((clip) => (
-                    <div key={clip.id} className="flex items-start gap-3 border-b border-white/8 p-3 last:border-0">
-                        <span
-                            className={`mt-0.5 rounded px-2 py-0.5 text-xs ${clip.mode === "replace" ? "bg-amber-400/10 text-amber-300" : "bg-emerald-400/10 text-emerald-300"}`}
-                        >
-                            {clip.mode === "replace" ? "↻ Update" : "+ New"}
-                        </span>
-                        <div className="min-w-0 flex-1 text-sm">
+                {review.clips.map((clip) => {
+                    const included = ids.includes(clip.id);
+                    const proxyReady = clip.proxyReady || shots.some((shot) => shot.id === clip.id && shot.proxyState === "ready");
+                    return (
+                    <div key={clip.id} data-review-included={included} className={`flex items-start gap-3 border-b border-white/8 p-3 last:border-0 ${included ? "" : "bg-white/[0.02]"}`}>
+                        <div className={`mt-0.5 flex shrink-0 flex-col items-start gap-1 ${included ? "" : "opacity-40"}`}>
+                            <span className={`rounded px-2 py-0.5 text-xs ${clip.mode === "replace" ? "bg-amber-400/10 text-amber-300" : "bg-blue-400/10 text-blue-300"}`}>
+                                {clip.mode === "replace" ? "↻ Update" : "New"}
+                            </span>
+                            {review.proxyPreparation && <span data-review-proxy-ready={proxyReady} title={proxyReady ? "Proxy ready" : "Proxy queued"}
+                                className={`rounded px-2 py-0.5 text-xs ${proxyReady ? "bg-emerald-400/10 text-emerald-300" : "bg-zinc-500/10 text-zinc-500"}`}>
+                                Proxy
+                            </span>}
+                        </div>
+                        <div className={`min-w-0 flex-1 text-sm ${included ? "" : "opacity-40"}`}>
                             <p className="break-all">
                                 {clip.filename} <span className="text-xs text-zinc-500">{bytes(clip.bytes)}</span>
                             </p>
@@ -101,20 +113,21 @@ function ReviewDialog({
                         </div>
                         <button
                             disabled={busy}
-                            onClick={() => setIds((current) => current.filter((id) => id !== clip.id))}
-                            aria-label={`Remove ${clip.filename} from review`}
-                            className={button}
+                            onClick={() => setIds((current) => current.includes(clip.id) ? current.filter((id) => id !== clip.id) : [...current, clip.id])}
+                            aria-label={`${included ? "Remove" : "Restore"} ${clip.filename} ${included ? "from" : "to"} review`}
+                            aria-pressed={!included}
+                            className="grid size-7 shrink-0 place-items-center rounded text-2xl leading-none text-zinc-400 hover:bg-white/8 hover:text-zinc-100 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:cursor-not-allowed disabled:opacity-40"
                         >
-                            ×
+                            {included ? "×" : "−"}
                         </button>
                     </div>
-                ))}
-                {!clips.length && <p className="p-4 text-sm text-zinc-500">No clips remaining.</p>}
+                    );
+                })}
             </div>
             {replacements > 0 && (
                 <p className="mt-3 text-sm text-amber-300">
-                    Processing will update the Library source, thumbnail, and metadata for {replacements}{" "}
-                    {replacements === 1 ? "clip" : "clips"}. Additional assets are preserved.
+                    Committing will update the Library source, thumbnail, and metadata, and add a proxy if missing, for{" "}
+                    {replacements} {replacements === 1 ? "clip" : "clips"}. Additional assets are preserved.
                 </p>
             )}
             {error && (
@@ -131,7 +144,7 @@ function ReviewDialog({
                     onClick={() => onStart(ids)}
                     className={`${button} bg-blue-500/30`}
                 >
-                    {busy ? "Queueing…" : "Process"}
+                    {busy ? "Queueing…" : "Commit"}
                 </button>
             </div>
         </IngestDialog>
@@ -158,7 +171,8 @@ export function IngestFooter({
         errors: [],
     });
     const [review, setReview] = useState<IngestReview | null>(null);
-    const [stopConfirm, setStopConfirm] = useState(false);
+    const [stopConfirm, setStopConfirm] = useState<"all" | "sync" | null>(null);
+    const [refreshing, setRefreshing] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     function receiveStatus(next: IngestStatus) {
@@ -198,7 +212,7 @@ export function IngestFooter({
         try {
             setReview(await window.desktop.reviewIngest(candidates.map((shot) => shot.id)));
         } catch (reason) {
-            setError(errorMessage(reason, "Could not prepare processing."));
+            setError(errorMessage(reason, "Could not prepare the commit."));
         } finally {
             setBusy(false);
         }
@@ -213,7 +227,7 @@ export function IngestFooter({
             setReview(null);
             await onRefresh();
         } catch (reason) {
-            setError(errorMessage(reason, "Could not queue clips for processing."));
+            setError(errorMessage(reason, "Could not queue clips for committing."));
             // A lost mutation response must not make the UI assume nothing was queued.
             const next = await window.desktop.getIngestStatus().catch(() => null);
             if (next) {
@@ -228,11 +242,11 @@ export function IngestFooter({
     async function stop() {
         setBusy(true);
         try {
-            receiveStatus(await window.desktop.stopIngest());
-            setStopConfirm(false);
+            receiveStatus(await (stopConfirm === "all" ? window.desktop.stopAllWork() : window.desktop.stopIngest()));
+            setStopConfirm(null);
             await onRefresh();
         } catch (reason) {
-            setStopConfirm(false);
+            setStopConfirm(null);
             setError(errorMessage(reason, "Could not stop the queue."));
         } finally {
             setBusy(false);
@@ -240,52 +254,72 @@ export function IngestFooter({
     }
 
     async function refreshLibrary() {
-        setBusy(true);
+        setRefreshing(true);
+        setError(null);
         try {
             const next = await window.desktop.refreshLibrary();
             receiveStatus(next);
             await onRefresh();
             if (next.libraryScan?.state === "unavailable") setError(next.libraryScan.error ?? "Library unavailable.");
         } catch (reason) {
-            setError(errorMessage(reason, "Could not check the Library."));
+            setError(errorMessage(reason, "Could not refresh assets."));
         } finally {
-            setBusy(false);
+            setRefreshing(false);
         }
     }
 
     const checkingLibrary = status.libraryScan?.state === "checking";
     const failure = status.errors[0];
+    const hasWork = status.active || !!status.work?.busy;
     return (
         <>
             {refreshTarget &&
                 createPortal(
                     <button
                         type="button"
-                        aria-label="Refresh Library"
-                        aria-busy={checkingLibrary}
+                        aria-label={hasWork ? "Stop all work" : "Refresh assets"}
+                        aria-busy={checkingLibrary || refreshing || status.stopping}
                         title={
-                            checkingLibrary
-                                ? "Checking Library…"
-                                : status.libraryScan?.state === "unavailable"
-                                  ? `Refresh Library: ${status.libraryScan.error ?? "Library unavailable"}`
-                                  : "Refresh Library"
+                            hasWork
+                                ? "Work in progress · Stop all work"
+                                : checkingLibrary || refreshing
+                                  ? "Checking assets…"
+                                  : "Refresh assets and resume background work"
                         }
-                        disabled={busy || !connected || !status.libraryPath || status.active || checkingLibrary}
-                        onClick={() => void refreshLibrary()}
-                        className={`grid size-8 shrink-0 place-items-center rounded-md transition enabled:hover:bg-white/8 enabled:hover:text-zinc-100 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40 ${checkingLibrary ? "disabled:cursor-wait" : "disabled:cursor-not-allowed"} ${status.libraryScan?.state === "unavailable" ? "text-amber-400" : "text-zinc-400"}`}
+                        disabled={
+                            busy ||
+                            !connected ||
+                            status.stopping ||
+                            (!hasWork && (!status.libraryPath || checkingLibrary || refreshing))
+                        }
+                        onClick={() => (hasWork ? setStopConfirm("all") : void refreshLibrary())}
+                        className={`grid size-8 shrink-0 place-items-center rounded-md text-zinc-400 transition focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40 disabled:cursor-not-allowed ${hasWork ? "work-control enabled:hover:bg-red-500/10 enabled:hover:text-red-400 enabled:focus-visible:bg-red-500/10 enabled:focus-visible:text-red-400 enabled:active:text-red-300" : "enabled:hover:bg-white/8 enabled:hover:text-zinc-100"}`}
                     >
-                        <svg
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.6"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            aria-hidden="true"
-                            className={`size-5 ${checkingLibrary ? "motion-safe:animate-spin" : ""}`}
-                        >
-                            <path d="M3 11a9 9 0 0 1 15.36-6.36L21 7M21 3v4h-4M21 13a9 9 0 0 1-15.36 6.36L3 17M7 17H3v4" />
-                        </svg>
+                        {hasWork ? (
+                            <span aria-hidden="true" className="relative size-5">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                                    strokeLinecap="round" className="work-control-activity absolute inset-0 size-5 motion-safe:animate-spin">
+                                    <circle cx="12" cy="12" r="8" opacity=".2" />
+                                    <path d="M12 4a8 8 0 0 1 8 8" />
+                                </svg>
+                                <svg viewBox="0 0 24 24" fill="currentColor" className="work-control-stop absolute inset-0 size-5">
+                                    <rect x="6" y="6" width="12" height="12" rx="1" />
+                                </svg>
+                            </span>
+                        ) : (
+                            <svg
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="1.6"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                aria-hidden="true"
+                                className={`size-5 ${checkingLibrary || refreshing ? "motion-safe:animate-spin" : ""}`}
+                            >
+                                <path d="M3 11a9 9 0 0 1 15.36-6.36L21 7M21 3v4h-4M21 13a9 9 0 0 1-15.36 6.36L3 17M7 17H3v4" />
+                            </svg>
+                        )}
                     </button>,
                     refreshTarget,
                 )}
@@ -294,55 +328,48 @@ export function IngestFooter({
                     data-ingest-progress
                     role="status"
                     aria-label={
-                        status.stopping ? "Stopping queue" : `${status.position} / ${status.total} clips processing`
+                        status.stopping
+                            ? "Stopping sync queue"
+                            : `${status.completed ?? 0} / ${status.total} clips synced`
                     }
-                    className="col-start-2 row-start-1 flex w-[clamp(18rem,32vw,30rem)] items-center gap-3 px-4"
+                    className="col-start-2 row-start-1 flex items-center gap-3 px-4"
                 >
-                    <span className="shrink-0 text-xs font-medium leading-4 text-zinc-200 tabular-nums">
-                        {status.position} / {status.total}
-                    </span>
-                    <progress
-                        aria-label={
-                            status.stopping
-                                ? "Stopping queue"
-                                : status.current?.phase === "metadata"
-                                  ? "Saving metadata"
-                                  : status.current ? `Processing ${status.current.filename}` : "Preparing clips"
-                        }
-                        className="ingest-progress block h-2.5 min-w-0 flex-1"
-                        max={100}
-                        value={status.current?.percent ?? 0}
-                    />
-                    <span className="shrink-0 text-xs font-medium leading-4 text-emerald-300 tabular-nums">
-                        {status.current?.percent ?? 0}%
-                    </span>
+                    {status.active && (
+                        <>
+                            <span className="shrink-0 text-xs font-medium text-zinc-200 tabular-nums">
+                                {status.completed ?? 0} / {status.total} clips synced
+                            </span>
+                            {!!status.waiting && !status.current && (
+                                <span className="text-[11px] text-zinc-500">Waiting for proxies</span>
+                            )}
+                        </>
+                    )}
                     <button
                         type="button"
-                        aria-label="Stop Queue"
-                        title="Stop Queue"
-                        onClick={() => setStopConfirm(true)}
+                        aria-label="Cancel sync queue"
+                        title="Cancel sync queue"
+                        onClick={() => setStopConfirm("sync")}
                         disabled={busy || status.stopping}
                         className="grid size-5 shrink-0 place-items-center rounded-full text-zinc-400 transition enabled:hover:bg-red-500/10 enabled:hover:text-red-400 enabled:active:bg-red-500/20 enabled:active:text-red-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400 disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="size-3" aria-hidden="true">
+                        <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            className="size-3"
+                            aria-hidden="true"
+                        >
                             <path d="m6 6 12 12M18 6 6 18" />
                         </svg>
                     </button>
                 </div>
             )}
-            {!status.active && status.libraryScan?.state === "unavailable" && (
-                <span
-                    role="status"
-                    title={status.libraryScan.error}
-                    className="col-start-2 row-start-1 text-xs text-amber-300"
-                >
-                    Library unavailable
-                </span>
-            )}
             <div className="col-start-3 row-start-1 flex min-w-0 flex-wrap items-center justify-end gap-x-4 gap-y-2">
                 {!status.active && (
                     <span role="status">
-                        {candidates.length} {candidates.length === 1 ? "clip" : "clips"} to process · {skipped} skipped
+                        {candidates.length} {candidates.length === 1 ? "clip" : "clips"} to commit · {skipped} skipped
                         {blocked ? ` · ${blocked} not ready` : ""}
                     </span>
                 )}
@@ -352,6 +379,7 @@ export function IngestFooter({
                         disabled={
                             !connected ||
                             busy ||
+                            refreshing ||
                             status.active ||
                             !status.libraryPath ||
                             status.libraryScan?.state !== "ready" ||
@@ -367,13 +395,14 @@ export function IngestFooter({
                         }
                         className={primaryButton}
                     >
-                        Process
+                        Commit
                     </button>
                 </div>
             </div>
             {review && (
                 <ReviewDialog
                     review={review}
+                    shots={shots}
                     busy={busy}
                     error={error}
                     onCancel={() => {
@@ -384,28 +413,35 @@ export function IngestFooter({
                 />
             )}
             {stopConfirm && (
-                <IngestDialog title="Stop Queue?" compact busy={busy} onCancel={() => setStopConfirm(false)}>
+                <IngestDialog
+                    title={stopConfirm === "all" ? "Stop all work?" : "Cancel sync queue?"}
+                    compact
+                    busy={busy}
+                    onCancel={() => setStopConfirm(null)}
+                >
                     <p className="mt-3 text-sm text-zinc-400">
-                        Cancel waiting clips and stop the active transfer?
+                        {stopConfirm === "all"
+                            ? "Stop thumbnail generation, proxy encoding, and transfers?"
+                            : "Stop the active transfer and remove waiting sync submissions? Background thumbnail and proxy generation will continue."}
                         <br />
-                        Completed clips remain synced.
+                        Completed clips remain synced. Completed scratch proxies are retained.
                     </p>
                     <div className="mt-5 flex justify-end gap-3">
-                        <button autoFocus disabled={busy} onClick={() => setStopConfirm(false)} className={button}>
+                        <button autoFocus disabled={busy} onClick={() => setStopConfirm(null)} className={button}>
                             Cancel
                         </button>
                         <button disabled={busy} onClick={() => void stop()} className={destructiveButton}>
-                            {busy ? "Stopping…" : "Stop"}
+                            {busy ? "Stopping…" : stopConfirm === "all" ? "Stop" : "Cancel sync"}
                         </button>
                     </div>
                 </IngestDialog>
             )}
             {!review && !stopConfirm && error && (
-                <SourceErrorDialog title="Processing error" message={error} onDismiss={() => setError(null)} />
+                <SourceErrorDialog title="Commit error" message={error} onDismiss={() => setError(null)} />
             )}
             {!review && !stopConfirm && !error && failure && (
                 <SourceErrorDialog
-                    title="Processing failed"
+                    title="Commit failed"
                     message={`${failure.filename}: ${failure.message}`}
                     onDismiss={() => {
                         void window.desktop

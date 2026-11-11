@@ -14,6 +14,7 @@ import { clipIdentity, uniqueShots, orderedShots, useShotSelection } from "./sho
 import { deviceLabel } from "./mediaInfo";
 import { RemoveSourceDialog } from "./RemoveSourceDialog";
 import { MIN_INSPECTOR_WIDTH } from "./ResizableInspector";
+import { ApplicationIndicator, applicationStatus } from "./ApplicationIndicator";
 import { IngestFooter } from "./IngestFooter";
 import { ShotGrid } from "./ShotGrid";
 import { scrollShotIntoView } from "./scrollShotIntoView";
@@ -162,6 +163,7 @@ function App() {
     const [refreshingSourceId, setRefreshingSourceId] = useState<string | null>(null);
     const [sourceError, setSourceError] = useState<string | null>(null);
     const sourceRefreshFailed = useRef(false);
+    const [communicationError, setCommunicationError] = useState(false);
     const [removalSourceId, setRemovalSourceId] = useState<string | null>(null);
     const [removingSource, setRemovingSource] = useState(false);
     const [removalError, setRemovalError] = useState<string | null>(null);
@@ -173,7 +175,9 @@ function App() {
     const dragDepth = useRef(0);
     const sourceRevision = useRef(0);
     const sourceMutation = useRef(false);
-    const canAddSource = sourcesLoaded && !choosingSource && !refreshingSourceId && status.state === "connected";
+    const workspaceStatus = applicationStatus(status, communicationError);
+    const canAddSource = sourcesLoaded && !choosingSource && !refreshingSourceId && status.state === "connected"
+        && !!status.application && workspaceStatus.level !== "error";
 
     function receiveShots(collection: ShotCollection) {
         if (collection.revision < latestShotRevision.current) return;
@@ -254,7 +258,9 @@ function App() {
     async function addSource(droppedFiles?: File[]) {
         if (sourceMutation.current) return;
         if (!canAddSource) {
-            setSourceError("Please wait for the backend to connect before adding a source.");
+            setSourceError(workspaceStatus.level === "error"
+                ? `${workspaceStatus.message}. Resolve this issue before adding a source.`
+                : "Please wait for the application status check before adding a source.");
             return;
         }
         sourceMutation.current = true;
@@ -344,10 +350,19 @@ function App() {
     useEffect(() => {
         let disposed = false;
         let timer: ReturnType<typeof setTimeout>;
+        let running = false;
+        let again = false;
+        let configurationVersion = 0;
         async function refresh() {
+            if (disposed) return;
+            if (running) { again = true; return; }
+            clearTimeout(timer); running = true;
+            const version = configurationVersion;
+            let nextDelay = 5000;
             try {
                 const nextStatus = await window.desktop.getBackendStatus();
-                if (!disposed) setStatus(nextStatus);
+                if (nextStatus.state === "starting") nextDelay = 250;
+                if (!disposed && version === configurationVersion) setStatus(nextStatus);
                 if (nextStatus.state === "connected" && !sourceMutation.current) {
                     const revision = sourceRevision.current;
                     try {
@@ -355,11 +370,13 @@ function App() {
                         const currentShots = await window.desktop.getShots();
                         if (!disposed && revision === sourceRevision.current) {
                             sourceRefreshFailed.current = false;
+                            setCommunicationError(false);
                             setSources(currentSources);
                             receiveShots(currentShots);
                             setSourcesLoaded(true);
                         }
                     } catch {
+                        if (!disposed) setCommunicationError(true);
                         if (!disposed && !sourceRefreshFailed.current) {
                             sourceRefreshFailed.current = true;
                             setSourceError("Could not refresh sources. The app will retry shortly.");
@@ -369,10 +386,19 @@ function App() {
             } catch {
                 if (!disposed) setStatus({ state: "unavailable", message: "Desktop connection unavailable." });
             }
-            if (!disposed) timer = setTimeout(refresh, 5000);
+            running = false;
+            if (!disposed) timer = setTimeout(refresh, again ? 0 : nextDelay);
+            again = false;
         }
+        const configurationChanged = () => {
+            configurationVersion++;
+            setStatus(current => current.state === "connected" ? { ...current, application: { level: "warning", message: "Checking Status" } } : current);
+            void refresh();
+        };
+        window.addEventListener("configuration-changed", configurationChanged);
         void refresh();
         return () => {
+            window.removeEventListener("configuration-changed", configurationChanged);
             disposed = true;
             clearTimeout(timer);
         };
@@ -397,14 +423,7 @@ function App() {
                         Library
                     </button>
                 </nav>
-                <Configuration libraryActionsRef={setLibraryActions} onLocalDataReset={collection => {
-                    sourceRevision.current++;
-                    setSources([]); setSelectedSourceIds([]); setSelectedDevices([]);
-                    setSourceError(null); setRemovalSourceId(null); setUnavailableSources([]);
-                    notifiedUnavailable.current.clear();
-                    selection.dispatch({ type: "reconcile", existingIds: [], visibleIds: [] });
-                    receiveShots(collection);
-                }} />
+                <Configuration libraryActionsRef={setLibraryActions} />
             </header>
             <main className="flex min-h-0 flex-1">
                 <aside className="w-60 shrink-0 overflow-y-auto border-r border-white/8 bg-white/1.5 p-3">
@@ -418,6 +437,7 @@ function App() {
                         <button
                             onClick={() => void addSource()}
                             disabled={!canAddSource}
+                            aria-label="Add Source"
                             className="rounded-md border border-white/10 bg-white/4 px-2.5 py-1.5 text-xs text-zinc-300 transition hover:bg-white/8 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40"
                         >
                             +
@@ -482,7 +502,7 @@ function App() {
                 >
                     {draggingFolders ? (
                         <p className="pointer-events-none text-sm text-blue-300">
-                            Drop folders or a card root to add sources
+                            {canAddSource ? "Drop folders or a card root to add sources" : "Adding sources is unavailable"}
                         </p>
                     ) : sources.length ? (
                         <ShotGrid
@@ -504,10 +524,7 @@ function App() {
                             >
                                 ＋
                             </button>
-                            <h2 className="text-xl font-medium tracking-tight">Your workspace is ready</h2>
-                            <p className="mt-3 leading-6 text-zinc-500">
-                                Add a source, or drag folders here to get started.
-                            </p>
+                            <h2 className="text-xl font-medium tracking-tight">{workspaceStatus.level === "ready" ? "Your workspace is ready" : workspaceStatus.message}</h2>
                         </div>
                     )}
                 </section>
@@ -549,12 +566,7 @@ function App() {
                 />
             )}
             <footer className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-5 border-t border-white/8 px-5 py-3 text-xs text-zinc-500">
-                <div role="status" className="col-start-1 row-start-1 flex min-w-0 items-center gap-2">
-                    <span
-                        className={`size-1.5 shrink-0 rounded-full ${status.state === "connected" ? "bg-emerald-400" : status.state === "starting" ? "bg-amber-400" : "bg-red-400"}`}
-                    />
-                    <span className="truncate">{status.state === "connected" ? "Backend connected" : status.message}</span>
-                </div>
+                <ApplicationIndicator backend={status} communicationError={communicationError} />
                 <IngestFooter refreshTarget={libraryActions} shots={allUniqueShots} connected={status.state === 'connected'} onRefresh={async () => receiveShots(await window.desktop.getShots())} />
             </footer>
         </div>

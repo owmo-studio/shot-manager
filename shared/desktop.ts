@@ -10,8 +10,14 @@ export interface BackendHealth {
   mode: 'development-only'
 }
 
+export interface ApplicationStatus {
+  level: 'ready' | 'warning' | 'error'
+  message: string
+  detail?: string
+}
+
 export type BackendStatus =
-  | { state: 'connected'; health: BackendHealth }
+  | { state: 'connected'; health: BackendHealth; application?: ApplicationStatus }
   | { state: 'starting' | 'unavailable'; message: string }
 
 export interface ImportSource {
@@ -28,11 +34,26 @@ export interface AppConfiguration {
   version: 1
   libraryPath: string | null
   libraryMount?: string
+  scratchPath?: string | null
+  scratchMount?: string
 }
+
+// Opaque capability for a directory selected by the native picker; not yet saved.
+export interface LocationChoice { token: string; path: string }
+export interface LocationChanges { library?: string | null }
+export interface CacheSelection { metadata: boolean; thumbnails: boolean; fingerprints: boolean; proxies: boolean }
 
 export interface CacheSummary {
   bytes: number
   files: number
+}
+
+export interface CacheInventory {
+  metadata: CacheSummary
+  thumbnails: CacheSummary
+  fingerprints: CacheSummary
+  proxies: CacheSummary
+  total: CacheSummary
 }
 
 export interface LocalDataSummary extends CacheSummary {
@@ -53,6 +74,8 @@ export interface DesktopAPI {
   reviewIngest: (shotIds: string[]) => Promise<IngestReview>
   startIngest: (token: string, shotIds: string[]) => Promise<IngestStatus>
   stopIngest: () => Promise<IngestStatus>
+  stopAllWork: () => Promise<IngestStatus>
+  resumeWork: () => Promise<IngestStatus>
   dismissIngestError: (eventId: string) => Promise<void>
   getSaveStatus: () => Promise<SaveStatus>
   onSaveStatusChanged: (listener: (status: SaveStatus) => void) => () => void
@@ -61,12 +84,15 @@ export interface DesktopAPI {
   saveConfigurationOptions: (removals: TagVocabulary, reviewToken: string) => Promise<{ vocabulary: TagVocabulary; collection: ShotCollection }>
   flushOrganizationText: () => Promise<void>
   getLocalDataSummary: () => Promise<LocalDataSummary>
-  clearLocalData: () => Promise<{ summary: LocalDataSummary; collection: ShotCollection }>
+  clearLocalData: (selection: CacheSelection) => Promise<{ collection: ShotCollection; configuration: AppConfiguration; workspaceReset: boolean }>
+  browseCache: () => Promise<void>
+  getCacheInventory: () => Promise<CacheInventory>
   getTagVocabulary: () => Promise<TagVocabulary>
   updateOrganization: (shotIds: string[], action: OrganizationAction) => Promise<{ collection: ShotCollection; vocabulary: TagVocabulary }>
   revertOrganization: (shotIds: string[]) => Promise<{ collection: ShotCollection; vocabulary: TagVocabulary }>
   getConfiguration: () => Promise<AppConfiguration>
-  chooseLibrary: () => Promise<AppConfiguration | null>
+  chooseLibrary: () => Promise<LocationChoice | null>
+  saveConfigurationLocations: (changes: LocationChanges) => Promise<{ configuration: AppConfiguration; warning?: string; workspaceReset?: boolean }>
   getCacheSummary: () => Promise<CacheSummary>
   clearCache: () => Promise<CacheSummary>
   getBackendStatus: () => Promise<BackendStatus>

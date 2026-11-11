@@ -251,7 +251,7 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
             </label>
             <TagFieldInput field="tags" shots={shots} vocabulary={vocabulary.tags} disabled={disabled} submit={action => void submit(action)} />
         </fieldset>
-        {!!shots.length && disabled && <p className="text-[11px] text-zinc-500">{shots.some(shot => !shot.editable) ? 'Editing paused during rescan.' : 'Saved tags unavailable. Refresh the source to retry.'}</p>}
+        {!!shots.length && disabled && <p className="text-[11px] text-zinc-500">{shots.some(shot => !shot.editable) ? 'Editing locked while clips are being prepared or committed.' : 'Saved tags unavailable. Refresh the source to retry.'}</p>}
         {failure && <div role="alert" className="text-xs text-red-300">
             {failure}<button type="button" aria-label="Retry organization save" onClick={async () => {
                 try {

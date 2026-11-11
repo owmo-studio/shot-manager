@@ -11,11 +11,14 @@
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && electron-vite build && node scripts/copy-luts.cjs",
     "check:selection": "npm run build && node scripts/check-selection.cjs",
+    "check:application": "node scripts/check-application-status.cjs",
     "check:configuration": "node scripts/check-configuration.cjs",
+    "check:cache": "node scripts/check-cache-files.cjs",
     "check:communication": "node scripts/check-communication.cjs",
     "check:organization": "node scripts/check-organization.cjs",
     "check:quit": "npm run build && node scripts/check-quit.cjs",
     "check:ingestion": "node scripts/check-ingestion.cjs",
+    "check:proxies": "node scripts/check-proxies.cjs",
     "check:ingestion-ui": "npm run build && node scripts/check-ingestion-ui.cjs"
   },
   "engines": {

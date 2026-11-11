@@ -106,7 +106,7 @@ if (!process.versions.electron) {
             assert.ok(window.isDestroyed(), 'Window closes after backend exit');
             assert.equal(lateFetches,0,'No renderer fetch reaches a closing backend');
             assert.equal(failedFetches,0,'Normal quit causes no refused backend requests');
-            const saved = JSON.parse(fs.readFileSync(join(profile, 'organization.json'), 'utf8'));
+            const saved = JSON.parse(fs.readFileSync(join(profile, 'Shot Manager Cache', 'metadata.json'), 'utf8'));
             assert.equal(Object.values(saved.drafts)[0].data.notes, 'last accepted edit');
             assert.equal(Object.values(saved.drafts)[0].data.scene, discardMode ? 'Walking home.' : 'Final scene before closing.');
             assert.equal(textRequests, failureMode && !discardMode ? 4 : 3, 'Scene and Notes save independently, and pending Scene flushes on either exit path');

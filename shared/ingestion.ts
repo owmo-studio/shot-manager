@@ -7,10 +7,12 @@ export interface IngestionReceipt {
 }
 
 export type IngestState = 'synced' | 'changes-pending' | 'queued' | 'processing' | 'unverified';
+export type ProxyState = 'missing' | 'queued' | 'encoding' | 'ready' | 'unverified' | 'failed';
 export interface IngestReview {
     token: string;
     libraryPath: string;
-    clips: { id: string; filename: string; bytes: number; mode: 'new' | 'replace'; files: { from: string; to: string }[] }[];
+    proxyPreparation?: boolean;
+    clips: { id: string; filename: string; bytes: number; mode: 'new' | 'replace'; proxyReady: boolean; files: { from: string; to: string }[] }[];
 }
 
 export interface IngestStatus {
@@ -21,6 +23,9 @@ export interface IngestStatus {
     stopping: boolean;
     position: number;
     total: number;
+    completed?: number;
+    waiting?: number;
+    work?: { paused: boolean; busy: boolean; encoding: boolean; queued: number; scratchPath: string | null; error?: string };
     current?: { id: string; filename: string; percent: number; phase: 'transferring' | 'metadata' };
     errors: { id: string; filename: string; message: string; eventId: string }[];
 }

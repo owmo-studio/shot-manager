@@ -1,8 +1,12 @@
 import { readConfiguration } from '../desktop/configuration';
+import { ApplicationMonitor } from './applicationStatus';
+import { assertCacheReady, pruneManagedCache } from './cacheFiles';
 import { inspectLibrary } from './library';
+import { ProxyQueue } from './proxies';
+import { rsyncFile } from './rsync';
 import { IngestQueue } from './ingestion';
 import Fastify from 'fastify'
-import type { BackendHealth } from '../shared/desktop'
+import type { AppConfiguration, BackendHealth } from '../shared/desktop'
 import type { IngestStatus } from '../shared/ingestion';
 import type { ShotChange } from '../shared/shots'
 import { SourceRegistry } from './sources'
@@ -15,15 +19,25 @@ import type { OrganizationAction, TagVocabulary } from '../shared/organization'
 
 export function createServer(token: string, onShotsChanged?: (change: ShotChange) => void, thumbnailCacheDirectory?: string, fingerprintDirectory?: string, organizationFile?: string, configurationFile?: string, onIngestChanged?: (status: IngestStatus) => void) {
   const server = Fastify({ logger: true })
-  const sources = new SourceRegistry(thumbnailCacheDirectory, fingerprintDirectory, organizationFile)
-  const configuration = async () => configurationFile ? readConfiguration(configurationFile) : { version: 1 as const, libraryPath: null, libraryMount: undefined }
+  const configuration = async (): Promise<AppConfiguration> => {
+    const saved = configurationFile ? await readConfiguration(configurationFile) : { version: 1 as const, libraryPath: null }
+    return process.env.SHOT_MANAGER_CACHE_PARENT && process.env.SHOT_MANAGER_CACHE_MOUNT
+      ? { ...saved, scratchPath: process.env.SHOT_MANAGER_CACHE_PARENT, scratchMount: process.env.SHOT_MANAGER_CACHE_MOUNT }
+      : saved
+  }
+  const cacheRoot = process.env.SHOT_MANAGER_CACHE_ROOT
+  const assertWritable = cacheRoot && process.env.SHOT_MANAGER_CACHE_PARENT && process.env.SHOT_MANAGER_CACHE_MOUNT
+    ? () => assertCacheReady(process.env.SHOT_MANAGER_CACHE_PARENT!, cacheRoot, process.env.SHOT_MANAGER_CACHE_MOUNT!) : undefined
+  const sources = new SourceRegistry(thumbnailCacheDirectory, fingerprintDirectory, organizationFile, assertWritable)
+  const proxies = new ProxyQueue(sources.scanner, configuration)
+  const application = new ApplicationMonitor(configuration, () => sources.list(), () => proxies.status().error)
   const ingestion = new IngestQueue(sources.scanner, async () => (await configuration()).libraryPath, async (path, roots) => {
     const configured = await configuration()
     if (!configured.libraryMount) throw new Error('Choose the Library location again in Configuration to confirm its volume.')
     const location = await inspectLibrary(path, roots)
     if (configured.libraryPath !== path || configured.libraryMount !== location.mount) throw new Error('The configured Library volume is not mounted at its expected location. Choose the Library again if it has changed.')
     return location
-  })
+  }, rsyncFile, proxies)
   ingestion.onChange = onIngestChanged
   const ids = { type: 'array', minItems: 1, maxItems: 1000, uniqueItems: true, items: { type: 'string', pattern: '^[a-f0-9]{64}$' } }
   server.post<{ Body: { shotIds: string[] } }>('/api/organization/revert', {
@@ -33,7 +47,7 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     catch (error) { throw Object.assign(error as Error, { statusCode: 409 }) }
   })
   server.get('/api/ingestion', () => ingestion.status())
-  server.post('/api/ingestion/library/refresh', () => ingestion.refreshLibrary())
+  server.post('/api/ingestion/library/refresh', () => { application.invalidate(); return ingestion.refreshLibrary() })
   server.post<{ Body: { shotIds: string[] } }>('/api/ingestion/review', {
     schema: { body: { type: 'object', required: ['shotIds'], additionalProperties: false, properties: { shotIds: ids } } }
   }, async request => {
@@ -47,17 +61,22 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     try { return await ingestion.submit(request.body.token, request.body.shotIds) }
     catch (error) { throw Object.assign(error as Error, { statusCode: 409 }) }
   })
-  server.post('/api/ingestion/stop', () => ingestion.stop())
+  server.post('/api/ingestion/stop', () => ingestion.cancelSync())
+  server.post('/api/work/stop', () => ingestion.stop())
+  server.post('/api/work/refresh', () => ingestion.refreshWork())
   server.delete<{ Params: { id: string } }>('/api/ingestion/errors/:id', {
     schema: { params: { type: 'object', required: ['id'], properties: { id: { type: 'string', maxLength: 64 } } } }
   }, (request, reply) => { ingestion.dismissError(request.params.id); return reply.code(204).send() })
-  sources.scanner.onChange = onShotsChanged
-  server.addHook('onReady', async () => { sources.startMonitoring() })
+  server.post('/api/work/resume', () => ingestion.resume())
+  server.post('/api/work/configure', () => { if (!proxies.status().paused) proxies.resume(); else proxies.schedule(); return ingestion.status() })
+  sources.scanner.onChange = change => { onShotsChanged?.(change); proxies.schedule(); ingestion.backgroundChanged() }
+  server.addHook('onReady', async () => { sources.startMonitoring(); void ingestion.status().catch(error => server.log.warn(error)) })
 
-  if (thumbnailCacheDirectory) {
+  if (thumbnailCacheDirectory && !cacheRoot) {
     server.addHook('onClose', async () => {
       await ingestion.close()
       try {
+        await assertWritable?.()
         const result = await pruneThumbnailCache(thumbnailCacheDirectory)
         if (result.removed) server.log.info({ removed: result.removed }, 'Expired thumbnail cache files removed')
         if (result.failed) server.log.warn({ failed: result.failed }, 'Some expired thumbnail cache files could not be removed')
@@ -80,6 +99,7 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
   }))
 
   server.get('/api/sources', () => sources.list())
+  server.get('/api/application-status', () => application.status())
   server.get('/api/organization/vocabulary', () => sources.scanner.vocabulary())
   const optionProperties = Object.fromEntries(['identity', 'project', 'tags'].map(field => [field, {
     type: 'array', maxItems: 1000, items: { type: 'string', maxLength: 128 }
@@ -128,7 +148,13 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
   server.delete('/api/local-data', {
     schema: { body: { type: 'object', required: ['confirm'], additionalProperties: false,
       properties: { confirm: { type: 'boolean', const: true } } } }
-  }, () => sources.clearLocalData())
+  }, async () => {
+    sources.scanner.assertNoIngestion()
+    const paused = proxies.status().paused
+    await proxies.stop()
+    try { return await sources.clearLocalData() }
+    finally { if (!paused) proxies.resume() }
+  })
   server.post<{ Params: { id: string } }>('/api/sources/:id/refresh', (request) => sources.refresh(request.params.id))
   server.get('/api/shots', () => sources.scanner.snapshot())
   server.get<{ Params: { id: string } }>('/api/shots/:id/lut', async (request) => {
@@ -160,7 +186,18 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     await sources.scanner.setThumbnail(request.params.id, request.body.dataUrl)
     return reply.code(204).send()
   })
-  server.addHook('onClose', async () => { await ingestion.close(); await sources.close() })
+  server.addHook('onClose', async () => {
+    const activeClipIds = new Set(sources.scanner.snapshot().shots.map(shot => shot.id))
+    await ingestion.close(); await proxies.close(); await sources.close()
+    if (cacheRoot) {
+      try {
+        await assertWritable?.()
+        const result = await pruneManagedCache(cacheRoot, 90, Date.now(), activeClipIds)
+        if (result.removed) server.log.info({ removed: result.removed }, 'Expired Cache files removed')
+        if (result.failed) server.log.warn({ failed: result.failed }, 'Some expired Cache files could not be removed')
+      } catch (error) { server.log.warn({ err: error }, 'Cache retention cleanup failed') }
+    }
+  })
   server.post<{ Body: { path: string } }>('/api/sources', {
     schema: { body: { type: 'object', required: ['path'], additionalProperties: false, properties: { path: { type: 'string', minLength: 1 } } } }
   }, (request) => sources.add(request.body.path))

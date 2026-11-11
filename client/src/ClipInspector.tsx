@@ -183,7 +183,7 @@ export function ClipInspector({
                                 <circle cx="8" cy="8" r="1.5" />
                                 <path d="m21 15-5-5L5 21" />
                             </svg>
-                            <span>{thumbnailBusy ? "Saving…" : "Set thumbnail"}</span>
+                            <span>{thumbnailBusy ? "Saving…" : "Thumbnail"}</span>
                         </button>
                         <SkipSelection count={empty ? 0 : 1} skippedCount={skipped ? 1 : 0} disabled={empty || pausedForScan} onChange={onSkipChange} />
                     </div>
@@ -206,7 +206,7 @@ export function ClipInspector({
                         >
                             {unavailable
                                 ? "source unavailable"
-                                : "Preview paused while this source is queued for rescanning or being rescanned."}
+                                : "Preview paused while this clip is being prepared or committed."}
                         </div>
                     ) : (
                         <PreviewPlayer key={shot.id} ref={preview} shot={shot} lutEnabled={lutEnabled} onReady={setFrameReady} onScrubbing={setScrubbing} />

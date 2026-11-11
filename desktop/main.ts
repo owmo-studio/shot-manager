@@ -1,10 +1,13 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, utilityProcess } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, protocol, shell, utilityProcess } from 'electron'
 import type { IpcMainInvokeEvent, UtilityProcess } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
-import { realpath, stat } from 'node:fs/promises'
+import { mkdir, realpath, stat } from 'node:fs/promises'
+import type { LibraryLocation } from '../server/library'
 import { inspectLibrary } from '../server/library'
+import { assertCacheReady, cacheFiles, cacheInventory, clearSelectedCache, managedCacheDirectory } from '../server/cacheFiles'
+import type { CacheSelection } from '../server/cacheFiles'
 import { readConfiguration, saveConfiguration } from './configuration'
 import { validateOptionRemovals, validateOrganizationAction } from '../shared/organization'
 import type { OrganizationAction } from '../shared/organization'
@@ -12,7 +15,7 @@ import { DebouncedWrites, RetainedWrites, WriteQueue } from './writeQueue'
 import { installApplicationMenu } from './menu'
 import { requestBackend } from './backendRequest'
 import { AppError, errorDetails } from '../shared/errors'
-import type { BackendHealth, BackendStatus } from '../shared/desktop'
+import type { ApplicationStatus, BackendHealth, BackendStatus } from '../shared/desktop'
 
 let mainWindow: BrowserWindow | null = null
 let backend: UtilityProcess | null = null
@@ -37,6 +40,18 @@ function publishSaveStatus() {
 async function flushDrafts() {
   await textWrites.flush()
   await draftWrites.drain()
+}
+
+async function assertSourceAddingReady() {
+  const status = await backendRequest<ApplicationStatus>('/api/application-status')
+  if (status.level === 'error') throw new Error(`${status.message}. Resolve this issue before adding sources.`)
+}
+
+async function managedCacheLocation() {
+  const parent = await realpath(app.getPath('userData'))
+  const root = join(parent, managedCacheDirectory)
+  const location = await inspectLibrary(parent)
+  return { parent, root, mount: location.mount }
 }
 const pendingIPC = new Set<Promise<unknown>>()
 const mediaShutdown = new AbortController()
@@ -68,12 +83,25 @@ function requireMainWindow(event: IpcMainInvokeEvent): BrowserWindow {
   return mainWindow
 }
 
-function startBackend() {
+async function startBackend(): Promise<void> {
   const sourceLuts = join(app.getAppPath(), 'resources', 'luts')
   const lutDirectory = existsSync(sourceLuts) ? sourceLuts : join(__dirname, '..', 'resources', 'luts')
+  const configurationPath = join(app.getPath('userData'), 'configuration.json')
+  const cache = await managedCacheLocation()
+  const storage = cacheFiles(cache.root)
+  await assertCacheReady(cache.parent, storage.root, cache.mount)
+  backendState = 'starting'
   backend = utilityProcess.fork(join(__dirname, 'backend.cjs'), [], {
     serviceName: 'Shot Manager Backend',
-    env: { ...process.env, SHOT_MANAGER_TOKEN: token, SHOT_MANAGER_THUMBNAIL_CACHE: join(app.getPath('userData'), 'cache', 'thumbnails'), SHOT_MANAGER_FINGERPRINT_DIRECTORY: join(app.getPath('userData'), 'fingerprints'), SHOT_MANAGER_ORGANIZATION_FILE: join(app.getPath('userData'), 'organization.json'), SHOT_MANAGER_CONFIGURATION_FILE: join(app.getPath('userData'), 'configuration.json'), SHOT_MANAGER_LUT_DIRECTORY: lutDirectory }
+    env: { ...process.env, SHOT_MANAGER_TOKEN: token,
+      SHOT_MANAGER_THUMBNAIL_CACHE: storage.thumbnails, SHOT_MANAGER_FINGERPRINT_DIRECTORY: storage.fingerprints,
+      SHOT_MANAGER_ORGANIZATION_FILE: storage.metadata, SHOT_MANAGER_CACHE_ROOT: storage.root,
+      SHOT_MANAGER_CACHE_PARENT: cache.parent, SHOT_MANAGER_CACHE_MOUNT: cache.mount,
+      SHOT_MANAGER_CONFIGURATION_FILE: configurationPath, SHOT_MANAGER_LUT_DIRECTORY: lutDirectory }
+  })
+  const started = new Promise<void>((resolve, reject) => {
+    backend!.on('message', (message: unknown) => { if (typeof message === 'object' && message !== null && 'type' in message && message.type === 'ready') resolve() })
+    backend!.once('exit', code => reject(new Error(`Backend exited before ready (${code}).`)))
   })
   backend.on('message', (message: unknown) => {
     if (typeof message === 'object' && message !== null && 'type' in message &&
@@ -103,6 +131,7 @@ function startBackend() {
       app.quit()
     }
   })
+  return started
 }
 
 function createWindow() {
@@ -152,11 +181,11 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     installApplicationMenu()
     const validateIngestIds = (value: unknown): string[] => {
-      if (!Array.isArray(value) || !value.length || value.length > 1000 || value.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id))) throw new Error('Invalid processing selection')
+      if (!Array.isArray(value) || !value.length || value.length > 1000 || value.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id))) throw new Error('Invalid commit selection')
       return [...new Set(value)]
     }
     handle('ingestion:status', event => { requireMainWindow(event); return backendRequest('/api/ingestion') })
-    handle('ingestion:refresh-library', event => { requireMainWindow(event); return backendRequest('/api/ingestion/library/refresh', { method: 'POST' }) })
+    handle('ingestion:refresh-library', event => { requireMainWindow(event); return backendRequest('/api/work/refresh', { method: 'POST' }) })
     handle('ingestion:review', async (event, value: unknown) => {
       requireMainWindow(event)
       const shotIds = validateIngestIds(value)
@@ -166,11 +195,13 @@ if (!app.requestSingleInstanceLock()) {
     handle('ingestion:start', async (event, token: unknown, value: unknown) => {
       requireMainWindow(event)
       const shotIds = validateIngestIds(value)
-      if (typeof token !== 'string' || token.length > 64) throw new Error('Invalid processing review')
+      if (typeof token !== 'string' || token.length > 64) throw new Error('Invalid commit review')
       await flushDrafts()
       return backendRequest('/api/ingestion', { method: 'POST', body: JSON.stringify({ token, shotIds }) })
     })
     handle('ingestion:stop', event => { requireMainWindow(event); return backendRequest('/api/ingestion/stop', { method: 'POST' }) })
+    handle('work:stop', event => { requireMainWindow(event); return backendRequest('/api/work/stop', { method: 'POST' }) })
+    handle('work:resume', event => { requireMainWindow(event); return backendRequest('/api/work/resume', { method: 'POST' }) })
     handle('ingestion:dismiss-error', (event, id: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-zA-Z0-9-]{1,64}$/.test(id)) throw new Error('Invalid error ID')
@@ -207,10 +238,54 @@ if (!app.requestSingleInstanceLock()) {
       requireMainWindow(event)
       return backendRequest('/api/local-data')
     })
-    handle('local-data:clear', async (event) => {
+    handle('local-data:clear', async (event, value: unknown) => {
       requireMainWindow(event)
+      if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        ['metadata', 'thumbnails', 'fingerprints', 'proxies'].some(key => typeof (value as Record<string, unknown>)[key] !== 'boolean') ||
+        Object.keys(value).some(key => !['metadata', 'thumbnails', 'fingerprints', 'proxies'].includes(key)) ||
+        !Object.values(value).some(Boolean)) throw new Error('Choose Cache files to clear.')
       await flushDrafts()
-      return organizationWrites.run(() => backendRequest('/api/local-data', { method: 'DELETE', body: JSON.stringify({ confirm: true }) }))
+      return organizationWrites.run(async () => {
+        const configuration = await readConfiguration(join(app.getPath('userData'), 'configuration.json'))
+        const cache = await managedCacheLocation()
+        const storage = cacheFiles(cache.root)
+        await assertCacheReady(cache.parent, storage.root, cache.mount)
+        const status = await backendRequest<{ active: boolean }>('/api/ingestion')
+        if (status.active) throw new Error('Wait for the sync queue to finish before clearing Cache.')
+        await backendRequest('/api/work/stop', { method: 'POST' })
+        const sources = await backendRequest<{ path: string; available: boolean }[]>('/api/sources')
+        let clearError: unknown
+        try {
+          if (backend) {
+            const previous = backend
+            const exited = new Promise<void>(resolve => previous.once('exit', () => resolve()))
+            previous.postMessage('shutdown')
+            await exited
+          }
+          await assertCacheReady(cache.parent, storage.root, cache.mount)
+          await clearSelectedCache(storage.root, value as CacheSelection, configuration.libraryPath)
+        } catch (error) { clearError = error }
+        finally { await startBackend() }
+        for (const source of sources.filter(source => source.available)) {
+          await backendRequest('/api/sources', { method: 'POST', body: JSON.stringify({ path: source.path }) }).catch(error => console.warn('Source could not be restored after Cache clearing.', error))
+        }
+        if (clearError) throw clearError
+        return { configuration, collection: await backendRequest('/api/shots'), workspaceReset: true }
+      })
+    })
+    handle('local-data:browse', async event => {
+      requireMainWindow(event)
+      const cache = await managedCacheLocation()
+      await assertCacheReady(cache.parent, cache.root, cache.mount)
+      await mkdir(cache.root, { recursive: true, mode: 0o700 })
+      const error = await shell.openPath(cache.root)
+      if (error) throw new Error(`Finder could not open Cache: ${error}`)
+    })
+    handle('local-data:inventory', async event => {
+      requireMainWindow(event)
+      const cache = await managedCacheLocation()
+      await assertCacheReady(cache.parent, cache.root, cache.mount)
+      return cacheInventory(cache.root)
     })
     handle('organization:flush-text', event => {
       requireMainWindow(event)
@@ -236,28 +311,71 @@ if (!app.requestSingleInstanceLock()) {
       requireMainWindow(event)
       return readConfiguration(configurationPath)
     })
-    handle('configuration:choose-library', async (event) => {
+    const locationChoices = new Map<string, { token: string; location: LibraryLocation; baseline: string }>()
+    for (const kind of ['library'] as const) handle(`configuration:choose-${kind}`, async event => {
       const owner = requireMainWindow(event)
       if (choosingLibrary) return null
       choosingLibrary = true
       try {
-        if ((await backendRequest<{ active: boolean }>('/api/ingestion')).active) throw new Error('Stop the processing queue before changing the Library.')
         const current = await readConfiguration(configurationPath)
+        const currentPath = current.libraryPath
         const result = await dialog.showOpenDialog(owner, {
-          title: 'Set Library Location', buttonLabel: 'Set Library',
-          ...(current.libraryPath ? { defaultPath: current.libraryPath } : {}),
-          properties: ['openDirectory']
+          title: 'Set Library Location',
+          buttonLabel: 'Set Library',
+          ...(currentPath ? { defaultPath: currentPath } : {}), properties: ['openDirectory']
         })
         if (result.canceled || !result.filePaths[0]) return null
-        const libraryPath = await realpath(result.filePaths[0])
-        if (!(await stat(libraryPath)).isDirectory()) throw new Error('Choose a folder')
-        const location = await inspectLibrary(libraryPath)
-        const next = { ...current, libraryPath, libraryMount: location.mount }
-        if ((await backendRequest<{ active: boolean }>('/api/ingestion')).active) throw new Error('Stop the processing queue before changing the Library.')
-        await saveConfiguration(configurationPath, next)
-        await backendRequest('/api/ingestion/library/refresh', { method: 'POST' })
-        return next
+        const location = await inspectLibrary(await realpath(result.filePaths[0]))
+        const choice = { token: randomBytes(24).toString('hex'), location, baseline: JSON.stringify(current) }
+        locationChoices.set(kind, choice)
+        return { token: choice.token, path: location.path }
       } finally { choosingLibrary = false }
+    })
+    handle('configuration:save-locations', async (event, changes: unknown) => {
+      requireMainWindow(event)
+      if (!changes || typeof changes !== 'object' || Array.isArray(changes) ||
+        !Object.keys(changes).length || Object.keys(changes).some(key => key !== 'library')) throw new Error('Invalid location choices.')
+      await flushDrafts()
+      return organizationWrites.run(async () => {
+        const current = await readConfiguration(configurationPath)
+        const next = { ...current }
+        const selected = []
+        for (const kind of ['library'] as const) {
+          if (!(kind in changes)) continue
+          if ((changes as Record<string, unknown>)[kind] === null) {
+            next.libraryPath = null; delete next.libraryMount
+            selected.push(kind)
+            continue
+          }
+          const choice = locationChoices.get(kind)
+          if (!choice || choice.token !== (changes as Record<string, unknown>)[kind]) throw new Error('Choose the location again before saving.')
+          if (choice.baseline !== JSON.stringify(current)) throw new Error('Configuration changed. Close Configuration and choose the locations again.')
+          const location = await inspectLibrary(choice.location.path)
+          if (location.identity !== choice.location.identity || location.mount !== choice.location.mount) throw new Error('The selected folder or volume changed. Choose it again.')
+          next.libraryPath = location.path; next.libraryMount = location.mount
+          selected.push(kind)
+        }
+        const sources = await backendRequest<{ path: string }[]>('/api/sources')
+        const sourcePaths = sources.map(source => source.path)
+        if (next.libraryPath) await inspectLibrary(next.libraryPath, sourcePaths)
+        const status = await backendRequest<{ active: boolean; stopping: boolean; work?: { paused: boolean } }>('/api/ingestion')
+        if (status.active || status.stopping) throw new Error('Wait for the sync queue to finish or stop it before saving locations.')
+        const wasPaused = status.work?.paused === true
+        await backendRequest('/api/work/stop', { method: 'POST' })
+        try { await saveConfiguration(configurationPath, next) }
+        catch (error) {
+          if (!wasPaused) await backendRequest('/api/work/resume', { method: 'POST' }).catch(() => undefined)
+          throw error
+        }
+        for (const kind of selected) locationChoices.delete(kind)
+        try {
+          await backendRequest('/api/ingestion/library/refresh', { method: 'POST' })
+          if (!wasPaused) await backendRequest('/api/work/resume', { method: 'POST' })
+          return { configuration: next }
+        } catch (error) {
+          return { configuration: next, warning: `Locations saved, but background work could not refresh. Use Refresh to resume. ${error instanceof Error ? error.message : String(error)}` }
+        }
+      })
     })
     handle('cache:summary', (event) => {
       requireMainWindow(event)
@@ -338,6 +456,7 @@ if (!app.requestSingleInstanceLock()) {
     })
     handle('sources:drop', async (event, path: unknown) => {
       requireMainWindow(event)
+      await assertSourceAddingReady()
       if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) {
         throw new Error('Drop a folder from your computer')
       }
@@ -352,6 +471,7 @@ if (!app.requestSingleInstanceLock()) {
     })
     handle('sources:choose', async (event) => {
       const owner = requireMainWindow(event)
+      await assertSourceAddingReady()
       if (choosingSource) return null
       choosingSource = true
       try {
@@ -378,12 +498,21 @@ if (!app.requestSingleInstanceLock()) {
         })
         if (!response.ok) throw new Error(`Health check failed (${response.status})`)
         const health = await response.json() as BackendHealth
-        return { state: 'connected', health }
+        let application: ApplicationStatus
+        try {
+          application = await backendRequest<ApplicationStatus>('/api/application-status')
+        } catch {
+          application = { level: 'error', message: 'Status Unavailable', detail: 'Could not check application status. The app will retry shortly.' }
+        }
+        return { state: 'connected', health, application }
       } catch {
         return { state: 'unavailable', message: 'Backend is not responding.' }
       }
     })
-    startBackend()
+    void startBackend().catch(error => {
+      backendState = 'unavailable'
+      console.error('Backend could not start.', error)
+    })
     createWindow()
     app.on('activate', () => { if (!mainWindow) createWindow() })
   }).catch((error: unknown) => {

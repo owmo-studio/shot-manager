@@ -43,7 +43,7 @@ export function RevertOrganizationButton({ shots, onReverted }: {
             <p id="revert-organization-description" className="mt-3 text-sm leading-6 text-zinc-400">
                 Replace local Identity, Project, Scene, Notes, and Tags with the Library values for {targets.length} {targets.length === 1 ? 'clip' : 'clips'} with pending updates?
             </p>
-            <p className="mt-2 text-xs leading-5 text-zinc-500">Thumbnail changes may still need processing.</p>
+            <p className="mt-2 text-xs leading-5 text-zinc-500">Missing Library assets or thumbnail changes may still need to be committed.</p>
             {error && <p role="alert" className="mt-3 text-xs text-red-300">{error}</p>}
             <div className="mt-6 flex justify-end gap-3">
                 <button autoFocus type="button" disabled={busy} onClick={() => setTargets(null)} className="rounded-lg border border-white/10 px-4 py-2 text-sm hover:bg-white/8 disabled:opacity-40">Cancel</button>

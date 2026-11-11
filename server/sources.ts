@@ -54,8 +54,8 @@ export async function inspectSource(path: string) {
 export class SourceRegistry {
     readonly scanner: ShotScanner;
 
-    constructor(thumbnailCacheDirectory?: string, fingerprintDirectory?: string, organizationFile?: string) {
-        this.scanner = new ShotScanner(thumbnailCacheDirectory, fingerprintDirectory, organizationFile);
+    constructor(thumbnailCacheDirectory?: string, fingerprintDirectory?: string, organizationFile?: string, assertWritable?: () => Promise<void>) {
+        this.scanner = new ShotScanner(thumbnailCacheDirectory, fingerprintDirectory, organizationFile, assertWritable);
     }
     private sources = new Map<string, { source: ImportSource; fingerprint: string; inspectionWarning?: string }>();
     private monitor?: ReturnType<typeof setTimeout>;

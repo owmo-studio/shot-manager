@@ -7,7 +7,7 @@ import { validateClipAttributes } from '../shared/organization';
 
 const execute = promisify(execFile);
 export interface LibraryLocation { path: string; identity: string; mount: string }
-export interface LibraryPresence { existing: Set<string>; complete: Set<string> }
+export interface LibraryPresence { existing: Set<string>; complete: Set<string>; proxies: Set<string> }
 
 export function libraryAssetName(id: string, role: 'source' | 'thumb' | 'metadata' | 'proxy', extension: string) {
     if (!/^[a-f0-9]{64}$/.test(id) || !/^[a-z0-9]+$/.test(extension)) throw new Error('Invalid Library asset identifier.');
@@ -18,8 +18,11 @@ export function libraryAssetName(id: string, role: 'source' | 'thumb' | 'metadat
 export async function listLibrary(location: LibraryLocation) {
     const entries = await readdir(location.path, { withFileTypes: true });
     const assets = new Map<string, { sources: number; thumbnail: boolean; metadata: boolean }>();
+    const proxies = new Set<string>();
     for (const entry of entries) {
         if (!entry.isFile() || entry.name.endsWith('.partial')) continue;
+        const proxy = /^([a-f0-9]{64})\.proxy\.mov$/.exec(entry.name);
+        if (proxy) { proxies.add(proxy[1]); continue; }
         const match = /^([a-f0-9]{64})\.(source\.[a-z0-9]+|thumb\.jpg|metadata\.json)$/.exec(entry.name);
         if (!match) continue;
         const asset = assets.get(match[1]) ?? { sources: 0, thumbnail: false, metadata: false };
@@ -28,7 +31,7 @@ export async function listLibrary(location: LibraryLocation) {
         else asset.metadata = true;
         assets.set(match[1], asset);
     }
-    return { names: entries.map(entry => entry.name), existing: new Set(assets.keys()), complete: new Set([...assets].filter(([, asset]) =>
+    return { names: entries.map(entry => entry.name), proxies, existing: new Set(assets.keys()), complete: new Set([...assets].filter(([, asset]) =>
         asset.sources === 1 && asset.thumbnail && asset.metadata).map(([id]) => id)) };
 }
 
@@ -51,7 +54,7 @@ export async function inspectLibrary(configured: string, sources: string[] = [])
     if (!mount || (within('/Volumes', chosen) && !within('/Volumes', mount.path))) throw new Error('The Library volume is not mounted.');
     const path = await realpath(chosen);
     if (path !== chosen) throw new Error('The Library location changed. Choose the actual folder in Configuration.');
-    if (sources.some(source => within(source, path) || within(path, source))) throw new Error('The Library must be separate from source folders.');
+    if (sources.some(source => resolve(source) === path)) throw new Error('Choose different folders for Library, Scratch, and sources.');
     const info = await stat(path);
     if (!info.isDirectory()) throw new Error('The Library is not a folder.');
     return { path, identity: `${info.dev}:${info.ino}:${info.birthtimeMs}`, mount: `${mount.device}:${mount.path}:${mount.type}` };

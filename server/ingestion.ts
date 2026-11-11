@@ -8,11 +8,12 @@ import { ShotScanner } from './scanner';
 import { inspectLibrary, libraryAssetName, libraryFileIdentity, listLibrary, readLibraryAttributes } from './library';
 import type { LibraryLocation, LibraryPresence } from './library';
 import { rsyncFile } from './rsync';
+import type { ProxyQueue } from './proxies';
 
 type Capture = Awaited<ReturnType<ShotScanner['captureIngest']>>;
 interface Entry {
     capture: Capture;
-    names: [string, string, string];
+    names: [string, string, string, ...string[]];
     existing: Record<string, string | null>;
 }
 interface LibrarySnapshot extends LibraryPresence { location: LibraryLocation; names: string[] }
@@ -28,12 +29,27 @@ export class IngestQueue {
     private queuedIds: string[] = [];
     private progressTimer?: ReturnType<typeof setTimeout>;
     private libraryScanVersion = 0;
+    private workGeneration = 0;
     private libraryRefresh?: { path: string; promise: Promise<LibrarySnapshot | undefined> };
     onChange?: (status: IngestStatus) => void;
     private state: IngestStatus = { revision: 0, libraryPath: null, active: false, stopping: false, position: 0, total: 0, errors: [] };
 
     constructor(private scanner: ShotScanner, private configuredLibrary: () => Promise<string | null>,
-        private inspect = inspectLibrary, private transfer = rsyncFile) {}
+        private inspect = inspectLibrary, private transfer = rsyncFile, private proxies?: ProxyQueue) {
+        if (proxies) {
+            proxies.onChange = () => this.backgroundChanged();
+            proxies.onError = (shot, message) => {
+                if (!this.queuedIds.includes(shot.id)) this.state.errors.push({ id: shot.id, filename: shot.filename, message, eventId: randomUUID() });
+                this.publish();
+            };
+        }
+    }
+
+    backgroundChanged() { this.state.work = this.proxies?.status(); this.publish(); }
+    resume() {
+        if (this.closing || this.state.stopping) throw new Error('Wait for work to stop before resuming.');
+        this.scanner.resumeBackground(); this.proxies?.resume(); this.backgroundChanged(); return structuredClone(this.state);
+    }
 
     async status() {
         const path = await this.configuredLibrary();
@@ -45,6 +61,7 @@ export class IngestQueue {
             this.publish();
         }
         if (path && !this.state.libraryScan && !this.closing) void this.scanLibrary();
+        this.state.work = this.proxies?.status();
         return structuredClone(this.state);
     }
 
@@ -67,6 +84,7 @@ export class IngestQueue {
                 await this.location(location);
                 if (!current()) return undefined;
                 this.scanner.setLibraryPresence(path, listing);
+                this.proxies?.refresh();
                 this.state.libraryScan = { state: 'ready', scannedAt: new Date().toISOString() };
                 this.publish();
                 return { location, ...listing };
@@ -91,6 +109,14 @@ export class IngestQueue {
             await this.scanLibrary();
             return structuredClone(this.state);
         } finally { this.working = false; }
+    }
+
+    async refreshWork() {
+        const generation = this.workGeneration;
+        await this.refreshLibrary();
+        // Stopping while a read-only presence check finishes must not restart work.
+        if (generation === this.workGeneration && !this.closing && !this.state.stopping && this.state.libraryScan?.state === 'ready') this.resume();
+        return structuredClone(this.state);
     }
 
     async revert(ids: string[]) {
@@ -127,21 +153,22 @@ export class IngestQueue {
 
     private async location(expected?: LibraryLocation) {
         const configured = await this.configuredLibrary();
-        if (!configured) throw new Error('Set a Library location in Configuration before processing clips.');
+        if (!configured) throw new Error('Set a Library location in Configuration before committing clips.');
         const location = await this.inspect(configured, this.scanner.sourceRoots());
-        if (expected && JSON.stringify(location) !== JSON.stringify(expected)) throw new Error('The Library folder or mounted volume changed. Review the processing plan again.');
+        if (expected && JSON.stringify(location) !== JSON.stringify(expected)) throw new Error('The Library folder or mounted volume changed. Review the commit plan again.');
         return location;
     }
 
     private beginOperation() {
-        if (this.closing || this.working || this.state.active) throw Object.assign(new Error('Wait for the current processing operation to finish.'), { statusCode: 409 });
+        if (this.closing || this.working || this.state.active) throw Object.assign(new Error('Wait for the current commit to finish.'), { statusCode: 409 });
         this.working = true;
     }
 
     private names(capture: Capture): Entry['names'] {
         const extension = extname(capture.shot.filename).toLowerCase();
         if (!/^\.[a-z0-9]+$/.test(extension)) throw new Error('Unsupported source filename extension.');
-        return [libraryAssetName(capture.shot.id, 'source', extension.slice(1)), libraryAssetName(capture.shot.id, 'thumb', 'jpg'), libraryAssetName(capture.shot.id, 'metadata', 'json')];
+        return [libraryAssetName(capture.shot.id, 'source', extension.slice(1)), libraryAssetName(capture.shot.id, 'thumb', 'jpg'), libraryAssetName(capture.shot.id, 'metadata', 'json'),
+            ...(this.proxies ? [libraryAssetName(capture.shot.id, 'proxy', 'mov')] : [])];
     }
 
     private async existing(location: LibraryLocation, id: string, names: Entry['names'], listing?: string[]) {
@@ -149,7 +176,7 @@ export class IngestQueue {
         // A different extension would create two assets with the same role. Do not silently choose one.
         const unexpected = files.find(name => (name.startsWith(`${id}.source.`) || name.startsWith(`${id}.thumb.`)) && !names.includes(name) &&
             !name.endsWith('.partial') && /^[a-f0-9]{64}\.(?:source|thumb)\.[a-z0-9]+$/.test(name));
-        if (unexpected) throw new Error(`Existing asset ${unexpected} uses a different extension. Resolve it before processing this clip.`);
+        if (unexpected) throw new Error(`Existing asset ${unexpected} uses a different extension. Resolve it before committing this clip.`);
         const entries = await Promise.all(names.map(async name => [name, await libraryFileIdentity(join(location.path, name))] as const));
         return Object.fromEntries(entries);
     }
@@ -162,20 +189,22 @@ export class IngestQueue {
             const library = await this.scanLibrary();
             if (!library) throw new Error(this.state.libraryScan?.error ?? 'The Library could not be checked.');
             const { location, names: listing } = library;
+            await this.proxies?.checkConfiguration(ids);
             const entries: Entry[] = [];
             for (const id of [...new Set(ids)]) {
                 const capture = await this.scanner.captureIngest(id);
-                if (library.complete.has(id) && capture.shot.ingestion?.libraryPath === location.path && capture.shot.ingestion.signature === capture.signature) continue;
+                if (library.complete.has(id) && (!this.proxies || library.proxies.has(id)) && capture.shot.ingestion?.libraryPath === location.path && capture.shot.ingestion.signature === capture.signature) continue;
                 const names = this.names(capture);
                 entries.push({ capture, names, existing: await this.existing(location, id, names, listing) });
             }
-            if (!entries.length) throw new Error('No clips need processing.');
+            if (!entries.length) throw new Error('No clips need committing.');
             await this.location(location);
             this.review = { token: randomUUID(), location, entries, created: Date.now() };
-            return { token: this.review.token, libraryPath: location.path, clips: entries.map(entry => ({
+            return { token: this.review.token, libraryPath: location.path, proxyPreparation: !!this.proxies, clips: entries.map(entry => ({
                 id: entry.capture.shot.id, filename: entry.capture.shot.filename, bytes: entry.capture.shot.bytes + entry.capture.thumbnail.length,
-                mode: Object.values(entry.existing).some(Boolean) ? 'replace' : 'new',
-                files: entry.names.map((name, index) => ({ from: index === 0 ? entry.capture.path : index === 1 ? 'Current thumbnail' : 'Clip metadata', to: join(location.path, name) })),
+                mode: entry.names.slice(0, 3).some(name => entry.existing[name]) ? 'replace' : 'new',
+                proxyReady: !!(this.proxies && (entry.existing[entry.names[3]] || this.scanner.proxyReady(entry.capture.shot.id))),
+                files: entry.names.map((name, index) => ({ from: index === 0 ? entry.capture.path : index === 1 ? 'Current thumbnail' : index === 2 ? 'Clip metadata' : entry.existing[name] ? 'Existing Library proxy (retained)' : 'Generated ProRes proxy', to: join(location.path, name) })),
             })) };
         } finally { this.working = false; }
     }
@@ -186,7 +215,7 @@ export class IngestQueue {
         let preparationFinished: (() => void) | undefined;
         try {
             const review = this.review;
-            if (!review || token !== review.token || Date.now() - review.created > 30 * 60_000) throw new Error('The review expired. Review the processing plan again.');
+            if (!review || token !== review.token || Date.now() - review.created > 30 * 60_000) throw new Error('The review expired. Review the commit plan again.');
             const unique = [...new Set(ids)];
             if (!unique.length || unique.some(id => !review.entries.some(entry => entry.capture.shot.id === id))) throw new Error('Invalid reviewed selection.');
             const entries = review.entries.filter(entry => unique.includes(entry.capture.shot.id));
@@ -194,7 +223,7 @@ export class IngestQueue {
             locked = unique;
             this.controller = new AbortController();
             const signal = this.controller.signal;
-            this.state = { ...this.state, active: true, stopping: false, position: 0, total: entries.length, current: undefined };
+            this.state = { ...this.state, active: true, stopping: false, position: 0, completed: 0, waiting: 0, total: entries.length, current: undefined };
             this.publish();
             this.queuedIds = unique;
             this.preparing = new Promise(resolve => { preparationFinished = resolve; });
@@ -205,11 +234,14 @@ export class IngestQueue {
                 signal.throwIfAborted();
                 const current = await this.scanner.captureIngest(entry.capture.shot.id);
                 signal.throwIfAborted();
-                if (current.signature !== entry.capture.signature || current.path !== entry.capture.path || current.fileIdentity !== entry.capture.fileIdentity) throw new Error('Clips changed since review. Review the processing plan again.');
+                if (current.signature !== entry.capture.signature || current.path !== entry.capture.path || current.fileIdentity !== entry.capture.fileIdentity) throw new Error('Clips changed since review. Review the commit plan again.');
                 await this.checkExisting(review.location, entry, listing);
             }
             signal.throwIfAborted();
             this.review = undefined;
+            if (this.proxies?.status().paused) this.resume();
+            this.proxies?.prioritize(unique);
+            this.proxies?.retry(unique);
             this.run = this.process(entries, review.location, signal);
             locked = []; // Worker owns the locks now.
             return structuredClone(this.state);
@@ -218,7 +250,7 @@ export class IngestQueue {
                 this.scanner.unlockIngest(locked);
                 this.queuedIds = [];
                 this.state.active = false;
-                this.state.stopping = false;
+                if (!this.controller?.signal.aborted) this.state.stopping = false;
                 this.state.current = undefined;
                 this.publish();
             }
@@ -230,35 +262,47 @@ export class IngestQueue {
 
     private async checkExisting(location: LibraryLocation, entry: Entry, listing?: string[]) {
         const existing = await this.existing(location, entry.capture.shot.id, entry.names, listing);
-        if (JSON.stringify(existing) !== JSON.stringify(entry.existing)) throw new Error('Library assets changed after review. Review the processing plan again to approve replacement.');
+        if (JSON.stringify(existing) !== JSON.stringify(entry.existing)) throw new Error('Library assets changed after review. Review the commit plan again to approve replacement.');
     }
 
     private async process(entries: Entry[], location: LibraryLocation, signal: AbortSignal) {
         try {
-            for (let index = 0; index < entries.length && !signal.aborted; index++) {
-                const entry = entries[index];
+            const pending = [...entries];
+            while (pending.length && !signal.aborted) {
+                const available = new Set(this.scanner.snapshot().shots.filter(shot => shot.available).map(shot => shot.id));
+                const index = this.proxies ? pending.findIndex(entry => this.proxies!.readyFor(entry.capture.shot.id) || !available.has(entry.capture.shot.id)) : 0;
+                if (index < 0) {
+                    this.state.current = undefined; this.state.waiting = pending.length; this.publish();
+                    try { await this.proxies!.wait(signal); } catch { break; }
+                    continue;
+                }
+                const entry = pending.splice(index, 1)[0];
                 const { shot } = entry.capture;
-                this.state.position = index + 1;
+                this.state.waiting = 0;
+                this.state.position++;
                 this.state.current = { id: shot.id, filename: shot.filename, percent: 0, phase: 'transferring' };
                 this.scanner.processingIngest(shot.id);
                 this.publish();
                 try {
                     await this.execute(entry, location, signal);
                     this.state.current!.percent = 100;
+                    this.state.completed = (this.state.completed ?? 0) + 1;
                     this.publish();
-                }
-                catch (error) {
+                } catch (error) {
                     if (!signal.aborted) this.state.errors.push({ id: shot.id, filename: shot.filename,
                         message: error instanceof Error ? error.message : String(error), eventId: randomUUID() });
                     this.publish();
-                } finally { this.queuedIds = this.queuedIds.filter(id => id !== shot.id); this.scanner.unlockIngest([shot.id]); }
+                } finally {
+                    this.queuedIds = this.queuedIds.filter(id => id !== shot.id); this.scanner.unlockIngest([shot.id]);
+                    this.proxies?.prioritize(this.queuedIds);
+                }
             }
         } finally {
             this.scanner.unlockIngest(entries.map(entry => entry.capture.shot.id));
             this.queuedIds = [];
             this.state.active = false;
-            this.state.stopping = false;
-            this.state.current = undefined;
+            if (!signal.aborted) this.state.stopping = false;
+            this.state.current = undefined; this.state.waiting = 0;
             this.publish();
         }
     }
@@ -273,31 +317,40 @@ export class IngestQueue {
         };
         await validate();
         await this.checkExisting(location, entry);
+        const proxy = this.proxies ? await this.proxies.asset(shot.id) : null;
         const staging = await mkdtemp(join(tmpdir(), 'owmo-ingest-'));
         const metadataPath = join(location.path, entry.names[2]);
         const temporaryJSON = join(location.path, `${shot.id}.metadata.${randomUUID()}.partial`);
         try {
             const stagedThumb = join(staging, entry.names[1]);
             await writeFile(stagedThumb, thumbnail, { mode: 0o600 });
-            const totalBytes = shot.bytes + thumbnail.length;
+            const totalBytes = shot.bytes + thumbnail.length + (proxy?.bytes ?? 0);
             const update = (bytes: number) => {
                 // Transfer bytes exclude metadata publication and the saved receipt.
                 // Reserve 100% until the entire clip has finished successfully.
                 const percent = Math.min(99, Math.round(bytes / Math.max(totalBytes, 1) * 100));
                 if (this.state.current && this.state.current.percent !== percent) {
                     this.state.current.percent = percent;
+                    this.scanner.setTransferProgress(shot.id, percent);
                     this.publish(true);
                 }
             };
-            for (const [index, source] of [path, stagedThumb].entries()) {
+            const transfers = [{ from: path, name: entry.names[0], bytes: shot.bytes, force: false },
+                { from: stagedThumb, name: entry.names[1], bytes: thumbnail.length, force: true },
+                ...(proxy ? [{ from: proxy.path, name: entry.names[3], bytes: proxy.bytes, force: false }] : [])];
+            let transferred = 0;
+            for (const file of transfers) {
                 await validate();
-                const target = join(location.path, entry.names[index]);
-                if (await libraryFileIdentity(target) !== entry.existing[entry.names[index]]) throw new Error('Destination changed after review.');
-                await this.transfer(source, target, signal, percent => update(index === 0 ? shot.bytes * percent / 100 : shot.bytes + thumbnail.length * percent / 100), index === 1);
+                if (proxy && file.from === proxy.path && await libraryFileIdentity(proxy.path) !== proxy.identity) throw new Error('Scratch proxy changed before transfer.');
+                const target = join(location.path, file.name);
+                if (await libraryFileIdentity(target) !== entry.existing[file.name]) throw new Error('Destination changed after review.');
+                await this.transfer(file.from, target, signal, percent => update(transferred + file.bytes * percent / 100), file.force);
+                transferred += file.bytes;
             }
             await validate();
             this.state.current!.phase = 'metadata';
             this.state.current!.percent = 99;
+            this.scanner.setTransferProgress(shot.id, 99);
             this.publish();
             const ingestedAt = new Date().toISOString();
             const metadata = {
@@ -313,22 +366,38 @@ export class IngestQueue {
             await rename(temporaryJSON, metadataPath);
             // Publication is the completion boundary. A concurrent Stop must preserve this success.
             await this.scanner.markIngested(shot.id, { libraryPath: location.path, signature, ingestedAt });
+            await this.proxies?.published(shot.id, proxy, location.path);
         } finally {
             await unlink(temporaryJSON).catch(() => undefined);
             await rm(staging, { recursive: true, force: true });
         }
     }
 
-    async stop() {
+    private async cancelTransfers() {
         this.review = undefined;
-        if (this.state.active) {
-            this.state.stopping = true;
-            this.publish();
-            this.controller?.abort();
-            this.scanner.unlockIngest(this.queuedIds.filter(id => id !== this.state.current?.id));
-            await this.preparing;
-            await this.run;
-        }
+        this.controller?.abort();
+        this.scanner.unlockIngest(this.queuedIds.filter(id => id !== this.state.current?.id));
+        await this.preparing;
+        await this.run;
+        this.proxies?.prioritize([]);
+    }
+
+    async cancelSync() {
+        this.state.stopping = true; this.publish();
+        await this.cancelTransfers();
+        this.state.stopping = false;
+        this.state.work = this.proxies?.status();
+        this.publish();
+        return structuredClone(this.state);
+    }
+
+    async stop() {
+        this.workGeneration++;
+        this.state.stopping = true; this.publish();
+        await Promise.all([this.cancelTransfers(), ...(this.proxies ? [this.proxies.stop(), this.scanner.pauseBackground()] : [])]);
+        this.state.stopping = false;
+        this.state.work = this.proxies?.status();
+        this.publish();
         return structuredClone(this.state);
     }
 

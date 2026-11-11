@@ -79,11 +79,12 @@ export class ThumbnailQueue {
     private cacheDirectory: string;
     private legacyLocations = new Map<string, { input: string; sourceIdentity: string }[]>();
 
-    constructor(cacheDirectory: string, private fingerprints = new VideoFingerprintStore()) {
+    constructor(cacheDirectory: string, private fingerprints = new VideoFingerprintStore(), private assertWritable?: () => Promise<void>) {
         this.cacheDirectory = cacheDirectory;
     }
 
     async clearCache() {
+        await this.assertWritable?.();
         this.shutdown.abort();
         await this.pending;
         this.legacyLocations.clear();
@@ -94,6 +95,7 @@ export class ThumbnailQueue {
     cacheSummary() { return inspectThumbnailCache(this.cacheDirectory); }
 
     async touch(input: string, sourceIdentity: string, metadata?: VideoMetadata) {
+        await this.assertWritable?.();
         const paths = await this.cachePaths(input, sourceIdentity, metadata, this.shutdown.signal);
         const now = new Date();
         for (const path of [paths.custom, paths.generated, ...paths.legacyCustom, ...paths.legacyGenerated]) {
@@ -146,7 +148,7 @@ export class ThumbnailQueue {
     }
 
     private async customPath(input: string, sourceIdentity: string, metadata?: VideoMetadata) {
-        return (await this.cachePaths(input, sourceIdentity, metadata, this.shutdown.signal)).custom;
+        return (await this.cachePaths(input, sourceIdentity, metadata, new AbortController().signal)).custom;
     }
 
     customImage(input: string, sourceIdentity: string, metadata?: VideoMetadata) {
@@ -159,7 +161,7 @@ export class ThumbnailQueue {
 
     private async readImage(input: string, sourceIdentity: string, metadata: VideoMetadata | undefined, customOnly: boolean): Promise<string | null> {
         try {
-            const paths = await this.cachePaths(input, sourceIdentity, metadata, this.shutdown.signal);
+        const paths = await this.cachePaths(input, sourceIdentity, metadata, new AbortController().signal);
             const bytes = await this.cachedImage(paths.custom, paths.legacyCustom) ??
                 (customOnly ? null : await this.cachedImage(paths.generated, paths.legacyGenerated));
             const current = await stat(input);
@@ -174,11 +176,13 @@ export class ThumbnailQueue {
         const match = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl);
         const bytes = match ? Buffer.from(match[1], "base64") : Buffer.alloc(0);
         if (bytes.length > maximumImageBytes || !isJpeg(bytes)) throw Object.assign(new Error("Invalid thumbnail image."), { statusCode: 400 });
+        await this.assertWritable?.();
         await mkdir(this.cacheDirectory, { recursive: true, mode: 0o700 });
         const temporaryPath = path.replace(/\.jpg$/, `.${randomUUID()}.tmp`);
         try {
             await writeFile(temporaryPath, bytes, { mode: 0o600, flush: true });
             if (!await validate() || await this.customPath(input, sourceIdentity, metadata) !== path) throw new Error("Source changed while saving the thumbnail.");
+            await this.assertWritable?.();
             await rename(temporaryPath, path);
         } finally { await unlink(temporaryPath).catch(() => undefined); }
     }
@@ -238,11 +242,13 @@ export class ThumbnailQueue {
 
         let temporaryPath: string | undefined;
         try {
+            await this.assertWritable?.();
             await mkdir(this.cacheDirectory, { recursive: true, mode: 0o700 });
             temporaryPath = cachedPath.replace(/\.jpg$/, `.${randomUUID()}.tmp`);
             await writeFile(temporaryPath, stdout, { mode: 0o600, flush: true });
             signal.throwIfAborted();
             if (!await validate()) return null;
+            await this.assertWritable?.();
             await rename(temporaryPath, cachedPath);
         } catch {
             signal.throwIfAborted();
@@ -252,8 +258,12 @@ export class ThumbnailQueue {
         return `data:image/jpeg;base64,${stdout.toString("base64")}`;
     }
 
-    async close() {
+    async pause() {
         this.shutdown.abort();
         await this.pending;
     }
+
+    resume() { if (this.shutdown.signal.aborted) this.shutdown = new AbortController(); }
+
+    async close() { await this.pause(); }
 }

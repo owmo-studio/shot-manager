@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { ingestAttributes } from '../shared/ingestion';
-import type { IngestionReceipt, IngestState } from '../shared/ingestion';
+import type { IngestionReceipt, IngestState, ProxyState } from '../shared/ingestion';
 import type { LibraryPresence } from './library';
 import { open, realpath, stat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
@@ -41,9 +41,39 @@ export class ShotScanner {
     private ingestLocks = new Map<string, 'queued' | 'processing'>();
     private ingestLibrary: string | null = null;
     private libraryPresence: LibraryPresence | null = null;
+    requireProxy = false;
+    workPaused = false;
+    private proxies = new Map<string, { proxyState: ProxyState; proxyPercent?: number; proxyError?: string }>();
+    private transferProgress = new Map<string, number>();
+    private prepared = new Set<string>();
+
+    libraryProxy(id: string) { return this.libraryPresence ? this.libraryPresence.proxies.has(id) : null; }
+    proxyReady(id: string) { return this.proxies.get(id)?.proxyState === 'ready'; }
+    setProxy(id: string, proxyState: ProxyState, proxyPercent?: number, proxyError?: string) {
+        const next = { proxyState, proxyPercent, proxyError };
+        if (JSON.stringify(this.proxies.get(id)) === JSON.stringify(next)) return;
+        this.proxies.set(id, next); this.publishProgress();
+    }
+    setTransferProgress(id: string, percent: number) { this.transferProgress.set(id, percent); this.publishProgress(); }
+    thumbnailsBusy() { return [...this.jobs.values()].some(job => job.shots.some(({ shot }) => shot.thumbnailStatus === 'pending')); }
+    async pauseBackground() {
+        this.workPaused = true;
+        await this.thumbnailQueue?.pause();
+        for (const job of this.jobs.values()) for (const { shot } of job.shots) if (shot.thumbnailStatus === 'pending') shot.thumbnailStatus = undefined;
+        this.publish();
+    }
+    resumeBackground() {
+        this.workPaused = false; this.thumbnailQueue?.resume();
+        for (const job of this.jobs.values()) for (const result of job.shots) this.queueThumbnail(job, result);
+        this.publish();
+    }
+    async proxyInput(id: string) {
+        const { path, result } = await this.videoPath(id);
+        return { path, fileIdentity: result.fileIdentity, shot: structuredClone(result.shot) };
+    }
 
     assertNoIngestion() {
-        if (this.ingestLocks.size) throw Object.assign(new Error('Stop the processing queue before changing sources, options, or local data.'), { statusCode: 409 });
+        if (this.ingestLocks.size) throw Object.assign(new Error('Stop the commit queue before changing sources, options, or local data.'), { statusCode: 409 });
     }
 
     setIngestLibrary(path: string | null) {
@@ -56,7 +86,7 @@ export class ShotScanner {
 
     setLibraryPresence(path: string, presence: LibraryPresence | null) {
         if (path !== this.ingestLibrary) return;
-        this.libraryPresence = presence ? { existing: new Set(presence.existing), complete: new Set(presence.complete) } : null;
+        this.libraryPresence = presence ? { existing: new Set(presence.existing), complete: new Set(presence.complete), proxies: new Set(presence.proxies) } : null;
         this.publish();
     }
 
@@ -71,12 +101,12 @@ export class ShotScanner {
     }
 
     processingIngest(id: string) { this.ingestLocks.set(id, 'processing'); this.publish(); }
-    unlockIngest(ids: string[]) { ids.forEach(id => this.ingestLocks.delete(id)); this.publish(); }
+    unlockIngest(ids: string[]) { ids.forEach(id => { this.ingestLocks.delete(id); this.transferProgress.delete(id); }); this.publish(); }
 
     async captureIngest(id: string) {
         const asset = await this.videoPath(id);
         const shot = structuredClone(asset.result.shot);
-        if (this.clearingCache || this.updatingThumbnails.has(id) || this.isReconciling(asset.job, asset.result) || !shot.organization || !shot.fingerprint || shot.organization.skipped) throw new Error('Clip is not ready for processing.');
+        if (this.clearingCache || this.updatingThumbnails.has(id) || this.isReconciling(asset.job, asset.result) || !shot.organization || !shot.fingerprint || shot.organization.skipped) throw new Error('Clip is not ready to commit.');
         const image = await this.thumbnail(id);
         if (!image) throw new Error(`Thumbnail is unavailable for ${shot.filename}.`);
         const thumbnail = Buffer.from(image.slice(image.indexOf(',') + 1), 'base64');
@@ -97,6 +127,7 @@ export class ShotScanner {
         if (receipt.libraryPath === this.ingestLibrary) {
             this.libraryPresence?.existing.add(id);
             this.libraryPresence?.complete.add(id);
+            if (this.requireProxy) this.libraryPresence?.proxies.add(id);
         }
         for (const job of this.jobs.values()) for (const { shot } of job.shots) if (shot.id === id) shot.ingestion = structuredClone(receipt);
         this.publish();
@@ -139,6 +170,7 @@ export class ShotScanner {
             await this.thumbnailQueue?.clearCache();
             await this.fingerprints.reset();
             await this.organization.reset();
+            this.prepared.clear(); this.proxies.clear();
         } finally {
             this.clearingCache = false;
             this.publish();
@@ -167,10 +199,10 @@ export class ShotScanner {
         }
     }
 
-    constructor(thumbnailCacheDirectory?: string, fingerprintDirectory?: string, organizationFile?: string) {
-        this.organization = new OrganizationStore(organizationFile);
-        this.fingerprints = new VideoFingerprintStore(fingerprintDirectory);
-        if (thumbnailCacheDirectory) this.thumbnailQueue = new ThumbnailQueue(thumbnailCacheDirectory, this.fingerprints);
+    constructor(thumbnailCacheDirectory?: string, fingerprintDirectory?: string, organizationFile?: string, assertWritable?: () => Promise<void>) {
+        this.organization = new OrganizationStore(organizationFile, undefined, assertWritable);
+        this.fingerprints = new VideoFingerprintStore(fingerprintDirectory, assertWritable);
+        if (thumbnailCacheDirectory) this.thumbnailQueue = new ThumbnailQueue(thumbnailCacheDirectory, this.fingerprints, assertWritable);
     }
 
     private publish() {
@@ -410,7 +442,7 @@ export class ShotScanner {
         // Presence determines New versus Update, even without a local receipt.
         // Only a complete asset set and matching receipt can prove Synced.
         if (!this.libraryPresence.existing.has(shot.id)) return undefined;
-        return this.libraryPresence.complete.has(shot.id) && receipt && shot.organization && shot.thumbnailDigest &&
+        return this.libraryPresence.complete.has(shot.id) && (!this.requireProxy || this.libraryPresence.proxies.has(shot.id)) && receipt && shot.organization && shot.thumbnailDigest &&
             receipt.signature === ingestionSignature(shot.organization, shot.thumbnailDigest) ? 'synced' : 'changes-pending';
     }
 
@@ -420,8 +452,10 @@ export class ShotScanner {
             shots: [...this.jobs.values()].flatMap((job) => job.shots.map((result) => ({
                 ...result.shot,
                 available: job.source.available,
-                editable: !this.isReconciling(job, result) && !this.ingestLocks.has(result.shot.id),
+                editable: !this.isReconciling(job, result) && !this.ingestLocks.has(result.shot.id) && (!this.thumbnailQueue || this.prepared.has(result.shot.id) || result.shot.hasThumbnail),
                 ingestState: this.ingestState(result.shot),
+                ...this.proxies.get(result.shot.id),
+                transferPercent: this.transferProgress.get(result.shot.id),
             }))).sort((first, second) =>
                 first.timestamp.slice(0, 10).localeCompare(second.timestamp.slice(0, 10)) ||
                 Date.parse(first.timestamp) - Date.parse(second.timestamp) || first.id.localeCompare(second.id)),
@@ -514,6 +548,7 @@ export class ShotScanner {
 
     // Generation belongs to discovery, independently of which cards the renderer has displayed.
     private queueThumbnail(job: ScanJob, result: DiscoveredShot) {
+        if (this.workPaused) return;
         const revision = result.shot.thumbnailRevision;
         if (!this.thumbnailQueue || !this.thumbnailCurrent(job, result, revision) || result.shot.thumbnailStatus) return;
         result.shot.thumbnailStatus = 'pending';
@@ -523,6 +558,7 @@ export class ShotScanner {
             if (!job.source.available) result.shot.thumbnailStatus = undefined;
             else {
                 result.shot.thumbnailStatus = image ? 'ready' : 'failed';
+                this.prepared.add(result.shot.id);
                 result.shot.hasThumbnail = !!image;
                 if (image) result.shot.thumbnailDigest = createHash('sha256').update(Buffer.from(image.slice(image.indexOf(',') + 1), 'base64')).digest('hex');
             }
@@ -548,7 +584,7 @@ export class ShotScanner {
         if (this.updatingThumbnails.has(id)) throw Object.assign(new Error("Thumbnail update is already in progress."), { statusCode: 409 });
         this.updatingThumbnails.add(id);
         try {
-            if (this.ingestLocks.has(id)) throw new Error('Clip is queued for processing.');
+            if (this.ingestLocks.has(id)) throw new Error('Clip is queued for a Library commit.');
             const asset = await this.videoPath(id);
             if (this.isReconciling(asset.job, asset.result)) throw Object.assign(new Error("Wait for rescanning to finish."), { statusCode: 409 });
             if (!this.thumbnailQueue) throw new Error("Thumbnail cache is unavailable.");

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Stats } from 'node:fs';
-import { mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { VIDEO_SAMPLE_SCHEME } from '../shared/shots';
 import type { VideoFingerprint } from '../shared/shots';
@@ -24,7 +24,7 @@ export function videoSampleRanges(size: number) {
 // These records are lookup fingerprints, never full-file integrity checksums or UUIDs.
 export class VideoFingerprintStore {
     private memory = new Map<string, VideoFingerprint>();
-    constructor(private directory?: string) {}
+    constructor(private directory?: string, private assertWritable?: () => Promise<void>) {}
 
     private async records() {
         if (!this.directory) return [];
@@ -41,6 +41,7 @@ export class VideoFingerprintStore {
 
     // Call only after scan and thumbnail workers have stopped using this store.
     async reset() {
+        await this.assertWritable?.();
         this.memory.clear();
         for (const entry of await this.records()) {
             try { await unlink(join(this.directory!, entry.name)); }
@@ -72,6 +73,8 @@ export class VideoFingerprintStore {
                 }
                 signal.throwIfAborted();
                 if (videoFileVersion(await stat(input)) !== fileVersion) throw new Error('Video changed during fingerprint lookup.');
+                const used = new Date();
+                await utimes(recordPath, used, used).catch(() => undefined);
                 this.remember(key, fingerprint);
                 return { ...fingerprint };
             } catch (error) {
@@ -109,12 +112,14 @@ export class VideoFingerprintStore {
             fileSize: before.size, sampleBytes: VIDEO_SAMPLE_BYTES, sampledBytes,
         };
         if (recordPath && this.directory) {
+            await this.assertWritable?.();
             await mkdir(this.directory, { recursive: true, mode: 0o700 });
             const temporary = `${recordPath}.${randomUUID()}.tmp`;
             try {
                 await writeFile(temporary, JSON.stringify({ version: 2, fileVersion, fingerprint }) + '\n', { mode: 0o600, flush: true });
                 signal.throwIfAborted();
                 if (videoFileVersion(await stat(input)) !== fileVersion) throw new Error('Video changed before saving fingerprint.');
+                await this.assertWritable?.();
                 await rename(temporary, recordPath);
             } finally { await unlink(temporary).catch(() => undefined); }
         }

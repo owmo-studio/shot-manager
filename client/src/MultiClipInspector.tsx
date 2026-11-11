@@ -23,7 +23,7 @@ export function MultiClipInspector({ shots, sources, skippedCount, disabled, wid
         <ul aria-label="Selected clips" className="mb-4 max-h-40 overflow-y-auto rounded-lg border border-white/8 bg-black/10 py-1 text-xs text-zinc-400 divide-y divide-white/5">
             {shots.map((shot) => <li key={shot.id} title={sourceFilePath(sources.find((source) => source.id === shot.sourceId)?.path, shot.relativePath)} className="truncate px-3 py-1.5">{shot.filename}</li>)}
         </ul>
-        {disabled && <p role="status" className="mb-4 text-xs text-amber-300">Some selected clips are rescanning. Skip choices are temporarily locked.</p>}
+        {disabled && <p role="status" className="mb-4 text-xs text-amber-300">Some selected clips are being prepared or committed. Skip choices are temporarily locked.</p>}
         <div role="tablist" aria-label="Clip information" className="mt-5 flex rounded-lg bg-white/4 p-1">
             <button role="tab" aria-selected="true" aria-controls="multi-attributes-panel" id="multi-attributes-tab" className="flex-1 rounded-md bg-white/10 px-3 py-2 text-xs text-zinc-200">Attributes</button>
             <button role="tab" aria-selected="false" disabled title="Select one clip to view its file information" className="flex-1 rounded-md px-3 py-2 text-xs text-zinc-600">File info</button>
