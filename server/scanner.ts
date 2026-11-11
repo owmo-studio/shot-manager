@@ -95,7 +95,7 @@ export class ShotScanner {
 
     assertNoIngestion() {
         if (this.ingestLocks.size)
-            throw Object.assign(new Error("Cannot remove when queued to commit; stop commit to proceed."), {
+            throw Object.assign(new Error("Cannot remove while queued; you must stop tasks."), {
                 statusCode: 409,
             });
     }

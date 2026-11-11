@@ -25,6 +25,7 @@ export interface IngestStatus {
     total: number;
     completed?: number;
     waiting?: number;
+    tasks?: { completed: number; total: number; percent: number; proxiesRemaining: number; transfersRemaining: number };
     work?: { paused: boolean; busy: boolean; encoding: boolean; queued: number; scratchPath: string | null; error?: string };
     current?: { id: string; filename: string; percent: number; phase: 'transferring' | 'metadata' };
     errors: { id: string; filename: string; message: string; eventId: string }[];

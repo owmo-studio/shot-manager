@@ -85,42 +85,60 @@ function ReviewDialog({
             <div className="mt-4 max-h-[45vh] overflow-y-auto rounded-lg border border-white/10">
                 {review.clips.map((clip) => {
                     const included = ids.includes(clip.id);
-                    const proxyReady = clip.proxyReady || shots.some((shot) => shot.id === clip.id && shot.proxyState === "ready");
+                    const proxyReady =
+                        clip.proxyReady || shots.some((shot) => shot.id === clip.id && shot.proxyState === "ready");
                     return (
-                    <div key={clip.id} data-review-included={included} className={`flex items-start gap-3 border-b border-white/8 p-3 last:border-0 ${included ? "" : "bg-white/[0.02]"}`}>
-                        <div className={`mt-0.5 flex shrink-0 flex-col items-start gap-1 ${included ? "" : "opacity-40"}`}>
-                            <span className="rounded bg-blue-400/10 px-2 py-0.5 text-xs text-blue-300">
-                                {clip.mode === "replace" ? "↻ Update" : "New"}
-                            </span>
-                            {review.proxyPreparation && proxyReady && <span data-review-proxy-ready="true" title="Proxy available"
-                                className="rounded bg-blue-400/10 px-2 py-0.5 text-xs text-blue-300">
-                                Proxy
-                            </span>}
-                        </div>
-                        <div className={`min-w-0 flex-1 text-sm ${included ? "" : "opacity-40"}`}>
-                            <p className="break-all">
-                                {clip.filename} <span className="text-xs text-zinc-500">{bytes(clip.bytes)}</span>
-                            </p>
-                            <details className="mt-1 text-xs text-zinc-500">
-                                <summary className="cursor-pointer">File destinations</summary>
-                                {clip.files.map((file) => (
-                                    <p key={file.to} className="mt-2 break-all">
-                                        {file.from}
-                                        <br />→ {file.to}
-                                    </p>
-                                ))}
-                            </details>
-                        </div>
-                        <button
-                            disabled={busy}
-                            onClick={() => setIds((current) => current.includes(clip.id) ? current.filter((id) => id !== clip.id) : [...current, clip.id])}
-                            aria-label={`${included ? "Remove" : "Restore"} ${clip.filename} ${included ? "from" : "to"} review`}
-                            aria-pressed={!included}
-                            className="grid size-7 shrink-0 place-items-center rounded text-2xl leading-none text-zinc-400 hover:bg-white/8 hover:text-zinc-100 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:cursor-not-allowed disabled:opacity-40"
+                        <div
+                            key={clip.id}
+                            data-review-included={included}
+                            className={`flex items-start gap-3 border-b border-white/8 p-3 last:border-0 ${included ? "" : "bg-white/[0.02]"}`}
                         >
-                            {included ? "×" : "−"}
-                        </button>
-                    </div>
+                            <div
+                                className={`mt-0.5 flex shrink-0 flex-col items-start gap-1 ${included ? "" : "opacity-40"}`}
+                            >
+                                <span className="rounded bg-blue-400/10 px-2 py-0.5 text-xs text-blue-300">
+                                    {clip.mode === "replace" ? "↻ Update" : "New"}
+                                </span>
+                                {review.proxyPreparation && proxyReady && (
+                                    <span
+                                        data-review-proxy-ready="true"
+                                        title="Proxy available"
+                                        className="rounded bg-blue-400/10 px-2 py-0.5 text-xs text-blue-300"
+                                    >
+                                        Proxy
+                                    </span>
+                                )}
+                            </div>
+                            <div className={`min-w-0 flex-1 text-sm ${included ? "" : "opacity-40"}`}>
+                                <p className="break-all">
+                                    {clip.filename} <span className="text-xs text-zinc-500">{bytes(clip.bytes)}</span>
+                                </p>
+                                <details className="mt-1 text-xs text-zinc-500">
+                                    <summary className="cursor-pointer">File destinations</summary>
+                                    {clip.files.map((file) => (
+                                        <p key={file.to} className="mt-2 break-all">
+                                            {file.from}
+                                            <br />→ {file.to}
+                                        </p>
+                                    ))}
+                                </details>
+                            </div>
+                            <button
+                                disabled={busy}
+                                onClick={() =>
+                                    setIds((current) =>
+                                        current.includes(clip.id)
+                                            ? current.filter((id) => id !== clip.id)
+                                            : [...current, clip.id],
+                                    )
+                                }
+                                aria-label={`${included ? "Remove" : "Restore"} ${clip.filename} ${included ? "from" : "to"} review`}
+                                aria-pressed={!included}
+                                className="grid size-7 shrink-0 place-items-center rounded text-2xl leading-none text-zinc-400 hover:bg-white/8 hover:text-zinc-100 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                                {included ? "×" : "−"}
+                            </button>
+                        </div>
                     );
                 })}
             </div>
@@ -171,7 +189,7 @@ export function IngestFooter({
         errors: [],
     });
     const [review, setReview] = useState<IngestReview | null>(null);
-    const [stopConfirm, setStopConfirm] = useState<"all" | "sync" | null>(null);
+    const [stopConfirm, setStopConfirm] = useState(false);
     const [refreshing, setRefreshing] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -244,12 +262,13 @@ export function IngestFooter({
 
     async function stop() {
         setBusy(true);
+        setErrorTitle("Stop error");
         try {
-            receiveStatus(await (stopConfirm === "all" ? window.desktop.stopAllWork() : window.desktop.stopIngest()));
-            setStopConfirm(null);
+            receiveStatus(await window.desktop.stopAllWork());
+            setStopConfirm(false);
             await onRefresh();
         } catch (reason) {
-            setStopConfirm(null);
+            setStopConfirm(false);
             setError(errorMessage(reason, "Could not stop the queue."));
         } finally {
             setBusy(false);
@@ -266,7 +285,10 @@ export function IngestFooter({
             await onRefresh();
             if (next.libraryScan?.state === "unavailable") {
                 setErrorTitle("Library unavailable");
-                setError(next.libraryScan.error ?? "The configured Library folder is unavailable. Check its location in Configuration.");
+                setError(
+                    next.libraryScan.error ??
+                        "The configured Library folder is unavailable. Check its location in Configuration.",
+                );
             }
         } catch (reason) {
             setError(errorMessage(reason, "Could not refresh assets."));
@@ -278,6 +300,9 @@ export function IngestFooter({
     const checkingLibrary = status.libraryScan?.state === "checking";
     const failure = status.errors[0];
     const hasWork = status.active || !!status.work?.busy;
+    const tasks = status.tasks ?? { completed: 0, total: 0, percent: 0, proxiesRemaining: 0, transfersRemaining: 0 };
+    const remainingTasks = tasks.total - tasks.completed;
+    const taskSummary = `${remainingTasks} ${remainingTasks === 1 ? "task" : "tasks"} remaining`;
     return (
         <>
             {refreshTarget &&
@@ -299,17 +324,27 @@ export function IngestFooter({
                             status.stopping ||
                             (!hasWork && (!status.libraryPath || checkingLibrary || refreshing))
                         }
-                        onClick={() => (hasWork ? setStopConfirm("all") : void refreshLibrary())}
+                        onClick={() => (hasWork ? setStopConfirm(true) : void refreshLibrary())}
                         className={`grid size-8 shrink-0 place-items-center rounded-md text-zinc-400 transition focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40 disabled:cursor-not-allowed ${hasWork ? "work-control enabled:hover:bg-red-500/10 enabled:hover:text-red-400 enabled:focus-visible:bg-red-500/10 enabled:focus-visible:text-red-400 enabled:active:text-red-300" : "enabled:hover:bg-white/8 enabled:hover:text-zinc-100"}`}
                     >
                         {hasWork ? (
                             <span aria-hidden="true" className="relative size-5">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                                    strokeLinecap="round" className="work-control-activity absolute inset-0 size-5 motion-safe:animate-spin">
+                                <svg
+                                    viewBox="0 0 24 24"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    strokeWidth="2"
+                                    strokeLinecap="round"
+                                    className="work-control-activity absolute inset-0 size-5 motion-safe:animate-spin"
+                                >
                                     <circle cx="12" cy="12" r="8" opacity=".2" />
                                     <path d="M12 4a8 8 0 0 1 8 8" />
                                 </svg>
-                                <svg viewBox="0 0 24 24" fill="currentColor" className="work-control-stop absolute inset-0 size-5">
+                                <svg
+                                    viewBox="0 0 24 24"
+                                    fill="currentColor"
+                                    className="work-control-stop absolute inset-0 size-5"
+                                >
                                     <rect x="6" y="6" width="12" height="12" rx="1" />
                                 </svg>
                             </span>
@@ -330,49 +365,21 @@ export function IngestFooter({
                     </button>,
                     refreshTarget,
                 )}
-            {status.active && (
-                <div
-                    data-ingest-progress
-                    role="status"
-                    aria-label={
-                        status.stopping
-                            ? "Stopping sync queue"
-                            : `${status.completed ?? 0} / ${status.total} clips synced`
-                    }
-                    className="col-start-2 row-start-1 flex items-center gap-3 px-4"
-                >
-                    {status.active && (
-                        <>
-                            <span className="shrink-0 text-xs font-medium text-zinc-200 tabular-nums">
-                                {status.completed ?? 0} / {status.total} clips synced
-                            </span>
-                            {!!status.waiting && !status.current && (
-                                <span className="text-[11px] text-zinc-500">Waiting for proxies</span>
-                            )}
-                        </>
-                    )}
-                    <button
-                        type="button"
-                        aria-label="Cancel sync queue"
-                        title="Cancel sync queue"
-                        onClick={() => setStopConfirm("sync")}
-                        disabled={busy || status.stopping}
-                        className="grid size-5 shrink-0 place-items-center rounded-full text-zinc-400 transition enabled:hover:bg-red-500/10 enabled:hover:text-red-400 enabled:active:bg-red-500/20 enabled:active:text-red-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                        <svg
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            className="size-3"
-                            aria-hidden="true"
-                        >
-                            <path d="m6 6 12 12M18 6 6 18" />
-                        </svg>
-                    </button>
-                </div>
-            )}
+            <div
+                data-work-progress
+                data-ingest-progress={status.active ? "" : undefined}
+                role="status"
+                aria-label={status.stopping ? "Stopping work" : taskSummary}
+                className="col-start-2 row-start-1 flex items-center gap-3 px-4"
+            >
+                <span className="shrink-0 text-xs font-medium text-zinc-200 tabular-nums">{taskSummary}</span>
+                <progress
+                    aria-label="Overall task progress"
+                    max={100}
+                    value={tasks.percent}
+                    className="ingest-progress block h-2 w-32"
+                />
+            </div>
             <div className="col-start-3 row-start-1 flex min-w-0 flex-wrap items-center justify-end gap-x-4 gap-y-2">
                 {!status.active && (
                     <span role="status">
@@ -389,7 +396,7 @@ export function IngestFooter({
                             refreshing ||
                             status.active ||
                             !status.libraryPath ||
-                            status.libraryScan?.state !== "ready" ||
+                            status.libraryScan?.state === "checking" ||
                             !candidates.length ||
                             blocked > 0
                         }
@@ -420,25 +427,17 @@ export function IngestFooter({
                 />
             )}
             {stopConfirm && (
-                <IngestDialog
-                    title={stopConfirm === "all" ? "Stop all work?" : "Cancel sync queue?"}
-                    compact
-                    busy={busy}
-                    onCancel={() => setStopConfirm(null)}
-                >
+                <IngestDialog title="Stop all work?" compact busy={busy} onCancel={() => setStopConfirm(false)}>
                     <p className="mt-3 text-sm text-zinc-400">
-                        {stopConfirm === "all"
-                            ? "Stop thumbnail generation, proxy encoding, and transfers?"
-                            : "Stop the active transfer and remove waiting sync submissions? Background thumbnail and proxy generation will continue."}
-                        <br />
-                        Completed clips remain synced. Completed scratch proxies are retained.
+                        Stop thumbnail generation, proxy encoding, & transfers? Already completed tasks will not be
+                        affected.
                     </p>
                     <div className="mt-5 flex justify-end gap-3">
-                        <button autoFocus disabled={busy} onClick={() => setStopConfirm(null)} className={button}>
+                        <button autoFocus disabled={busy} onClick={() => setStopConfirm(false)} className={button}>
                             Cancel
                         </button>
                         <button disabled={busy} onClick={() => void stop()} className={destructiveButton}>
-                            {busy ? "Stopping…" : stopConfirm === "all" ? "Stop" : "Cancel sync"}
+                            {busy ? "Stopping…" : "Stop"}
                         </button>
                     </div>
                 </IngestDialog>

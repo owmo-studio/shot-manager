@@ -16,7 +16,6 @@ const desktop: DesktopBridge = {
   },
   reviewIngest: shotIds => invoke('ingestion:review', shotIds),
   startIngest: (token, shotIds) => invoke('ingestion:start', token, shotIds),
-  stopIngest: () => invoke('ingestion:stop'),
   stopAllWork: () => invoke('work:stop'),
   resumeWork: () => invoke('work:resume'),
   dismissIngestError: eventId => invoke('ingestion:dismiss-error', eventId),

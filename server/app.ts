@@ -61,7 +61,6 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     try { return await ingestion.submit(request.body.token, request.body.shotIds) }
     catch (error) { throw Object.assign(error as Error, { statusCode: 409 }) }
   })
-  server.post('/api/ingestion/stop', () => ingestion.cancelSync())
   server.post('/api/work/stop', () => ingestion.stop())
   server.post('/api/work/refresh', () => ingestion.refreshWork())
   server.delete<{ Params: { id: string } }>('/api/ingestion/errors/:id', {

@@ -155,7 +155,7 @@ function ShotCard({
                             role="img"
                             aria-label={proxyLabel}
                             title={proxyLabel}
-                            className={`absolute right-2 top-2 z-10 size-2.5 rounded-full shadow-[0_0_0_3px_rgb(0_0_0/0.65)] ${proxyLibrary ? "bg-emerald-400" : proxyLocal ? "bg-yellow-400" : "border border-white/65"}`}
+                            className={`absolute right-2 top-2 z-10 size-2.5 rounded-full ${proxyLibrary ? "bg-emerald-400" : proxyLocal ? "bg-yellow-400" : "border border-white/65"}`}
                         />
                     )}
                     {(transferring || proxyEncoding) && (
@@ -167,10 +167,10 @@ function ShotCard({
                             title={transferring ? activity : proxyLabel}
                             className="pointer-events-none absolute inset-0 z-10 grid place-items-center"
                         >
-                            <span className="grid size-10 place-items-center rounded-full bg-black/65">
+                            <span className={`grid size-12 place-items-center rounded-full ${transferring ? "bg-black/65" : ""}`}>
                                 <span
                                     aria-hidden="true"
-                                    className={`size-6 rounded-full border-2 motion-safe:animate-spin ${transferring ? "border-white/25 border-t-white" : "border-yellow-300/25 border-t-yellow-300"}`}
+                                    className={`size-8 rounded-full border-[3px] motion-safe:animate-spin ${transferring ? "border-white/25 border-t-white" : "border-yellow-300/25 border-t-yellow-300"}`}
                                 />
                             </span>
                         </span>

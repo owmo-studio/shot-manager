@@ -2,10 +2,11 @@ import { useEffect, useRef } from "react";
 import type { ImportSource } from "../../shared/desktop";
 import { sourcePresentation } from "./SourceListItem";
 
-export function RemoveSourceDialog({ source, removing, scanning, error, onCancel, onProceed }: {
+export function RemoveSourceDialog({ source, removing, scanning, commitQueued = false, error, onCancel, onProceed }: {
     source: ImportSource;
     removing: boolean;
     scanning: boolean;
+    commitQueued?: boolean;
     error: string | null;
     onCancel: () => void;
     onProceed: () => void;
@@ -33,10 +34,11 @@ export function RemoveSourceDialog({ source, removing, scanning, error, onCancel
                 Removing this source will remove all of its clips and attributes from the current workspace. Files on disk will not be deleted.
             </p>
             {scanning && <p className="mt-3 text-xs text-blue-300">Wait for scanning to finish before removing this source.</p>}
+            {commitQueued && <p className="mt-3 text-xs text-zinc-400">Wait for Commit to finish or stop tasks before removing this source.</p>}
             {error && <p role="alert" className="mt-3 text-sm text-red-300">{error}</p>}
             <div className="mt-6 flex justify-end gap-3">
                 <button autoFocus onClick={onCancel} disabled={removing} className="rounded-lg border border-white/10 px-4 py-2 text-sm hover:bg-white/8 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">Cancel</button>
-                <button onClick={onProceed} disabled={removing || scanning} className="rounded-lg bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400 disabled:opacity-40">{removing ? "Removing…" : "Proceed"}</button>
+                <button onClick={onProceed} disabled={removing || scanning || commitQueued} className="rounded-lg bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-400 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400 disabled:opacity-40">{removing ? "Removing…" : "Proceed"}</button>
             </div>
         </dialog>
     );

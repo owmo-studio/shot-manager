@@ -38,6 +38,7 @@ function App() {
     const filteredSources = sources.filter((source) => selectedSourceIds.includes(source.id));
     const filteredIds = new Set(filteredSources.map((source) => source.id));
     const allUniqueShots = uniqueShots(shotCollection.shots);
+    const commitQueued = shotCollection.shots.some(shot => shot.ingestState === "queued" || shot.ingestState === "processing");
     const sourceCollection = {
         ...shotCollection,
         shots: uniqueShots(shotCollection.shots.filter((shot) => !filteredIds.size || filteredIds.has(shot.sourceId))),
@@ -192,7 +193,7 @@ function App() {
     }, []);
 
     async function refreshSource(id: string) {
-        if (sourceMutation.current) return;
+        if (sourceMutation.current || commitQueued) return;
         sourceMutation.current = true;
         sourceRevision.current += 1;
         setRefreshingSourceId(id);
@@ -211,7 +212,7 @@ function App() {
     }
 
     async function relinkSource(id: string) {
-        if (sourceMutation.current) return;
+        if (sourceMutation.current || commitQueued) return;
         sourceMutation.current = true;
         sourceRevision.current += 1;
         setRefreshingSourceId(id);
@@ -328,7 +329,7 @@ function App() {
     }, []);
 
     async function removeSource(id: string) {
-        if (sourceMutation.current) return;
+        if (sourceMutation.current || commitQueued) return;
         sourceMutation.current = true;
         sourceRevision.current += 1;
         setSourceError(null);
@@ -453,6 +454,7 @@ function App() {
                                     ? current.filter((id) => id !== source.id) : [...current, source.id])}
                                 scan={shotCollection.scans.find((scan) => scan.sourceId === source.id)}
                                 refreshing={refreshingSourceId === source.id}
+                                commitQueued={commitQueued}
                                 onRefresh={() => void (source.available ? refreshSource(source.id) : relinkSource(source.id))}
                                 onRemove={() => {
                                     setRemovalError(null);
@@ -550,6 +552,7 @@ function App() {
                     source={removalSource}
                     removing={removingSource}
                     scanning={removalScan?.state === "queued" || removalScan?.state === "scanning"}
+                    commitQueued={commitQueued}
                     error={removalError}
                     onCancel={() => setRemovalSourceId(null)}
                     onProceed={() => void removeSource(removalSource.id)}

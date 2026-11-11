@@ -73,7 +73,6 @@ export interface DesktopAPI {
   onIngestChanged: (listener: (status: IngestStatus) => void) => () => void
   reviewIngest: (shotIds: string[]) => Promise<IngestReview>
   startIngest: (token: string, shotIds: string[]) => Promise<IngestStatus>
-  stopIngest: () => Promise<IngestStatus>
   stopAllWork: () => Promise<IngestStatus>
   resumeWork: () => Promise<IngestStatus>
   dismissIngestError: (eventId: string) => Promise<void>

@@ -68,7 +68,7 @@ if (!process.versions.electron) {
             });
         if (
             statusOverride &&
-            ["/api/ingestion/stop", "/api/work/stop", "/api/work/refresh"].some((path) => String(url).endsWith(path))
+            ["/api/work/stop", "/api/work/refresh"].some((path) => String(url).endsWith(path))
         ) {
             const all = String(url).endsWith("/api/work/stop"),
                 refresh = String(url).endsWith("/api/work/refresh");
@@ -273,6 +273,7 @@ if (!process.versions.electron) {
                 "Clips did not become eligible",
             );
             const idleReads = ingestReads;
+            await until(() => js(`(() => { const buttons=document.querySelectorAll('ul[aria-label="Import sources"] button[aria-label^="Refresh "], ul[aria-label="Import sources"] button[aria-label^="Remove "]'); return buttons.length===2 && Array.from(buttons).every(button=>!button.disabled); })()`), 'Source controls did not enable after scanning');
             await new Promise((resolve) => setTimeout(resolve, 1200));
             assert.equal(ingestReads, idleReads, "Idle footer does not poll ingestion status");
             await click("Commit");
@@ -517,6 +518,7 @@ if (!process.versions.electron) {
                     ),
                 "Transfer spinner or proxy readiness dot missing",
             );
+            assert.equal(await js(`(() => { const buttons=document.querySelectorAll('ul[aria-label="Import sources"] button[aria-label^="Refresh "], ul[aria-label="Import sources"] button[aria-label^="Remove "]'); return buttons.length===2 && Array.from(buttons).every(button=>button.disabled); })()`), true, 'Queued or active Commit clips disable source Refresh and Remove');
             assert.equal(
                 await js(`getComputedStyle(document.querySelector('[data-proxy-state="encoding"]')).opacity`),
                 "1",
@@ -524,7 +526,7 @@ if (!process.versions.electron) {
             );
             assert.equal(await js(`document.querySelector('[data-proxy-location="library"]').classList.contains('bg-emerald-400') && document.querySelector('[data-proxy-spinner] > span > span').classList.contains('border-t-yellow-300')`), true, "Library proxy is green and central encoding wheel is yellow");
             assert.equal(
-                await js(`(() => { const dot=document.querySelector('[data-proxy-state="encoding"]'); const proxy=document.querySelector('[data-proxy-spinner] > span'); const transfer=document.querySelector('[data-transfer-spinner] > span'); return dot.classList.contains('border-white/65') && !dot.querySelector('svg') && proxy.getBoundingClientRect().width===transfer.getBoundingClientRect().width && proxy.getBoundingClientRect().width===40; })()`),
+                await js(`(() => { const dot=document.querySelector('[data-proxy-state="encoding"]'); const proxy=document.querySelector('[data-proxy-spinner] > span'); const transfer=document.querySelector('[data-transfer-spinner] > span'); return dot.classList.contains('border-white/65') && !dot.querySelector('svg') && proxy.getBoundingClientRect().width===transfer.getBoundingClientRect().width && proxy.getBoundingClientRect().width===48; })()`),
                 true,
                 "Encoding shows a hollow corner dot and the same large central spinner as transfers",
             );
@@ -563,6 +565,7 @@ if (!process.versions.electron) {
                 stopping: false,
                 position: 1,
                 total: 3,
+                tasks: { completed: 2, total: 5, percent: 48, proxiesRemaining: 1, transfersRemaining: 2 },
                 errors: [],
                 libraryPath: join(root, "library"),
                 current: { id: ingested.id, filename: ingested.filename, phase: "transferring", percent: 42 },
@@ -571,14 +574,14 @@ if (!process.versions.electron) {
             await until(
                 () =>
                     js(
-                        `document.querySelector('[data-ingest-progress]')?.getAttribute('aria-label')==='1 / 3 clips synced'`,
+                        `document.querySelector('[data-ingest-progress]')?.getAttribute('aria-label')==='3 tasks remaining'`,
                     ),
                 "Active footer summary missing",
             );
             assert.equal(
-                await js(`document.querySelector('footer progress')`),
-                null,
-                "Transfer details live on cards, not in a competing footer percentage",
+                await js(`document.querySelector('footer progress').value`),
+                48,
+                "Footer shows combined proxy and transfer progress",
             );
             const activeReads = ingestReads;
             backend.emit("message", {
@@ -593,7 +596,7 @@ if (!process.versions.electron) {
             assert.equal(ingestReads, activeReads, "Progress notifications do not poll ingestion status");
             assert.equal(
                 await js(`document.querySelector('[data-ingest-progress]').getAttribute('aria-label')`),
-                "1 / 3 clips synced",
+                "3 tasks remaining",
                 "Stale snapshots cannot regress the sync summary",
             );
             const checkProgressLayout = async (label) => {
@@ -623,33 +626,18 @@ if (!process.versions.electron) {
                 await js(`!!document.querySelector('header [aria-label="Stop all work"]')`),
                 "Toolbar shows Stop during transfers",
             );
-            await js(`document.querySelector('[data-ingest-progress] button[aria-label="Cancel sync queue"]').click()`);
-            await until(
-                () =>
-                    js(
-                        `document.querySelector('dialog[open]')?.textContent.includes('Background thumbnail and proxy generation will continue')`,
-                    ),
-                "Sync-only confirmation missing",
-            );
-            await click("Cancel");
-            assert.equal(await js(`document.querySelector('dialog[open]')===null`), true);
-            await js(`document.querySelector('[data-ingest-progress] button[aria-label="Cancel sync queue"]').click()`);
-            await click("Cancel sync");
-            await until(
-                () =>
-                    js(
-                        `!document.querySelector('dialog[open]') && !document.querySelector('[data-ingest-progress]') && !!document.querySelector('header [aria-label="Stop all work"]')`,
-                    ),
-                "Cancelling sync leaves background Stop in toolbar and removes footer X",
-            );
+            assert.equal(await js(`document.querySelector('[data-work-progress] button')`), null, 'No footer cancellation button remains');
             await js(`document.querySelector('header [aria-label="Stop all work"]').click()`);
             await until(
                 () =>
                     js(
-                        `document.querySelector('dialog[open]')?.textContent.includes('Stop thumbnail generation, proxy encoding, and transfers')`,
+                        `document.querySelector('dialog[open] #ingest-dialog-title')?.textContent==='Stop all work?'`,
                     ),
                 "Stop-all confirmation missing",
             );
+            await click("Cancel");
+            assert.equal(await js(`document.querySelector('dialog[open]')===null && !!document.querySelector('header [aria-label="Stop all work"]')`), true, 'Cancel preserves active work');
+            await js(`document.querySelector('header [aria-label="Stop all work"]').click()`);
             await click("Stop");
             await until(
                 () =>
@@ -748,7 +736,7 @@ if (!process.versions.electron) {
             await fs.promises.writeFile(join(root, "validated"), "passed");
             clearTimeout(timer);
             console.log(
-                "PASS: managed Cache and Browse Cache, staged Library Save/Cancel/Escape, selective Clear Cache with media preservation, real Electron review, X exclusion, ingestion, persisted sync badge, renderer reload, deleted-Library refresh/New review, replacement review, proxy readiness and compact centered sync summary at wide/narrow sizes, notifications without polling, stale-update protection, and distinct sync cancellation / toolbar Refresh–Stop controls.",
+                "PASS: managed Cache and Browse Cache, staged Library Save/Cancel/Escape, selective Clear Cache with media preservation, real Electron review, X exclusion, ingestion, persisted sync badge, renderer reload, deleted-Library refresh/New review, replacement review, proxy readiness and compact centered sync summary at wide/narrow sizes, notifications without polling, stale-update protection, and unified toolbar Refresh–Stop control.",
             );
             app.quit();
         } catch (error) {

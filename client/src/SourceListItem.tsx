@@ -66,6 +66,7 @@ export function SourceListItem({
     onToggle,
     scan,
     refreshing = false,
+    commitQueued = false,
     onRefresh,
     onRemove,
 }: {
@@ -74,6 +75,7 @@ export function SourceListItem({
     onToggle: () => void;
     scan?: SourceScan;
     refreshing?: boolean;
+    commitQueued?: boolean;
     onRefresh: () => void;
     onRemove: () => void;
 }) {
@@ -131,9 +133,9 @@ export function SourceListItem({
             <div className={`absolute top-1/2 right-2 flex -translate-y-1/2 gap-1 opacity-0 transition duration-75 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100 ${inProgress ? "invisible" : ""}`}>
             <button
                 onClick={onRefresh}
-                disabled={inProgress || refreshing}
+                disabled={inProgress || refreshing || commitQueued}
                 aria-label={`${unavailable ? "Re-link" : "Refresh"} ${presentation.name}`}
-                title={unavailable ? "Re-link source and rescan" : inProgress ? "Wait for scanning to finish" : "Refresh source"}
+                title={commitQueued ? "Wait for Commit to finish or stop tasks before refreshing sources" : unavailable ? "Re-link source and rescan" : inProgress ? "Wait for scanning to finish" : "Refresh source"}
                 className="grid size-7 place-items-center rounded-md text-zinc-400 transition duration-75 hover:bg-white/10 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
             >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-4">
@@ -147,9 +149,9 @@ export function SourceListItem({
             </button>
             <button
                 onClick={onRemove}
-                disabled={inProgress}
+                disabled={inProgress || commitQueued}
                 aria-label={`Remove ${presentation.name} from sources`}
-                title={inProgress ? "Wait for scanning to finish before removing this source" : "Remove source (does not delete files)"}
+                title={commitQueued ? "Wait for Commit to finish or stop tasks before removing sources" : inProgress ? "Wait for scanning to finish before removing this source" : "Remove source (does not delete files)"}
                 className="grid size-7 place-items-center rounded-md text-zinc-400 transition duration-75 hover:bg-white/10 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
             >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" aria-hidden="true" className="size-4"><path d="m6 6 12 12M18 6 6 18" /></svg>

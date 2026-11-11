@@ -27,6 +27,8 @@ export class IngestQueue {
     private preparing?: Promise<void>;
     private controller?: AbortController;
     private queuedIds: string[] = [];
+    private submission = 0;
+    private tasks = new Map<string, { kind: 'proxy' | 'transfer'; percent: number }>();
     private progressTimer?: ReturnType<typeof setTimeout>;
     private libraryScanVersion = 0;
     private workGeneration = 0;
@@ -62,6 +64,7 @@ export class IngestQueue {
         }
         if (path && !this.state.libraryScan && !this.closing) void this.scanLibrary();
         this.state.work = this.proxies?.status();
+        this.updateTaskProgress();
         return structuredClone(this.state);
     }
 
@@ -133,8 +136,40 @@ export class IngestQueue {
         });
     }
 
+    private updateTaskProgress() {
+        const shots = this.scanner.snapshot().shots;
+        const ready = new Set(shots.filter(shot => shot.proxyState === 'ready').map(shot => `proxy:${shot.id}`));
+        const pending = new Map<string, { kind: 'proxy' | 'transfer'; percent: number }>();
+        for (const shot of shots) {
+            if (shot.available && (!shot.organization?.skipped || this.queuedIds.includes(shot.id)) &&
+                (shot.proxyState === 'queued' || shot.proxyState === 'encoding')) {
+                pending.set(`proxy:${shot.id}`, { kind: 'proxy', percent: Math.max(0, Math.min(99, shot.proxyPercent ?? 0)) });
+            }
+        }
+        for (const id of this.queuedIds) pending.set(`transfer:${this.submission}:${id}`, {
+            kind: 'transfer', percent: this.state.current?.id === id ? this.state.current.percent : 0,
+        });
+        // Retain completed work while a session is running. New work after idle starts a fresh count.
+        if (![...this.tasks.values()].some(task => task.percent < 100) && [...pending.keys()].some(key => !this.tasks.has(key))) this.tasks.clear();
+        for (const [key, task] of this.tasks) {
+            if (task.kind === 'proxy' && ready.has(key)) task.percent = 100;
+            // Skipped, removed, failed, or cancelled work leaves the remaining task list.
+            if (task.percent < 100 && !pending.has(key)) this.tasks.delete(key);
+        }
+        for (const [key, task] of pending) this.tasks.set(key, { ...task, percent: Math.max(task.percent, this.tasks.get(key)?.percent ?? 0) });
+        const tasks = [...this.tasks.values()];
+        const completed = tasks.filter(task => task.percent === 100).length;
+        this.state.tasks = {
+            completed, total: tasks.length,
+            percent: tasks.length ? Math.min(completed === tasks.length ? 100 : 99, Math.floor(tasks.reduce((sum, task) => sum + task.percent, 0) / tasks.length)) : 0,
+            proxiesRemaining: tasks.filter(task => task.kind === 'proxy' && task.percent < 100).length,
+            transfersRemaining: tasks.filter(task => task.kind === 'transfer' && task.percent < 100).length,
+        };
+    }
+
     // Progress notifications are bounded and carry snapshots, avoiding HTTP/config reads.
     private publish(progress = false) {
+        this.updateTaskProgress();
         this.state.revision++;
         if (progress) {
             if (!this.progressTimer) {
@@ -183,6 +218,7 @@ export class IngestQueue {
 
     async preview(ids: string[]): Promise<IngestReview> {
         this.beginOperation();
+        const generation = this.workGeneration;
         try {
             this.review = undefined;
             await this.status();
@@ -199,6 +235,8 @@ export class IngestQueue {
             }
             if (!entries.length) throw new Error('No clips need committing.');
             await this.location(location);
+            if (generation !== this.workGeneration || this.state.stopping) throw new Error('Work was stopped. Refresh or Commit again when ready.');
+            if (this.proxies?.status().paused || this.scanner.workPaused) this.resume();
             this.review = { token: randomUUID(), location, entries, created: Date.now() };
             return { token: this.review.token, libraryPath: location.path, proxyPreparation: !!this.proxies, clips: entries.map(entry => ({
                 id: entry.capture.shot.id, filename: entry.capture.shot.filename, bytes: entry.capture.shot.bytes + entry.capture.thumbnail.length,
@@ -224,8 +262,9 @@ export class IngestQueue {
             this.controller = new AbortController();
             const signal = this.controller.signal;
             this.state = { ...this.state, active: true, stopping: false, position: 0, completed: 0, waiting: 0, total: entries.length, current: undefined };
-            this.publish();
+            this.submission++;
             this.queuedIds = unique;
+            this.publish();
             this.preparing = new Promise(resolve => { preparationFinished = resolve; });
             await this.location(review.location);
             signal.throwIfAborted();
@@ -380,15 +419,6 @@ export class IngestQueue {
         await this.preparing;
         await this.run;
         this.proxies?.prioritize([]);
-    }
-
-    async cancelSync() {
-        this.state.stopping = true; this.publish();
-        await this.cancelTransfers();
-        this.state.stopping = false;
-        this.state.work = this.proxies?.status();
-        this.publish();
-        return structuredClone(this.state);
     }
 
     async stop() {

@@ -202,7 +202,6 @@ if (!app.requestSingleInstanceLock()) {
       await flushDrafts()
       return backendRequest('/api/ingestion', { method: 'POST', body: JSON.stringify({ token, shotIds }) })
     })
-    handle('ingestion:stop', event => { requireMainWindow(event); return backendRequest('/api/ingestion/stop', { method: 'POST' }) })
     handle('work:stop', event => { requireMainWindow(event); return backendRequest('/api/work/stop', { method: 'POST' }) })
     handle('work:resume', event => { requireMainWindow(event); return backendRequest('/api/work/resume', { method: 'POST' }) })
     handle('ingestion:dismiss-error', (event, id: unknown) => {

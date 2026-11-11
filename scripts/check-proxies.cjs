@@ -38,7 +38,7 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         proxies = new ProxyQueue(scanner, async () => config, async (...args) => {
             encodeCount++; encoders++; maxEncoders = Math.max(maxEncoders, encoders);
             try {
-                if (holdEncoding && encodeCount === holdAt) { encodingHeld = true; await abortableGate(args[3]); }
+                if (holdEncoding && encodeCount === holdAt) { encodingHeld = true; args[4](50); await abortableGate(args[3]); }
                 await encodeProxy(...args);
             } finally { encoders--; }
         });
@@ -52,12 +52,16 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
             }
             await rsyncFile(...args);
         }, proxies);
-        scanner.onChange = () => proxies.schedule();
+        scanner.onChange = () => { proxies.schedule(); queue.backgroundChanged(); };
         await queue.status();
         scanner.sync([{ id: 'synthetic', path: source, name: 'Synthetic', type: 'folder', available: true, cameraModels: [] }]);
         await until(() => scanner.snapshot().shots.length === 3 && scanner.snapshot().shots.every(shot => shot.thumbnailStatus === 'ready'), 'thumbnails ready');
         await until(() => encodingHeld && scanner.snapshot().shots.some(shot => shot.proxyState === 'ready'), 'first proxy ready, second encoding');
         const shots = scanner.snapshot().shots;
+        const backgroundProgress = (await queue.status()).tasks;
+        assert.deepEqual({ total: backgroundProgress.total, completed: backgroundProgress.completed, proxies: backgroundProgress.proxiesRemaining, transfers: backgroundProgress.transfersRemaining },
+            { total: 3, completed: 1, proxies: 2, transfers: 0 }, 'Background encoding reports tasks before a Commit');
+        assert.ok(backgroundProgress.percent > 33 && backgroundProgress.percent < 100, 'Partial encode progress contributes to overall progress');
         assert.ok(shots.some(shot => shot.proxyLocation === 'cache'), 'Generated proxy is identified as local');
         const pending = shots.find(shot => shot.proxyState === 'encoding');
         assert.equal(pending.editable, true, 'Encoding does not lock metadata edits');
@@ -68,16 +72,21 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         assert.ok(review.clips.some(clip => !clip.proxyReady), 'Review shows proxies still being generated as queued');
         await queue.submit(review.token, shots.map(shot => shot.id));
         await until(() => transferHeld, `ready clip transfers while another encodes: ${JSON.stringify(await queue.status())}`);
+        const mixedProgress = (await queue.status()).tasks;
+        assert.deepEqual({ total: mixedProgress.total, proxies: mixedProgress.proxiesRemaining, transfers: mixedProgress.transfersRemaining },
+            { total: 6, proxies: 2, transfers: 3 }, 'Commit adds one transfer per clip to existing proxy work');
         assert.equal(overlap, true, 'Encoder and rsync worker can run concurrently');
         assert.ok(scanner.snapshot().shots.every(shot => !shot.editable), 'Submitted clips are locked, including those waiting for a proxy');
         assert.ok(scanner.snapshot().shots.some(shot => shot.ingestState === 'processing'));
         await assert.rejects(scanner.updateOrganization([pending.id], { field: 'notes', operation: 'set', value: 'locked' }), /locked/);
         holdEncoding = false; releaseEncode();
         await until(() => scanner.snapshot().shots.every(shot => shot.proxyState === 'ready'), 'remaining proxies finish while transfer waits');
+        assert.equal((await queue.status()).tasks.completed, 3, 'Completed encodes count while transfers are still pending');
         releaseTransfer();
         await until(async () => !(await queue.status()).active, 'all submitted clips synced');
         assert.deepEqual((await queue.status()).errors, []);
         assert.equal((await queue.status()).completed, 3);
+        assert.deepEqual((await queue.status()).tasks, { completed: 6, total: 6, percent: 100, proxiesRemaining: 0, transfersRemaining: 0 }, 'Both kinds of work must finish for overall 100%');
         assert.ok(scanner.snapshot().shots.every(shot => shot.proxyLocation === 'library'), 'Published proxies are identified as Library assets');
         assert.equal(maxEncoders, 1);
         const scratchDirectory = join(scratch, scratchFolder, 'proxies');
@@ -100,6 +109,7 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         await until(async () => !(await queue.status()).active, 'metadata-only update');
         assert.equal((await fs.stat(proxyPath)).ino, before.ino, 'Existing Library proxy is not overwritten');
         assert.equal(encodeCount, count, 'Metadata updates do not regenerate proxies');
+        assert.equal((await queue.status()).tasks.total, 1, 'A fresh Commit with an existing proxy counts only its transfer');
 
         // Pause before deleting: refresh must expose the missing proxy and make the shot eligible.
         await queue.stop();
@@ -122,17 +132,16 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         await queue.stop();
         await fs.unlink(proxyPath); await queue.refreshLibrary();
         encodingHeld = false; holdEncoding = true; holdAt = encodeCount + 1;
-        queue.resume();
+        plan = await queue.preview([first.id]);
+        assert.equal(proxies.status().paused, false, 'Commit refreshes presence and resumes preparation after Stop');
         await until(() => encodingHeld, 'active encoding before Stop');
-        plan = await queue.preview([first.id]); await queue.submit(plan.token, [first.id]);
+        await queue.submit(plan.token, [first.id]);
         await until(async () => (await queue.status()).waiting === 1, 'sync batch waits for encoding');
-        await queue.cancelSync();
-        assert.equal((await queue.status()).active, false, 'Sync-only cancellation clears submissions');
-        assert.equal(proxies.status().paused, false, 'Sync-only cancellation does not suspend background work');
-        assert.equal(encoders, 1, 'Sync-only cancellation leaves the encoder running');
-        assert.equal(scanner.snapshot().shots.find(shot => shot.id === first.id).editable, true, 'Sync-only cancellation unlocks the clip');
         await queue.stop();
+        assert.equal((await queue.status()).active, false, 'Stop clears Commit submissions');
+        assert.equal((await queue.status()).tasks.transfersRemaining, 0, 'Cancelling Commit removes transfer tasks from progress');
         assert.equal(encoders, 0, 'Stop terminates active encoding');
+        assert.equal((await queue.status()).tasks.proxiesRemaining, 0, 'Stop all removes unfinished proxy tasks from progress');
         assert.equal(proxies.status().paused, true);
         const cancelledCount = encodeCount;
         await sleep(250); assert.equal(encodeCount, cancelledCount, 'Stop does not immediately refill the background queue');
@@ -144,6 +153,12 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         await queue.stop(); releaseCheck(); await refreshing;
         assert.equal(proxies.status().paused, true, 'A refresh finishing after Stop cannot restart background work');
         assert.equal((await queue.status()).active, false, 'Refresh does not resurrect cancelled sync submissions');
+        holdCheck = true; checkEntered = false;
+        const stoppedReview = queue.preview([first.id]);
+        await until(() => checkEntered, 'Commit presence check held');
+        await queue.stop(); releaseCheck();
+        await assert.rejects(stoppedReview, /Work was stopped/);
+        assert.equal(proxies.status().paused, true, 'A Commit review finishing after Stop cannot restart work');
         // Exercise cancellation of an actual FFmpeg child after it reports a frame.
         const abort = new AbortController();
         await assert.rejects(encodeProxy(join(source, first.filename), join(root, 'cancelled.partial'), first, abort.signal, () => abort.abort()), /stopped/);
