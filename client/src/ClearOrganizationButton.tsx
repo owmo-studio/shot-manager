@@ -7,7 +7,10 @@ export function ClearOrganizationButton({ shots, onUpdated }: { shots: VideoShot
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const dialog = useRef<HTMLDialogElement>(null);
-    const disabled = !shots.length || shots.some(shot => !shot.editable || !shot.fingerprint || !shot.organization);
+    const hasAttributes = shots.some(({ organization }) => organization && (
+        organization.identity || organization.project || organization.scene || organization.notes || organization.tags.length
+    ));
+    const disabled = !hasAttributes || shots.some(shot => !shot.editable || !shot.fingerprint || !shot.organization);
     useEffect(() => {
         if (!targets) return;
         const element = dialog.current;

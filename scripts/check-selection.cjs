@@ -775,7 +775,7 @@ if (!process.versions.electron) {
             assert.deepEqual(await selected(), [2, 3]);
             assert.deepEqual(await skipped(), [1, 2]);
             await wait(
-                `getComputedStyle(document.querySelector('button[aria-label="Inspect Clip 1.mp4"] [data-shot-preview]')).opacity==='0.45'`,
+                `getComputedStyle(document.querySelector('button[aria-label="Inspect Clip 1.mp4"] [data-shot-preview]')).opacity==='0.15'`,
             );
             assert.equal(
                 await js(`getComputedStyle(document.querySelector('button[aria-label="Inspect Clip 1.mp4"]')).opacity`),
@@ -1013,6 +1013,15 @@ if (!process.versions.electron) {
                         (await window.webContents.capturePage()).toPNG(),
                     );
             };
+            await checkAttributeFit();
+
+            const initialPreview = await js(`(() => { const image=document.querySelector('#clip-inspector .preview-image').getBoundingClientRect(); return {width:image.width,height:image.height}; })()`);
+            await js(`document.querySelector('[aria-label="Resize clip inspector"]').dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true,cancelable:true}))`);
+            await wait(`document.querySelector('#clip-inspector .preview-image').getBoundingClientRect().height>${initialPreview.height + 100}`);
+            assert.ok(await js(`document.querySelector('#clip-inspector .preview-image').getBoundingClientRect().width>${initialPreview.width + 100}`), "Expanding the inspector enlarges the video image in both dimensions");
+            await js(`document.querySelector('[aria-label="Resize clip inspector"]').dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true,cancelable:true}))`);
+            await wait(`Math.abs(document.querySelector('#clip-inspector .preview-image').getBoundingClientRect().width-${initialPreview.width})<1`);
+            await js(`document.querySelector('#clip-inspector-content').scrollTop=0`);
             await checkAttributeFit();
 
             await click("Project selection");
@@ -1257,6 +1266,7 @@ if (!process.versions.electron) {
                 "Scene restores after selection changes and renderer reload",
             );
             assert.deepEqual(await skipped(), [4, 5], "Saved Skip restores after renderer reload");
+            assert.equal(await js(`(() => { const card=document.querySelector('button[aria-label="Inspect Clip 4.mp4"]'); return card.classList.contains('bg-black/40') && card.querySelector('[data-shot-preview]').classList.contains('opacity-15') && card.getAttribute('data-editable')==='true'; })()`), true, "Skipped cards are very dark and remain editable");
             failOrganizationSave = true;
             await click("Skip selected clips");
             await wait(`document.querySelector('#source-error-title')?.textContent==='Skip could not be saved'`);

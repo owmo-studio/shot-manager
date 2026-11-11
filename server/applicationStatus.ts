@@ -50,7 +50,7 @@ export class ApplicationMonitor {
             if (location.mount !== configuration.libraryMount) throw new Error('The configured volume is not mounted at its expected location.');
             await access(location.path, constants.R_OK | constants.W_OK | constants.X_OK);
         } catch (error) {
-            issues.push({ key: 'library', level: 'warning', message: 'Library Unavailable', detail: error instanceof Error ? error.message : String(error) });
+            issues.push({ key: 'library', level: 'error', message: 'Library Unavailable', detail: error instanceof Error ? error.message : String(error) });
         }
         for (const source of sources) if (!source.available) issues.push({ key: `source:${source.id}`, level: 'warning', message: 'Source Unavailable', detail: `${source.name}: ${source.warning ?? source.path}` });
         const error = this.workError();

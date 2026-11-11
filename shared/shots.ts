@@ -64,6 +64,7 @@ export interface VideoShot {
     ingestState?: IngestState;
     thumbnailDigest?: string;
     proxyState?: ProxyState;
+    proxyLocation?: 'cache' | 'library';
     proxyPercent?: number;
     proxyError?: string;
     transferPercent?: number;

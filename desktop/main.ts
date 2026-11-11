@@ -150,7 +150,10 @@ function createWindow() {
     }
   })
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-  mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    // Clear Cache restarts the backend and reloads this page to reset snapshot revisions.
+    if (url !== mainWindow?.webContents.getURL()) event.preventDefault()
+  })
   mainWindow.webContents.on('before-input-event', (event, input) => {
     if (input.type === 'keyDown' && input.key.toLowerCase() === 'q' && input.meta && !input.control && !input.alt && !input.shift) {
       event.preventDefault()

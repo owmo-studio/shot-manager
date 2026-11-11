@@ -89,11 +89,11 @@ function ReviewDialog({
                     return (
                     <div key={clip.id} data-review-included={included} className={`flex items-start gap-3 border-b border-white/8 p-3 last:border-0 ${included ? "" : "bg-white/[0.02]"}`}>
                         <div className={`mt-0.5 flex shrink-0 flex-col items-start gap-1 ${included ? "" : "opacity-40"}`}>
-                            <span className={`rounded px-2 py-0.5 text-xs ${clip.mode === "replace" ? "bg-amber-400/10 text-amber-300" : "bg-blue-400/10 text-blue-300"}`}>
+                            <span className="rounded bg-blue-400/10 px-2 py-0.5 text-xs text-blue-300">
                                 {clip.mode === "replace" ? "↻ Update" : "New"}
                             </span>
-                            {review.proxyPreparation && <span data-review-proxy-ready={proxyReady} title={proxyReady ? "Proxy ready" : "Proxy queued"}
-                                className={`rounded px-2 py-0.5 text-xs ${proxyReady ? "bg-emerald-400/10 text-emerald-300" : "bg-zinc-500/10 text-zinc-500"}`}>
+                            {review.proxyPreparation && proxyReady && <span data-review-proxy-ready="true" title="Proxy available"
+                                className="rounded bg-blue-400/10 px-2 py-0.5 text-xs text-blue-300">
                                 Proxy
                             </span>}
                         </div>
@@ -175,6 +175,7 @@ export function IngestFooter({
     const [refreshing, setRefreshing] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [errorTitle, setErrorTitle] = useState("Commit error");
     function receiveStatus(next: IngestStatus) {
         setStatus((current) => (next.revision >= current.revision ? next : current));
     }
@@ -209,6 +210,7 @@ export function IngestFooter({
         if (busy) return;
         setBusy(true);
         setError(null);
+        setErrorTitle("Commit error");
         try {
             setReview(await window.desktop.reviewIngest(candidates.map((shot) => shot.id)));
         } catch (reason) {
@@ -222,6 +224,7 @@ export function IngestFooter({
         if (!review || busy) return;
         setBusy(true);
         setError(null);
+        setErrorTitle("Commit error");
         try {
             receiveStatus(await window.desktop.startIngest(review.token, ids));
             setReview(null);
@@ -256,11 +259,15 @@ export function IngestFooter({
     async function refreshLibrary() {
         setRefreshing(true);
         setError(null);
+        setErrorTitle("Refresh error");
         try {
             const next = await window.desktop.refreshLibrary();
             receiveStatus(next);
             await onRefresh();
-            if (next.libraryScan?.state === "unavailable") setError(next.libraryScan.error ?? "Library unavailable.");
+            if (next.libraryScan?.state === "unavailable") {
+                setErrorTitle("Library unavailable");
+                setError(next.libraryScan.error ?? "The configured Library folder is unavailable. Check its location in Configuration.");
+            }
         } catch (reason) {
             setError(errorMessage(reason, "Could not refresh assets."));
         } finally {
@@ -437,7 +444,7 @@ export function IngestFooter({
                 </IngestDialog>
             )}
             {!review && !stopConfirm && error && (
-                <SourceErrorDialog title="Commit error" message={error} onDismiss={() => setError(null)} />
+                <SourceErrorDialog title={errorTitle} message={error} onDismiss={() => setError(null)} />
             )}
             {!review && !stopConfirm && !error && failure && (
                 <SourceErrorDialog

@@ -58,6 +58,7 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         await until(() => scanner.snapshot().shots.length === 3 && scanner.snapshot().shots.every(shot => shot.thumbnailStatus === 'ready'), 'thumbnails ready');
         await until(() => encodingHeld && scanner.snapshot().shots.some(shot => shot.proxyState === 'ready'), 'first proxy ready, second encoding');
         const shots = scanner.snapshot().shots;
+        assert.ok(shots.some(shot => shot.proxyLocation === 'cache'), 'Generated proxy is identified as local');
         const pending = shots.find(shot => shot.proxyState === 'encoding');
         assert.equal(pending.editable, true, 'Encoding does not lock metadata edits');
         await scanner.updateOrganization([pending.id], { field: 'notes', operation: 'set', value: 'Edited during encoding' });
@@ -77,6 +78,7 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         await until(async () => !(await queue.status()).active, 'all submitted clips synced');
         assert.deepEqual((await queue.status()).errors, []);
         assert.equal((await queue.status()).completed, 3);
+        assert.ok(scanner.snapshot().shots.every(shot => shot.proxyLocation === 'library'), 'Published proxies are identified as Library assets');
         assert.equal(maxEncoders, 1);
         const scratchDirectory = join(scratch, scratchFolder, 'proxies');
         assert.deepEqual(await fs.readdir(scratchDirectory), [], 'Scratch copies removed after successful publication');

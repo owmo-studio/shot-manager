@@ -55,6 +55,7 @@ if (!process.versions.electron) {
         statusOverride,
         shotsOverride,
         ingestReads = 0,
+        rendererLoads = 0,
         browsedPath;
     const originalFetch = global.fetch;
     global.fetch = async (url, options) => {
@@ -100,6 +101,7 @@ if (!process.versions.electron) {
                     webPreferences: { ...options.webPreferences, backgroundThrottling: false },
                 });
                 window = this;
+                this.webContents.on("did-finish-load", () => { rendererLoads++; });
             }
         },
         utilityProcess: {
@@ -278,9 +280,8 @@ if (!process.versions.electron) {
                 () => js(`document.querySelector('dialog[open]')?.textContent.includes('Ready to Commit?')`),
                 "Review did not open",
             );
-            assert.equal(await js(`document.querySelectorAll('dialog [data-review-proxy-ready]').length`), 2);
-            assert.equal(await js(`Array.from(document.querySelectorAll('dialog [data-review-proxy-ready]')).every(tag=>tag.textContent.trim()==='Proxy' && (tag.getAttribute('data-review-proxy-ready')==='true' ? tag.classList.contains('text-emerald-300') : tag.classList.contains('text-zinc-500')))`), true);
-            assert.equal(await js(`Array.from(document.querySelectorAll('dialog span')).filter(tag=>tag.textContent.trim()==='New').every(tag=>tag.classList.contains('text-blue-300')) && document.querySelectorAll('dialog span.text-blue-300').length===2`), true, "New tags are blue without a plus");
+            assert.equal(await js(`Array.from(document.querySelectorAll('dialog [data-review-proxy-ready]')).every(tag=>tag.textContent.trim()==='Proxy' && tag.classList.contains('text-blue-300'))`), true, "Only available proxies get neutral blue tags");
+            assert.equal(await js(`(() => { const tags=Array.from(document.querySelectorAll('dialog span')).filter(tag=>tag.textContent.trim()==='New'); return tags.length===2 && tags.every(tag=>tag.classList.contains('text-blue-300')); })()`), true, "New tags are blue without a plus");
             assert.equal(await js(`document.querySelectorAll('dialog button[aria-label^="Remove "]').length`), 2);
             assert.equal(await js(`(() => { const style=getComputedStyle(document.querySelector('dialog button[aria-label^="Remove "]')); return style.borderTopWidth==='0px' && style.fontSize==='24px'; })()`), true, "Review removal control is large and borderless");
             await js(`document.querySelector('dialog button[aria-label^="Remove "]').click()`);
@@ -322,6 +323,25 @@ if (!process.versions.electron) {
             await until(
                 () => js(`!!document.querySelector('[data-shot-status="synced"]')`),
                 "Synced badge lost on renderer reload",
+            );
+            // A missing configured folder is a critical Library issue, not a raw filesystem failure.
+            fs.renameSync(join(root, "library"), join(root, "library-offline"));
+            await js(`document.querySelector('header button[aria-label="Refresh assets"]').click()`);
+            await until(
+                () => js(`document.querySelector('dialog[open] h2')?.textContent==='Library unavailable'`),
+                "Missing Library did not show a focused refresh error",
+            );
+            assert.equal(await js(`document.querySelector('dialog[open]').textContent.includes('configured Library folder is missing')`), true);
+            await until(
+                () => js(`document.querySelector('[data-application-level="error"]')?.textContent==='Library Unavailable'`),
+                "Missing Library did not show red app status",
+            );
+            await click("Dismiss");
+            fs.renameSync(join(root, "library-offline"), join(root, "library"));
+            await js(`document.querySelector('header button[aria-label="Refresh assets"]').click()`);
+            await until(
+                () => js(`document.querySelector('[data-application-level="ready"]')?.textContent==='Ready'`),
+                "Restored Library did not recover app status",
             );
             // Externally deleted dummy Library files must become New on an explicit refresh.
             for (const suffix of ["source.mp4", "thumb.jpg", "metadata.json"])
@@ -482,6 +502,7 @@ if (!process.versions.electron) {
                     ingestState: index === 0 ? "processing" : "queued",
                     transferPercent: index === 0 ? 42 : undefined,
                     proxyState: index === 0 ? "ready" : "encoding",
+                    proxyLocation: index === 0 ? "library" : undefined,
                     proxyPercent: index === 0 ? undefined : 38,
                 })),
             };
@@ -501,18 +522,18 @@ if (!process.versions.electron) {
                 "1",
                 "Proxy readiness indicator stays undimmed",
             );
-            assert.equal(await js(`document.querySelector('[data-proxy-state="ready"]').classList.contains('bg-emerald-400') && document.querySelector('[data-proxy-state="encoding"]').classList.contains('text-emerald-300')`), true, "Proxy card indicators use green");
+            assert.equal(await js(`document.querySelector('[data-proxy-location="library"]').classList.contains('bg-emerald-400') && document.querySelector('[data-proxy-spinner] > span > span').classList.contains('border-t-yellow-300')`), true, "Library proxy is green and central encoding wheel is yellow");
             assert.equal(
-                await js(`(() => { const dot=document.querySelector('[data-proxy-state="encoding"]'); const ring=dot?.querySelector('svg'); return !!ring && ring.classList.contains('motion-safe:animate-spin') && ring.getBoundingClientRect().width===dot.getBoundingClientRect().width && !dot.classList.contains('bg-yellow-400'); })()`),
+                await js(`(() => { const dot=document.querySelector('[data-proxy-state="encoding"]'); const proxy=document.querySelector('[data-proxy-spinner] > span'); const transfer=document.querySelector('[data-transfer-spinner] > span'); return dot.classList.contains('border-white/65') && !dot.querySelector('svg') && proxy.getBoundingClientRect().width===transfer.getBoundingClientRect().width && proxy.getBoundingClientRect().width===40; })()`),
                 true,
-                "Encoding uses the toolbar activity ring at the proxy dot size",
+                "Encoding shows a hollow corner dot and the same large central spinner as transfers",
             );
             assert.equal(
                 await js(`document.querySelector('[data-shot-status="processing"] [data-shot-progress]').value`),
                 42,
                 "Transfer progress is shown on its thumbnail",
             );
-            assert.equal(await js(`document.querySelector('[data-shot-status="processing"] [data-shot-progress]').dataset.workType`), "sync", "Transfer uses the blue progress style");
+            assert.equal(await js(`document.querySelector('[data-shot-status="processing"] [data-shot-progress]').dataset.workType`), "sync", "Transfer uses the green progress style");
             assert.equal(
                 await js(
                     `document.querySelector('[data-proxy-state="encoding"]').parentElement.querySelector('[data-shot-progress]').value`,
@@ -520,13 +541,20 @@ if (!process.versions.electron) {
                 38,
                 "Encoding progress is shown on its thumbnail",
             );
-            assert.equal(await js(`document.querySelector('[data-proxy-state="encoding"]').parentElement.querySelector('[data-shot-progress]').dataset.workType`), "proxy", "Encoding uses the green progress style");
+            assert.equal(await js(`document.querySelector('[data-proxy-state="encoding"]').parentElement.querySelector('[data-shot-progress]').dataset.workType`), "proxy", "Encoding uses the yellow progress style");
             assert.equal(await js(`document.querySelector('[data-shot-progress]').getBoundingClientRect().height`), 6, "Thumbnail progress bar is easier to see");
             assert.equal(
                 await js(`getComputedStyle(document.querySelector('[data-shot-progress]')).height`),
                 "6px",
                 "Card progress uses the larger height",
             );
+            shotsOverride = { ...shotsOverride, revision: shotsOverride.revision + 1, shots: shotsOverride.shots.map((shot, index) => ({
+                ...shot, proxyState: index === 0 ? "missing" : "ready", proxyLocation: index === 0 ? undefined : "cache",
+            })) };
+            backend.emit("message", { type: "shots:changed", change: { revision: shotsOverride.revision, vocabularyRevision: shotsOverride.revision } });
+            await until(() => js(`!!document.querySelector('[data-proxy-location="cache"]')`), "Local proxy indicator missing");
+            assert.equal(await js(`document.querySelector('[data-proxy-location="cache"]').classList.contains('bg-yellow-400')`), true, "Local proxy is yellow");
+            assert.equal(await js(`document.querySelector('[data-shot-status="processing"] [data-proxy-state]')`), null, "Missing proxy has no placeholder");
             const currentStatus = await js("window.desktop.getIngestStatus()");
             statusOverride = {
                 revision: currentStatus.revision + 1000,
@@ -667,7 +695,9 @@ if (!process.versions.electron) {
                 "Clear Cache confirmation missing",
             );
             await js(`document.querySelector('[aria-label="Keep proxies"]').click()`);
+            const beforeSelectiveClear = rendererLoads;
             await js(`document.querySelector('[aria-label="Confirm clear cache"]').click()`);
+            await until(() => rendererLoads > beforeSelectiveClear, "Selective Clear Cache did not reload the renderer");
             await until(
                 () =>
                     js(
@@ -692,10 +722,29 @@ if (!process.versions.electron) {
                 () => js(`!!document.querySelector('[aria-label="Confirm clear cache"]')`),
                 "Second Clear Cache confirmation missing",
             );
+            const beforeFullClear = rendererLoads;
             await js(`document.querySelector('[aria-label="Confirm clear cache"]').click()`);
+            await until(() => rendererLoads > beforeFullClear, "Full Clear Cache did not reload the renderer");
             await until(() => js(`!document.querySelector('dialog[open]')`), "Second Clear Cache did not finish");
             assert.ok(!fs.existsSync(retainedProxy), "Default Clear Cache deletes proxies");
             assert.deepEqual(fs.readdirSync(join(root, "library")), libraryBeforeClear);
+            await until(
+                () => js(`window.desktop.getShots().then(value=>value.scans.every(scan=>scan.state==='complete'))`),
+                "Restored sources did not finish scanning after Clear Cache",
+            );
+            await js(`(async()=>{for(const source of await window.desktop.getSources()) await window.desktop.removeSource(source.id)})()`);
+            await openConfiguration();
+            await click("Clear Cache");
+            await until(() => js(`!!document.querySelector('[aria-label="Confirm clear cache"]')`), "Empty-workspace Clear Cache confirmation missing");
+            const beforeEmptyClear = rendererLoads;
+            await js(`document.querySelector('[aria-label="Confirm clear cache"]').click()`);
+            await until(() => rendererLoads > beforeEmptyClear, "Empty-workspace Clear Cache did not reload the renderer");
+            await until(() => js(`!document.querySelector('dialog[open]') && !!document.querySelector('[data-application-level="ready"]')`), "Empty-workspace Clear Cache did not finish");
+            await js("window.desktop.chooseSource()");
+            await until(
+                () => js(`document.querySelectorAll('[data-shot-status]').length===2 && window.desktop.getShots().then(value=>value.scans.every(scan=>scan.state==='complete'))`),
+                "Re-added source stayed Queued after removing sources and clearing Cache",
+            );
             await fs.promises.writeFile(join(root, "validated"), "passed");
             clearTimeout(timer);
             console.log(

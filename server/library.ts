@@ -52,10 +52,24 @@ export async function inspectLibrary(configured: string, sources: string[] = [])
     const chosen = resolve(configured);
     const mount = mounts.filter(item => within(item.path, chosen)).sort((a, b) => b.path.length - a.path.length)[0];
     if (!mount || (within('/Volumes', chosen) && !within('/Volumes', mount.path))) throw new Error('The Library volume is not mounted.');
-    const path = await realpath(chosen);
+    let path: string;
+    try { path = await realpath(chosen); }
+    catch (error) {
+        if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+            throw new Error('The configured Library folder is missing. Choose an existing Library location in Configuration.');
+        }
+        throw error;
+    }
     if (path !== chosen) throw new Error('The Library location changed. Choose the actual folder in Configuration.');
     if (sources.some(source => resolve(source) === path)) throw new Error('Choose different folders for Library, Scratch, and sources.');
-    const info = await stat(path);
+    let info: Awaited<ReturnType<typeof stat>>;
+    try { info = await stat(path); }
+    catch (error) {
+        if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+            throw new Error('The configured Library folder is missing. Choose an existing Library location in Configuration.');
+        }
+        throw error;
+    }
     if (!info.isDirectory()) throw new Error('The Library is not a folder.');
     return { path, identity: `${info.dev}:${info.ino}:${info.birthtimeMs}`, mount: `${mount.device}:${mount.path}:${mount.type}` };
 }

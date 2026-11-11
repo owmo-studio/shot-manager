@@ -155,7 +155,8 @@ export class ProxyQueue {
             for (const shot of shots) {
                 if (this.current?.id === shot.id) continue;
                 const library = this.scanner.libraryProxy(shot.id);
-                if (library === true || this.ready.has(shot.id)) this.scanner.setProxy(shot.id, 'ready');
+                if (library === true) this.scanner.setProxy(shot.id, 'ready', undefined, undefined, 'library');
+                else if (this.ready.has(shot.id)) this.scanner.setProxy(shot.id, 'ready', undefined, undefined, 'cache');
                 else if (this.failed.has(shot.id)) this.scanner.setProxy(shot.id, 'failed', undefined, this.failed.get(shot.id));
                 else if (library === null) this.scanner.setProxy(shot.id, 'unverified');
                 else if (this.paused || !this.scratch || !shot.available || (shot.organization?.skipped && !this.priority.has(shot.id))) this.scanner.setProxy(shot.id, 'missing');
@@ -202,7 +203,7 @@ export class ProxyQueue {
             if (await libraryFileIdentity(destination)) throw new Error('Cache proxy appeared during generation. Resume work to reuse it.');
             await rename(temporary, destination);
             this.ready.set(shot.id, destination);
-            this.scanner.setProxy(shot.id, 'ready');
+            this.scanner.setProxy(shot.id, 'ready', undefined, undefined, 'cache');
         } catch (error) {
             if (!signal.aborted || spaceError) {
                 const message = spaceError ? 'Cache drive is low on free space. Free space, then Refresh to resume.' : error instanceof Error ? error.message : 'Proxy generation failed.';
@@ -246,7 +247,7 @@ export class ProxyQueue {
                 this.ready.delete(id);
             } catch (error) { this.error = `Clip synced; Cache cleanup failed: ${error instanceof Error ? error.message : 'unknown error'}`; }
         }
-        this.scanner.setProxy(id, 'ready'); this.changed(); this.schedule();
+        this.scanner.setProxy(id, 'ready', undefined, undefined, 'library'); this.changed(); this.schedule();
     }
     wait(signal: AbortSignal) {
         signal.throwIfAborted();

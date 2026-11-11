@@ -74,21 +74,21 @@ body {
 }
 
 .shot-work-progress::-webkit-progress-value {
-  background: #34d399;
+  background: #facc15;
 }
 
 .shot-work-progress[data-work-type="sync"]::-webkit-progress-value {
-  background: #60a5fa;
+  background: #34d399;
 }
 
 .ingest-card-needs-sync {
-  background-color: rgb(234 179 8 / 6%);
-  box-shadow: 0 0 0 1px rgb(250 204 21 / 30%);
+  background-color: rgb(234 179 8 / 18%);
+  box-shadow: none;
 }
 
 .ingest-card-synced {
-  background-color: rgb(16 185 129 / 6%);
-  box-shadow: 0 0 0 1px rgb(52 211 153 / 30%);
+  background-color: rgb(16 185 129 / 18%);
+  box-shadow: none;
 }
 
 .ingest-card-active {
@@ -96,10 +96,21 @@ body {
   box-shadow: 0 0 0 1px rgb(161 161 170 / 30%);
 }
 
-/* Keep editing selection visible over each persistent status color. */
-.ingest-card-synced[aria-pressed="true"],
+/* Keep editing selection visible in the card's status color. */
+.ingest-card-synced[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px rgb(52 211 153 / 80%);
+}
+
 .ingest-card-needs-sync[aria-pressed="true"] {
-  box-shadow: 0 0 0 2px rgb(96 165 250 / 80%);
+  box-shadow: 0 0 0 2px rgb(250 204 21 / 80%);
+}
+
+.ingest-card-synced:focus-visible {
+  outline-color: #34d399;
+}
+
+.ingest-card-needs-sync:focus-visible {
+  outline-color: #facc15;
 }
 
 @keyframes ingest-card-pulse {
@@ -162,9 +173,9 @@ textarea,
   -webkit-user-select: text;
 }
 
-/* Keep the default inspector's preview compact enough to show every attribute. */
+/* Keep the default preview compact and scale it with the inspector width. */
 [data-inspector-preview] {
-  height: 288px;
+  aspect-ratio: 16 / 9;
 }
 
 [data-inspector-preview] > .preview-player {
