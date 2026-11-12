@@ -54,7 +54,7 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         }, proxies);
         scanner.onChange = () => { proxies.schedule(); queue.backgroundChanged(); };
         await queue.status();
-        scanner.sync([{ id: 'synthetic', path: source, name: 'Synthetic', type: 'folder', available: true, cameraModels: [] }]);
+        scanner.discover({ id: 'synthetic', path: source, name: 'Synthetic', type: 'folder', available: true, cameraModels: [] });
         await until(() => scanner.snapshot().shots.length === 3 && scanner.snapshot().shots.every(shot => shot.thumbnailStatus === 'ready'), 'thumbnails ready');
         await until(() => encodingHeld && scanner.snapshot().shots.some(shot => shot.proxyState === 'ready'), 'first proxy ready, second encoding');
         const shots = scanner.snapshot().shots;

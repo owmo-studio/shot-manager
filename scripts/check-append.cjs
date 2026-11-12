@@ -11,20 +11,20 @@ async function until(test, label) { for (let i = 0; i < 750; i++) { if (await te
     let manager, queue, release, releaseCapture;
     try {
         const entry = join(root, 'entry.ts');
-        await fs.writeFile(entry, ['server/sources.ts', 'server/ingestion.ts', 'server/library.ts', 'server/rsync.ts']
+        await fs.writeFile(entry, ['server/workspace.ts', 'server/ingestion.ts', 'server/library.ts', 'server/rsync.ts']
             .map(path => `export * from ${JSON.stringify(resolve(path))};`).join('\n'));
         const bundle = await (await import('vite')).build({ configFile: false, logLevel: 'silent', build: {
             ssr: true, write: false, rollupOptions: { input: entry, output: { format: 'cjs' } },
         } });
         const loaded = new (require('node:module'))(__filename, module); loaded.paths = module.paths;
         loaded._compile(bundle.output.find(item => item.type === 'chunk' && item.isEntry).code, __filename);
-        const { SourceRegistry, IngestQueue, inspectLibrary, rsyncFile } = loaded.exports;
+        const { WorkspaceManager, IngestQueue, inspectLibrary, rsyncFile } = loaded.exports;
         const input = join(root, 'input'), library = join(root, 'library');
         await fs.mkdir(input); await fs.mkdir(library);
         for (const [name, color] of [['a', 'blue'], ['b', 'red'], ['c', 'green'], ['d', 'yellow']])
             await execute('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', `color=c=${color}:s=160x90:r=10`, '-t', '0.3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', join(input, `${name}.mp4`)]);
         const originals = await Promise.all((await fs.readdir(input)).map(async name => [name, await fs.readFile(join(input, name))]));
-        manager = new SourceRegistry(join(root, 'thumbs'), join(root, 'fingerprints'), join(root, 'metadata.json'));
+        manager = new WorkspaceManager(join(root, 'thumbs'), join(root, 'fingerprints'), join(root, 'metadata.json'));
         const scanner = manager.scanner;
         let hold = true, entered = false;
         queue = new IngestQueue(scanner, async () => library, inspectLibrary, async (...args) => {
@@ -61,7 +61,7 @@ async function until(test, label) { for (let i = 0; i < 750; i++) { if (await te
         assert.equal(status.current.id, a.id); assert.equal(status.total, 3);
         assert.equal(status.tasks.total, firstTotal + 2, 'Append retains existing progress task identities');
         await assert.rejects(queue.submit(plan.token, [b.id]), /expired/);
-        await assert.rejects(queue.eject([c.id]), error => error.code === 'EJECT_CONFIRMATION_REQUIRED');
+        await assert.rejects(queue.eject([c.id]), error => error.code === 'CLIP_COMMIT_ACTIVE');
         await queue.cancel([c.id]);
         assert.ok(scanner.snapshot().shots.find(shot => shot.id === c.id)?.editable, 'Cancel keeps the clip editable in the workspace');
         await scanner.updateOrganization([c.id], { field: 'notes', operation: 'set', value: 'Edit after cancellation' });

@@ -1,3 +1,4 @@
+import { secondaryButton as button, primaryButton, dangerButton as destructiveButton } from "./buttonStyles";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -6,10 +7,6 @@ import type { IngestReview, IngestStatus } from "../../shared/ingestion";
 import type { VideoShot } from "../../shared/shots";
 import { SourceErrorDialog } from "./SourceErrorDialog";
 
-const buttonBase = "rounded-md border px-3 py-1.5 text-xs disabled:opacity-40 disabled:cursor-not-allowed";
-const button = `${buttonBase} border-white/15 text-zinc-200 hover:bg-white/8`;
-const primaryButton = `${buttonBase} border-blue-500 bg-blue-500 text-white hover:bg-blue-400 disabled:hover:bg-blue-500`;
-const destructiveButton = `${buttonBase} border-red-500/60 bg-red-600 text-white hover:bg-red-500 disabled:hover:bg-red-600`;
 const bytes = (value: number) =>
     value >= 1e9
         ? `${(value / 1e9).toFixed(1)} GB`
@@ -78,7 +75,7 @@ function ReviewDialog({
                 {clips.length} {clips.length === 1 ? "clip" : "clips"} ·{" "}
                 {bytes(clips.reduce((sum, clip) => sum + clip.bytes, 0))}
                 {review.proxyPreparation && (
-                    <span className="ml-1 text-xs text-zinc-500">in sources and thumbnails; proxies additional</span>
+                    <span className="ml-1 text-xs text-zinc-500">excl. proxies</span>
                 )}
             </p>
             <p className="mt-2 break-all text-xs text-zinc-500">{review.libraryPath}</p>
@@ -144,8 +141,7 @@ function ReviewDialog({
             </div>
             {replacements > 0 && (
                 <p className="mt-3 text-sm text-amber-300">
-                    Committing will update the Library source, thumbnail, and metadata, and add a proxy if missing, for{" "}
-                    {replacements} {replacements === 1 ? "clip" : "clips"}. Additional assets are preserved.
+                    Updates {replacements} existing Library {replacements === 1 ? "clip" : "clips"}.
                 </p>
             )}
             {error && (
@@ -160,7 +156,7 @@ function ReviewDialog({
                 <button
                     disabled={busy || !clips.length}
                     onClick={() => onStart(ids)}
-                    className={`${button} bg-blue-500/30`}
+                    className={primaryButton}
                 >
                     {busy ? "Queueing…" : "Commit"}
                 </button>
@@ -308,8 +304,11 @@ export function IngestFooter({
     const failure = status.errors[0];
     const hasWork = status.active || !!status.work?.busy;
     const tasks = status.tasks ?? { completed: 0, total: 0, percent: 0, proxiesRemaining: 0, transfersRemaining: 0 };
-    const remainingTasks = tasks.total - tasks.completed;
-    const taskSummary = `${remainingTasks} ${remainingTasks === 1 ? "task" : "tasks"} remaining`;
+    const { proxiesRemaining: proxies, transfersRemaining: transfers } = tasks;
+    const taskSummary = [
+        proxies > 0 ? `${proxies} ${proxies === 1 ? "proxy" : "proxies"}` : null,
+        transfers > 0 ? `${transfers} ${transfers === 1 ? "commit" : "commits"}` : null,
+    ].filter(Boolean).join(", ");
     return (
         <>
             {refreshTarget &&
@@ -332,29 +331,12 @@ export function IngestFooter({
                             (!hasWork && (!status.libraryPath || checkingLibrary || refreshing))
                         }
                         onClick={() => (hasWork ? setStopConfirm(true) : void refreshLibrary())}
-                        className={`grid size-8 shrink-0 place-items-center rounded-md text-zinc-400 transition focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40 disabled:cursor-not-allowed ${hasWork ? "work-control enabled:hover:bg-red-500/10 enabled:hover:text-red-400 enabled:focus-visible:bg-red-500/10 enabled:focus-visible:text-red-400 enabled:active:text-red-300" : "enabled:hover:bg-white/8 enabled:hover:text-zinc-100"}`}
+                        className="grid size-8 shrink-0 place-items-center rounded-md text-zinc-400 transition enabled:hover:bg-white/8 enabled:hover:text-zinc-100 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                         {hasWork ? (
-                            <span aria-hidden="true" className="relative size-5">
-                                <svg
-                                    viewBox="0 0 24 24"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    strokeWidth="2"
-                                    strokeLinecap="round"
-                                    className="work-control-activity absolute inset-0 size-5 motion-safe:animate-spin"
-                                >
-                                    <circle cx="12" cy="12" r="8" opacity=".2" />
-                                    <path d="M12 4a8 8 0 0 1 8 8" />
-                                </svg>
-                                <svg
-                                    viewBox="0 0 24 24"
-                                    fill="currentColor"
-                                    className="work-control-stop absolute inset-0 size-5"
-                                >
-                                    <rect x="6" y="6" width="12" height="12" rx="1" />
-                                </svg>
-                            </span>
+                            <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor" className="size-5">
+                                <rect x="6" y="6" width="12" height="12" rx="1" />
+                            </svg>
                         ) : (
                             <svg
                                 viewBox="0 0 24 24"
@@ -364,7 +346,7 @@ export function IngestFooter({
                                 strokeLinecap="round"
                                 strokeLinejoin="round"
                                 aria-hidden="true"
-                                className={`size-5 ${checkingLibrary || refreshing ? "motion-safe:animate-spin" : ""}`}
+                                className="size-5"
                             >
                                 <path d="M3 11a9 9 0 0 1 15.36-6.36L21 7M21 3v4h-4M21 13a9 9 0 0 1-15.36 6.36L3 17M7 17H3v4" />
                             </svg>
@@ -372,21 +354,20 @@ export function IngestFooter({
                     </button>,
                     refreshTarget,
                 )}
-            <div
+            {proxies + transfers > 0 && <div
                 data-work-progress
                 data-ingest-progress={status.active ? "" : undefined}
                 role="status"
-                aria-label={status.stopping ? "Stopping work" : taskSummary}
-                className="col-start-2 row-start-1 flex items-center gap-3 px-4"
+                aria-label={taskSummary}
+                className="col-start-2 row-start-1 flex items-center gap-2 px-4 text-xs font-medium text-zinc-200 tabular-nums"
             >
-                <span className="shrink-0 text-xs font-medium text-zinc-200 tabular-nums">{taskSummary}</span>
-                <progress
-                    aria-label="Overall task progress"
-                    max={100}
-                    value={tasks.percent}
-                    className="ingest-progress block h-2 w-32"
-                />
-            </div>
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                    strokeLinecap="round" className="size-3.5 shrink-0 text-zinc-400 motion-safe:animate-spin">
+                    <circle cx="12" cy="12" r="8" opacity=".25" />
+                    <path d="M12 4a8 8 0 0 1 8 8" />
+                </svg>
+                {taskSummary}
+            </div>}
             <div className="col-start-3 row-start-1 flex min-w-0 flex-wrap items-center justify-end gap-x-4 gap-y-2">
                 <span role="status">
                     {candidates.length} {selected ? "selected " : ""}{candidates.length === 1 ? "clip" : "clips"} to commit · {skipped} skipped
@@ -433,17 +414,15 @@ export function IngestFooter({
                 />
             )}
             {stopConfirm && (
-                <IngestDialog title="Stop all work?" compact busy={busy} onCancel={() => setStopConfirm(false)}>
-                    <p className="mt-3 text-sm text-zinc-400">
-                        Stop thumbnail generation, proxy encoding, & transfers? Already completed tasks will not be
-                        affected.
-                    </p>
+                <IngestDialog title="Stop All Work?" compact busy={busy} onCancel={() => setStopConfirm(false)}>
+                    <p className="mt-3 text-sm leading-6 text-zinc-400">Stop all queued and active Commits, proxy encoding, and thumbnail generation?</p>
+                    <p className="mt-2 text-xs text-zinc-500">Completed work is kept.</p>
                     <div className="mt-5 flex justify-end gap-3">
                         <button autoFocus disabled={busy} onClick={() => setStopConfirm(false)} className={button}>
                             Cancel
                         </button>
                         <button disabled={busy} onClick={() => void stop()} className={destructiveButton}>
-                            {busy ? "Stopping…" : "Stop"}
+                            {busy ? "Stopping…" : "Stop All"}
                         </button>
                     </div>
                 </IngestDialog>

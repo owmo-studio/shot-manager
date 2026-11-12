@@ -18,6 +18,7 @@ import { IngestFooter } from "./IngestFooter";
 import { ShotGrid } from "./ShotGrid";
 import { scrollShotIntoView } from "./scrollShotIntoView";
 import { SourceErrorDialog } from "./SourceErrorDialog";
+import { ClipActionDialog } from "./ClipActionDialog";
 import { DirectoryUnavailableDialog } from "./DirectoryUnavailableDialog";
 import "./styles.css";
 
@@ -82,7 +83,7 @@ function App() {
         try {
             const result = await window.desktop.updateOrganization([...new Set(ids)], { field: 'skip', operation: 'set', value: skipped ? 'true' : 'false' });
             receiveShots(result.collection);
-        } catch (error) { setSkipError(errorMessage(error, 'Could not save the Skip choice. Please try again.')); }
+        } catch (error) { setSkipError(errorMessage(error, 'Could not save Skip.')); }
         finally { ids.forEach(id => skipPending.current.delete(id)); }
     }
 
@@ -146,6 +147,9 @@ function App() {
     const [workspaceError, setWorkspaceError] = useState<string | null>(null);
     const refreshFailed = useRef(false);
     const [communicationError, setCommunicationError] = useState(false);
+    const [ejectTargets, setEjectTargets] = useState<VideoShot[] | null>(null);
+    const [ejectAction, setEjectAction] = useState<"eject" | "stop">("eject");
+    const [ejectError, setEjectError] = useState<string | null>(null);
     const [ejectBusy, setEjectBusy] = useState(false);
     const ejectMutation = useRef(false);
     const [unavailableDirectories, setUnavailableDirectories] = useState<DirectoryAvailability[]>([]);
@@ -192,35 +196,45 @@ function App() {
             if (droppedFiles) {
                 const errors: string[] = [];
                 for (const file of droppedFiles) {
-                    try { await window.desktop.addDroppedSource(file); }
-                    catch (error) { errors.push(errorMessage(error, "Drop readable folders or card roots, rather than individual files.")); }
+                    try { await window.desktop.addDroppedClips(file); }
+                    catch (error) { errors.push(errorMessage(error, "Drop supported video files, readable folders, or card roots.")); }
                 }
                 if (errors.length) setWorkspaceError(`${errors.length} dropped item${errors.length === 1 ? " could" : "s could"} not be added. ${[...new Set(errors)].join(" ")}`);
-            } else await window.desktop.chooseSource();
+            } else await window.desktop.chooseClips();
             receiveShots(await window.desktop.getShots());
-        } catch (error) { setWorkspaceError(errorMessage(error, "Could not scan this folder. Check that it is connected and readable.")); }
+        } catch (error) { setWorkspaceError(errorMessage(error, "Could not add clips. Check that the file or folder is connected and readable.")); }
         finally { setAddingClips(false); workspaceMutation.current = false; }
     }
 
-    async function requestEject(ids: string[]) {
+    function requestEject(ids: string[]) {
         if (ejectMutation.current) return;
         const targets = allUniqueShots.filter(shot => ids.includes(shot.id));
+        const queued = targets.filter(shot => shot.ingestState === "queued" || shot.ingestState === "processing");
         if (!targets.length) return;
-        const cancel = targets.some(shot => shot.ingestState === "queued" || shot.ingestState === "processing");
+        setEjectError(null);
+        setEjectAction(queued.length ? "stop" : "eject");
+        setEjectTargets(queued.length ? queued : targets);
+    }
+
+    async function confirmClipAction() {
+        if (ejectMutation.current || !ejectTargets) return;
         ejectMutation.current = true;
+        setEjectError(null);
         setEjectBusy(true);
         try {
-            const selected = targets.map(shot => shot.id);
-            try {
-                receiveShots(await (cancel ? window.desktop.cancelClips(selected) : window.desktop.ejectClips(selected)));
-            } catch (error) {
-                // A clip queued after the last renderer snapshot gets the safe first-stage action.
-                if (!cancel && error instanceof AppError && error.code === "EJECT_CONFIRMATION_REQUIRED")
-                    receiveShots(await window.desktop.cancelClips(selected));
-                else throw error;
-            }
+            const ids = ejectTargets.map(shot => shot.id);
+            receiveShots(await (ejectAction === "stop" ? window.desktop.cancelClips(ids) : window.desktop.ejectClips(ids)));
+            setEjectTargets(null);
         } catch (error) {
-            setWorkspaceError(errorMessage(error, cancel ? "Could not cancel the selected commits." : "Could not eject the selected clips."));
+            // Eject authorization never authorizes stopping a newly queued Commit.
+            if (ejectAction === "eject" && error instanceof AppError && error.code === "CLIP_COMMIT_ACTIVE") {
+                const collection = await window.desktop.getShots().catch(() => null);
+                const queued = collection?.shots.filter(shot => ejectTargets.some(target => target.id === shot.id) &&
+                    (shot.ingestState === "queued" || shot.ingestState === "processing"));
+                if (collection && queued?.length) {
+                    receiveShots(collection); setEjectAction("stop"); setEjectTargets(queued);
+                } else setEjectError("Clips changed. Cancel and review the action again.");
+            } else setEjectError(errorMessage(error, ejectAction === "stop" ? "Could not stop the selected commits." : "Could not eject the selected clips."));
         } finally { setEjectBusy(false); ejectMutation.current = false; }
     }
 
@@ -322,7 +336,7 @@ function App() {
                     </span>
                     <button
                         disabled
-                        title="Library is planned for a later milestone"
+                        title="Library — coming next"
                         className="px-5 py-1.5 text-zinc-600"
                     >
                         Library
@@ -332,15 +346,18 @@ function App() {
             </header>
             <main className="flex min-h-0 flex-1">
                 <aside className="w-60 shrink-0 overflow-y-auto border-r border-white/8 bg-white/1.5 p-3">
-                    <div className="flex items-center justify-between gap-2">
-                        <p aria-label="Total clips" className="text-xs text-zinc-500">{allUniqueShots.length.toLocaleString()} {allUniqueShots.length === 1 ? "clip" : "clips"}</p>
-                        <button onClick={() => void addClips()} disabled={!canAddClips} aria-label="Add clips" title="Scan a folder for clips"
-                            className="rounded-md border border-white/10 bg-white/4 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-white/8 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">+</button>
-                    </div>
-                    <section aria-label="Filters" className="mt-3">
-                        <ul aria-label="Device filters" className="mt-3 space-y-1">
+                    <section aria-label="Filters">
+                        <ul aria-label="Device filters" className="space-y-1">
+                            <li>
+                                <button type="button" aria-label="Show all clips"
+                                    onClick={() => setSelectedDevices([])}
+                                    className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition duration-75 hover:bg-white/4 focus-visible:outline-2 focus-visible:outline-blue-400">
+                                    <span className="min-w-0 truncate text-[13px] text-zinc-200">All</span>
+                                    <span aria-label="Total clips" className="shrink-0 text-xs text-zinc-500">{allUniqueShots.length.toLocaleString()}</span>
+                                </button>
+                            </li>
                             {devices.map(([name, count]) => (
-                                <li key={name}>
+                                <li key={name} className="ml-2">
                                     <button
                                         type="button"
                                         aria-label={`Filter clips by device: ${name}`}
@@ -348,9 +365,12 @@ function App() {
                                         title={`${name} · ${count} ${count === 1 ? "shot" : "shots"}`}
                                         onClick={() => setSelectedDevices((current) => current.includes(name)
                                             ? current.filter((device) => device !== name) : [...current, name])}
-                                        className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition duration-75 focus-visible:outline-2 focus-visible:outline-blue-400 ${activeDevices.includes(name) ? "bg-blue-400/10 ring-1 ring-blue-400/60 hover:bg-blue-400/15" : "hover:bg-white/4"}`}
+                                        className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition duration-75 focus-visible:outline-2 focus-visible:outline-blue-400 ${activeDevices.includes(name) ? "bg-white/8 hover:bg-white/12" : "hover:bg-white/4"}`}
                                     >
-                                        <span className="min-w-0 truncate text-[13px] text-zinc-200">{name}</span>
+                                        <span aria-hidden="true" className={`grid size-4 shrink-0 place-items-center rounded-sm border ${activeDevices.includes(name) ? "border-zinc-400 bg-white/10 text-zinc-100" : "border-zinc-600"}`}>
+                                            {activeDevices.includes(name) && <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-3"><path d="m4 10 4 4 8-8" /></svg>}
+                                        </span>
+                                        <span className="min-w-0 flex-1 truncate text-[13px] text-zinc-200">{name}</span>
                                         <span className="shrink-0 text-xs text-zinc-500">{count}</span>
                                     </button>
                                 </li>
@@ -377,7 +397,7 @@ function App() {
                 >
                     {draggingFolders ? (
                         <p className="pointer-events-none text-sm text-blue-300">
-                            {canAddClips ? "Drop folders or a card root to add clips" : "Adding clips is unavailable"}
+                            {canAddClips ? "Drop videos, folders, or a card root to add clips" : "Adding clips is unavailable"}
                         </p>
                     ) : shotCollection.shots.length || shotCollection.scans.length ? (
                         <ShotGrid
@@ -396,11 +416,11 @@ function App() {
                                 disabled={!canAddClips}
                                 aria-label="Add clips"
                                 title="Add clips"
-                                className="mx-auto mb-6 grid size-14 place-items-center rounded-2xl border border-white/10 bg-white/4 text-2xl text-zinc-400 transition hover:border-white/20 hover:bg-white/8 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40"
+                                className="mx-auto mb-6 grid size-14 place-items-center rounded-2xl border border-blue-500 bg-blue-500 text-2xl text-white transition enabled:hover:border-blue-400 enabled:hover:bg-blue-400 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40"
                             >
                                 ＋
                             </button>
-                            <h2 className="text-xl font-medium tracking-tight">{workspaceStatus.level === "ready" ? "Your workspace is ready" : workspaceStatus.message}</h2>
+                            <h2 className="text-xl font-medium tracking-tight">{workspaceStatus.level === "ready" ? "Add clips to begin" : workspaceStatus.message}</h2>
                         </div>
                     )}
                 </section>
@@ -421,9 +441,12 @@ function App() {
                         onSkipChange={(skipped) => changeSkip(selectedShots.map((shot) => shot.id), skipped)}
                     />}
             </main>
-            {skipError && <SourceErrorDialog title="Skip could not be saved" message={skipError} onDismiss={() => setSkipError(null)} />}
-            {!skipError && workspaceError && <SourceErrorDialog title="Workspace error" message={workspaceError} onDismiss={() => setWorkspaceError(null)} />}
-            {!skipError && !workspaceError && unavailableDirectories.length > 0 && <DirectoryUnavailableDialog
+            {ejectTargets && <ClipActionDialog key={ejectAction} action={ejectAction} shots={ejectTargets} busy={ejectBusy} error={ejectError}
+                onCancel={() => { if (!ejectBusy) setEjectTargets(null); }}
+                onConfirm={() => void confirmClipAction()} />}
+            {!ejectTargets && skipError && <SourceErrorDialog title="Skip could not be saved" message={skipError} onDismiss={() => setSkipError(null)} />}
+            {!ejectTargets && !skipError && workspaceError && <SourceErrorDialog title="Workspace error" message={workspaceError} onDismiss={() => setWorkspaceError(null)} />}
+            {!ejectTargets && !skipError && !workspaceError && unavailableDirectories.length > 0 && <DirectoryUnavailableDialog
                 directories={unavailableDirectories} onDismiss={() => setUnavailableDirectories([])}
                 onEject={ids => { setUnavailableDirectories([]); requestEject(ids); }} />}
             <footer className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-5 border-t border-white/8 px-5 py-3 text-xs text-zinc-500">

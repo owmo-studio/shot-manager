@@ -14,13 +14,13 @@ async function until(test, label) {
     let scanner, releaseThumbnail, releaseFingerprint;
     try {
         const entry = join(root, 'entry.ts');
-        await fs.writeFile(entry, `export * from ${JSON.stringify(resolve('server/scanner.ts'))};`);
+        await fs.writeFile(entry, ['server/scanner.ts','server/workspace.ts'].map(path=>`export * from ${JSON.stringify(resolve(path))};`).join("\n"));
         const bundle = await (await import('vite')).build({ configFile: false, logLevel: 'silent', build: {
             ssr: true, write: false, rollupOptions: { input: entry, output: { format: 'cjs' } },
         } });
         const loaded = new (require('node:module'))(__filename, module); loaded.paths = module.paths;
         loaded._compile(bundle.output.find(item => item.type === 'chunk' && item.isEntry).code, __filename);
-        const { ShotScanner } = loaded.exports;
+        const { ShotScanner, WorkspaceManager } = loaded.exports;
         const first = join(root, 'first'), second = join(root, 'second'), third = join(root, 'third');
         await Promise.all([first, second, third].map(path => fs.mkdir(path)));
         const video = join(first, 'original.mp4');
@@ -28,12 +28,49 @@ async function until(test, label) {
         const bytes = await fs.readFile(video);
         const copy = join(second, 'copy.mp4'), alternative = join(third, 'alternative.mp4');
         await Promise.all([copy, alternative].map(path => fs.writeFile(path, bytes)));
+        // Explicit video-file discovery must never sweep up sibling clips.
+        const fileRoot = join(root, 'file-drops'); await fs.mkdir(fileRoot);
+        const selectedFile = join(fileRoot, 'selected.MOV'), siblingFile = join(fileRoot, 'sibling.mp4');
+        await fs.writeFile(selectedFile,bytes); await fs.writeFile(siblingFile,Buffer.concat([bytes,Buffer.from('distinct fixture')]));
+        const unsupported = join(fileRoot,'notes.txt'); await fs.writeFile(unsupported,'not video');
+        const files = new WorkspaceManager(undefined,join(root,'file-fingerprints'),join(root,'file-drafts.json'));
+        let releaseFile;
+        try {
+            await assert.rejects(files.add(unsupported),/supported video file/);
+            assert.equal(files.scanner.snapshot().scans.length,0,'Rejected files create no discovery job');
+            const direct = await files.add(selectedFile);
+            await until(()=>!files.scanner.isBusy(direct.id),'individual video discovery');
+            let cards = files.scanner.snapshot().shots;
+            assert.equal(cards.length,1); assert.equal(cards[0].filePath,selectedFile);
+            assert.equal(files.scanner.directoryAvailability()[0].path,fileRoot);
+            const repeated = await files.add(selectedFile);
+            await until(()=>!files.scanner.isBusy(repeated.id),'duplicate file drop');
+            assert.equal(files.scanner.snapshot().shots.length,1,'Repeated file drops deduplicate');
+            const identify=files.scanner.fingerprints.identify.bind(files.scanner.fingerprints);
+            let held=false;
+            files.scanner.fingerprints.identify=async(...args)=>{held=true;await new Promise(resolve=>{releaseFile=resolve;});return identify(...args);};
+            await files.add(selectedFile); await until(()=>held,'file discovery held');
+            const plan = files.scanner.restorePlan();
+            assert.deepEqual(plan.scans.map(scan=>scan.files),[[selectedFile]],'Cache handoff retains exact file scope');
+            releaseFile(); await files.scanner.pending;
+            files.scanner.fingerprints.identify=identify;
+            const restored = new WorkspaceManager(undefined,join(root,'file-restore-fingerprints'),join(root,'file-restore-drafts.json'));
+            try {
+                restored.scanner.restoreWorkspace(plan);
+                await until(()=>restored.scanner.snapshot().scans.every(scan=>scan.state==='complete'),'file-only restoration');
+                assert.deepEqual(restored.scanner.snapshot().shots.map(shot=>shot.filePath),[selectedFile],'Restore does not add siblings');
+            } finally { await restored.close(); }
+            const folder = await files.add(fileRoot);
+            await until(()=>!files.scanner.isBusy(folder.id),'folder overlap after file drop');
+            assert.equal(files.scanner.snapshot().shots.length,2,'Folder addition adds siblings without duplicating the selected file');
+            assert.deepEqual(await fs.readFile(selectedFile),bytes,'File discovery preserves original bytes');
+        } finally { releaseFile?.(); await files.close(); await fs.rm(fileRoot,{recursive:true,force:true}); }
         const source = (id, path) => ({ id, path, name: id, type: 'folder', available: true, cameraModels: [] });
         const a = source('first', first), b = source('second', second), c = source('third', third);
         scanner = new ShotScanner(join(root, 'thumbs'), join(root, 'fingerprints'), join(root, 'metadata.json'));
         const scan = async item => {
             scanner.discover(item);
-            await until(() => scanner.snapshot().scans.find(scan => scan.sourceId === item.id)?.state === 'complete', `scan ${item.id}`);
+            await until(() => scanner.snapshot().scans.find(scan => scan.discoveryId === item.id)?.state === 'complete', `scan ${item.id}`);
         };
         // Hold thumbnail extraction beyond discovery so deleting the scan cannot own/cancel it.
         const extract = scanner.thumbnailQueue.extract.bind(scanner.thumbnailQueue);
@@ -110,8 +147,9 @@ async function until(test, label) {
         assert.equal(scanner.snapshot().shots.length, 2);
         assert.equal(scanner.snapshot().shots.find(shot => shot.id === id).available, false);
         assert.ok(scanner.snapshot().shots.find(shot => shot.id !== id).available);
-        scanner.remove(c.id); await scanner.checkDirectories();
-        assert.equal(scanner.snapshot().shots.length, 0, 'Legacy Remove explicitly removes matching workspace members');
+        const ejected = scanner.snapshot().shots.map(shot=>shot.id);
+        scanner.beginEject(ejected); await scanner.settleEject(ejected); scanner.finishEject(ejected); await scanner.checkDirectories();
+        assert.equal(scanner.snapshot().shots.length, 0, 'Eject removes only selected workspace records');
         assert.equal(scanner.directoryStates.size, 0, 'No directories remain monitored after their final member is removed');
         // Late discovery results must not restore removed clips.
         const identify = scanner.fingerprints.identify.bind(scanner.fingerprints);
@@ -120,7 +158,7 @@ async function until(test, label) {
         scanner.fingerprints.identify = async (...args) => { fingerprintHeld = true; await fingerprintGate; return identify(...args); };
         scanner.discover(c);
         await until(() => fingerprintHeld, 'fingerprint held');
-        scanner.remove(c.id); releaseFingerprint();
+        scanner.cancelScan(c.id); releaseFingerprint();
         await scanner.pending;
         assert.equal(scanner.snapshot().shots.length, 0, 'A cancelled scan cannot reintroduce a removed record');
         assert.deepEqual(await fs.readFile(join(offline, 'original.mp4')), bytes, 'Original synthetic footage was preserved');

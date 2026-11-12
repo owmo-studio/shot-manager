@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { open, readdir, stat } from "node:fs/promises";
 import { extname, join, relative } from "node:path";
 import { promisify } from "node:util";
-import type { ImportSource } from "../shared/desktop";
+import type { DiscoveryRequest } from "../shared/shots";
 import type { EmbeddedMetadata, VideoShot } from "../shared/shots";
 import { findSonyLayout } from "./sony";
 import { readEmbeddedContainer } from "./embedded";
@@ -10,6 +10,8 @@ import { normalizeVideoMetadata, sonyMetadata } from "./videoMetadata";
 
 const execute = promisify(execFile);
 const videoExtensions = new Set([".mp4", ".mov", ".mxf", ".m4v", ".mts", ".m2ts", ".avi", ".mkv", ".webm"]);
+
+export function isVideoPath(path: string) { return videoExtensions.has(extname(path).toLowerCase()); }
 
 export interface DiscoveredShot {
     shot: VideoShot;
@@ -37,7 +39,7 @@ export async function readSmallFile(path: string, limit: number): Promise<Buffer
     }
 }
 
-async function* candidates(source: ImportSource, signal: AbortSignal, warn: (message: string) => void): AsyncGenerator<string> {
+async function* candidates(source: DiscoveryRequest, signal: AbortSignal, warn: (message: string) => void): AsyncGenerator<string> {
     const pending = [source.path];
     while (pending.length) {
         signal.throwIfAborted();
@@ -70,12 +72,12 @@ async function* candidates(source: ImportSource, signal: AbortSignal, warn: (mes
             if (entry.isDirectory()) {
                 if (sonyLayout && layout && path === join(layout.root, "SUB")) continue;
                 pending.push(path);
-            } else if (entry.isFile() && videoExtensions.has(extname(entry.name).toLowerCase())) yield path;
+            } else if (entry.isFile() && isVideoPath(entry.name)) yield path;
         }
     }
 }
 
-export async function discoverShots(source: ImportSource, signal: AbortSignal, found: (result: DiscoveredShot) => void | Promise<void>, warn: (message: string) => void, files?: string[]): Promise<void> {
+export async function discoverShots(source: DiscoveryRequest, signal: AbortSignal, found: (result: DiscoveredShot) => void | Promise<void>, warn: (message: string) => void, files?: string[]): Promise<void> {
     for await (const original of files ?? candidates(source, signal, warn)) {
         signal.throwIfAborted();
         try {
@@ -115,7 +117,7 @@ export async function discoverShots(source: ImportSource, signal: AbortSignal, f
                 fileIdentity: [info.dev, info.ino, info.birthtimeMs, info.size, info.mtimeMs].join(":"),
                 shot: {
                     id: "", // Internal candidate; scanner assigns the fingerprint before publication.
-                    filePath: original, sourceId: source.id, filename: original.split("/").pop()!, relativePath, bytes: info.size,
+                    filePath: original, filename: original.split("/").pop()!, relativePath, bytes: info.size,
                     timestamp: normalized.timestamp?.value ?? info.mtime.toISOString(),
                     dateSource: normalized.timestamp?.capture ? "camera" : normalized.timestamp ? "embedded" : "file-modified",
                     dateEvidence: normalized.timestamp?.source ?? "File modification time (capture time unknown)",

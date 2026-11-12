@@ -5,7 +5,7 @@ import { extname, join } from 'node:path';
 import { ingestAttributes } from '../shared/ingestion';
 import type { IngestReview, IngestStatus } from '../shared/ingestion';
 import { ShotScanner } from './scanner';
-import { inspectLibrary, libraryAssetName, libraryFileIdentity, listLibrary, readLibraryAttributes } from './library';
+import { inspectLibrary, libraryAssetName, libraryFileIdentity, listLibrary, readLibraryRevertAssets } from './library';
 import type { LibraryLocation, LibraryPresence } from './library';
 import { rsyncFile } from './rsync';
 import { AppError } from '../shared/errors';
@@ -132,11 +132,11 @@ export class IngestQueue {
         if (this.closing) throw new Error('The app is closing.');
         const unique = [...new Set(ids)];
         const location = await this.location();
-        // This only restores local drafts. Scanner guards protect the selected clips;
+        // Restore selected local attributes and thumbnails. Scanner guards protect the clips;
         // unrelated transfers can continue using their immutable snapshots.
         return this.scanner.revertOrganization(unique, async () => {
             const attributes = [];
-            for (const id of unique) attributes.push(await readLibraryAttributes(location, id));
+            for (const id of unique) attributes.push(await readLibraryRevertAssets(location, id));
             await this.location(location);
             return attributes;
         });
@@ -195,7 +195,7 @@ export class IngestQueue {
     private async location(expected?: LibraryLocation) {
         const configured = await this.configuredLibrary();
         if (!configured) throw new Error('Set a Library location in Configuration before committing clips.');
-        const location = await this.inspect(configured, this.scanner.sourceRoots());
+        const location = await this.inspect(configured, this.scanner.mediaDirectories());
         if (expected && JSON.stringify(location) !== JSON.stringify(expected)) throw new Error('The Library folder or mounted volume changed. Review the commit plan again.');
         return location;
     }
@@ -409,23 +409,16 @@ export class IngestQueue {
         return this.scanner.snapshot();
     }
 
-    async eject(ids: string[], cancelQueued = false) {
+    async eject(ids: string[]) {
         if (this.closing) throw new Error('The app is closing.');
         const unique = [...new Set(ids)];
-        if (!cancelQueued && unique.some(id => this.queuedIds.includes(id))) {
-            throw new AppError('Some clips are queued or committing. Confirm Eject to cancel their unfinished work.', 'EJECT_CONFIRMATION_REQUIRED', 'failed', 409);
+        if (unique.some(id => this.queuedIds.includes(id) || this.activeTransfer?.id === id)) {
+            throw new AppError('Stop queued or active commits before ejecting these clips.', 'CLIP_COMMIT_ACTIVE', 'failed', 409);
         }
         this.scanner.beginEject(unique);
         try {
-            const active = this.activeTransfer && unique.includes(this.activeTransfer.id) ? this.activeTransfer : undefined;
-            unique.forEach(id => this.cancelledIds.add(id));
-            this.queuedIds = this.queuedIds.filter(id => !unique.includes(id));
-            active?.controller.abort();
-            this.scanner.unlockIngest(unique.filter(id => id !== active?.id));
-            this.proxies?.prioritize(this.queuedIds);
-            this.wakeWorker?.();
             if (this.review?.entries.some(entry => unique.includes(entry.capture.shot.id))) this.review = undefined;
-            await Promise.all([this.preparing, active?.done, this.proxies?.cancel(unique), this.scanner.settleEject(unique)]);
+            await Promise.all([this.proxies?.cancel(unique), this.scanner.settleEject(unique)]);
             this.state.errors = this.state.errors.filter(error => !unique.includes(error.id));
             const collection = this.scanner.finishEject(unique);
             this.publish();

@@ -24,7 +24,6 @@ function bytesLabel(bytes: number) {
 const emptyShot: VideoShot = {
     id: "",
     filePath: "",
-    sourceId: "",
     filename: "",
     relativePath: "",
     bytes: 0,
@@ -89,7 +88,7 @@ export function ClipInspector({
             if (!preview.current) throw new Error("Wait for a preview frame.");
             await window.desktop.setShotThumbnail(shot.id, preview.current.captureThumbnail());
         } catch (error) {
-            setThumbnailError(errorMessage(error, "Thumbnail could not be updated. Check the preview and try again."));
+            setThumbnailError(errorMessage(error, "Could not update the thumbnail."));
         } finally {
             setThumbnailBusy(false);
         }
@@ -134,7 +133,7 @@ export function ClipInspector({
                 if (!disposed) setDetails(data);
             })
             .catch(() => {
-                if (!disposed) setDetailsError("File details could not be loaded. Check that the source is connected.");
+                if (!disposed) setDetailsError("File details unavailable. Check the source.");
             });
         return () => {
             disposed = true;
@@ -181,12 +180,12 @@ export function ClipInspector({
                             </svg>
                             <span>{thumbnailBusy ? "Saving…" : "Thumb"}</span>
                         </button>
-                        <SkipSelection count={empty ? 0 : 1} skippedCount={skipped ? 1 : 0} disabled={empty || pausedForScan} onChange={onSkipChange} />
                         <EjectButton cancel={shot.ingestState === "queued" || shot.ingestState === "processing"} count={empty ? 0 : 1} busy={ejectBusy} onClick={onEject} />
+                        <SkipSelection count={empty ? 0 : 1} skippedCount={skipped ? 1 : 0} disabled={empty || pausedForScan} onChange={onSkipChange} />
                     </div>
                 </header>
                 {thumbnailError && (
-                    <p role="alert" className="mb-3 text-xs text-amber-300">
+                    <p role="alert" className="mb-3 text-xs text-red-300">
                         {thumbnailError}
                     </p>
                 )}
@@ -210,7 +209,9 @@ export function ClipInspector({
                         >
                             {unavailable
                                 ? "source unavailable"
-                                : "Preview paused while this clip is being prepared or committed."}
+                                : shot.ingestState === "queued" || shot.ingestState === "processing"
+                                  ? "Locked during Commit."
+                                  : "Preparing clip…"}
                         </div>
                     ) : (
                         <PreviewPlayer key={shot.id} ref={preview} shot={shot} lutEnabled={lutEnabled} onReady={setFrameReady} onScrubbing={setScrubbing} />

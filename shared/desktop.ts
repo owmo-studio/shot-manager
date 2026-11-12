@@ -1,5 +1,5 @@
 import type { IngestReview, IngestStatus } from './ingestion'
-import type { ShotChange, ShotCollection, ShotDetails } from './shots'
+import type { DiscoveryRequest, ShotChange, ShotCollection, ShotDetails } from './shots'
 import type { ViewingLut } from './viewing'
 import type { OptionRemovalPlan, OrganizationAction, TagVocabulary } from './organization'
 import type { IPCResult } from './errors'
@@ -19,16 +19,6 @@ export interface ApplicationStatus {
 export type BackendStatus =
   | { state: 'connected'; health: BackendHealth; application?: ApplicationStatus }
   | { state: 'starting' | 'unavailable'; message: string }
-
-export interface ImportSource {
-  id: string
-  name: string
-  path: string
-  type: 'sony' | 'folder'
-  cameraModels: string[]
-  available: boolean
-  warning?: string
-}
 
 export interface AppConfiguration {
   version: 1
@@ -63,7 +53,6 @@ export interface LocalDataSummary extends CacheSummary {
   tags: number
   records: number
   fingerprints: number
-  sources: number
   clips: number
 }
 
@@ -95,11 +84,11 @@ export interface DesktopAPI {
   getCacheSummary: () => Promise<CacheSummary>
   clearCache: () => Promise<CacheSummary>
   getBackendStatus: () => Promise<BackendStatus>
-  chooseSource: () => Promise<ImportSource | null>
-  addDroppedSource: (file: File) => Promise<ImportSource>
+  chooseClips: () => Promise<DiscoveryRequest | null>
+  addDroppedClips: (file: File) => Promise<DiscoveryRequest>
   getShots: () => Promise<ShotCollection>
   cancelClips: (shotIds: string[]) => Promise<ShotCollection>
-  ejectClips: (shotIds: string[], cancelQueued?: boolean) => Promise<ShotCollection>
+  ejectClips: (shotIds: string[]) => Promise<ShotCollection>
   onShotsChanged: (listener: (change: ShotChange) => void) => () => void
   getShotThumbnail: (id: string) => Promise<string | null>
   setShotThumbnail: (id: string, dataUrl: string) => Promise<void>

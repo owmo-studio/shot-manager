@@ -21,6 +21,7 @@
     "check:eject": "node scripts/check-eject.cjs",
     "check:quit": "npm run build && node scripts/check-quit.cjs",
     "check:ingestion": "node scripts/check-ingestion.cjs",
+    "check:proxy-priority": "node scripts/check-proxy-priority.cjs",
     "check:proxies": "node scripts/check-proxies.cjs",
     "check:ingestion-ui": "npm run build && node scripts/check-ingestion-ui.cjs"
   },

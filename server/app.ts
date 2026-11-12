@@ -9,7 +9,7 @@ import Fastify from 'fastify'
 import type { AppConfiguration, BackendHealth } from '../shared/desktop'
 import type { IngestStatus } from '../shared/ingestion';
 import type { ShotChange, WorkspaceRestore } from '../shared/shots'
-import { SourceRegistry } from './sources'
+import { WorkspaceManager } from './workspace'
 import { pruneThumbnailCache } from './thumbnails'
 import { sendVideo } from './media'
 import { viewingProfile } from '../shared/viewing'
@@ -28,16 +28,16 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
   const cacheRoot = process.env.SHOT_MANAGER_CACHE_ROOT
   const assertWritable = cacheRoot && process.env.SHOT_MANAGER_CACHE_PARENT && process.env.SHOT_MANAGER_CACHE_MOUNT
     ? () => assertCacheReady(process.env.SHOT_MANAGER_CACHE_PARENT!, cacheRoot, process.env.SHOT_MANAGER_CACHE_MOUNT!) : undefined
-  const sources = new SourceRegistry(thumbnailCacheDirectory, fingerprintDirectory, organizationFile, assertWritable)
-  const proxies = new ProxyQueue(sources.scanner, configuration)
+  const workspace = new WorkspaceManager(thumbnailCacheDirectory, fingerprintDirectory, organizationFile, assertWritable)
+  const proxies = new ProxyQueue(workspace.scanner, configuration)
   const application = new ApplicationMonitor(configuration, () => {
-    const available = new Map(sources.scanner.snapshot().shots.map(shot => [shot.id, shot.available]))
-    return sources.scanner.directoryAvailability().map(directory => ({
+    const available = new Map(workspace.scanner.snapshot().shots.map(shot => [shot.id, shot.available]))
+    return workspace.scanner.directoryAvailability().map(directory => ({
       id: directory.path, path: directory.path, name: `${directory.clipIds.length} clips`,
       available: directory.available && directory.clipIds.every(id => available.get(id)),
     }))
   }, () => proxies.status().error)
-  const ingestion = new IngestQueue(sources.scanner, async () => (await configuration()).libraryPath, async (path, roots) => {
+  const ingestion = new IngestQueue(workspace.scanner, async () => (await configuration()).libraryPath, async (path, roots) => {
     const configured = await configuration()
     if (!configured.libraryMount) throw new Error('Choose the Library location again in Configuration to confirm its volume.')
     const location = await inspectLibrary(path, roots)
@@ -46,11 +46,11 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
   }, rsyncFile, proxies)
   ingestion.onChange = onIngestChanged
   const ids = { type: 'array', minItems: 1, maxItems: 1000, uniqueItems: true, items: { type: 'string', pattern: '^[a-f0-9]{64}$' } }
-  server.post<{ Body: { shotIds: string[]; cancelQueued?: boolean } }>('/api/workspace/eject', {
+  server.post<{ Body: { shotIds: string[] } }>('/api/workspace/eject', {
     schema: { body: { type: 'object', required: ['shotIds'], additionalProperties: false,
-      properties: { shotIds: ids, cancelQueued: { type: 'boolean' } } } }
+      properties: { shotIds: ids } } }
   }, async request => {
-    try { return await ingestion.eject(request.body.shotIds, request.body.cancelQueued) }
+    try { return await ingestion.eject(request.body.shotIds) }
     catch (error) { throw Object.assign(error as Error, { statusCode: (error as { status?: number }).status ?? 409 }) }
   })
   server.post<{ Body: { shotIds: string[] } }>('/api/workspace/cancel', {
@@ -59,13 +59,13 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
   // Only Electron main calls this after Cache clearing, using paths from the previous backend snapshot.
   const restorePath = { type: 'string', pattern: '^/', maxLength: 32768 }
   const restoreFiles = { type: 'array', maxItems: 10000, items: restorePath }
-  server.get('/api/workspace/restore-plan', () => sources.scanner.restorePlan())
+  server.get('/api/workspace/restore-plan', () => workspace.scanner.restorePlan())
   server.post<{ Body: WorkspaceRestore }>('/api/workspace/restore', {
     bodyLimit: 8 * 1024 * 1024,
     schema: { body: { type: 'object', required: ['files', 'scans', 'excludedIds'], additionalProperties: false,
       properties: { files: restoreFiles, excludedIds: { ...ids, minItems: 0, maxItems: 10000 }, scans: { type: 'array', maxItems: 1000,
         items: { type: 'object', required: ['path'], additionalProperties: false, properties: { path: restorePath, files: restoreFiles } } } } } }
-  }, request => { sources.scanner.restoreWorkspace(request.body); return sources.scanner.snapshot() })
+  }, request => { workspace.scanner.restoreWorkspace(request.body); return workspace.scanner.snapshot() })
   server.post<{ Body: { shotIds: string[] } }>('/api/organization/revert', {
     schema: { body: { type: 'object', required: ['shotIds'], additionalProperties: false, properties: { shotIds: ids } } }
   }, async request => {
@@ -94,8 +94,8 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
   }, (request, reply) => { ingestion.dismissError(request.params.id); return reply.code(204).send() })
   server.post('/api/work/resume', () => ingestion.resume())
   server.post('/api/work/configure', () => { if (!proxies.status().paused) proxies.resume(); else proxies.schedule(); return ingestion.status() })
-  sources.scanner.onChange = change => { onShotsChanged?.(change); proxies.schedule(); ingestion.backgroundChanged() }
-  server.addHook('onReady', async () => { sources.startMonitoring(); void ingestion.status().catch(error => server.log.warn(error)) })
+  workspace.scanner.onChange = change => { onShotsChanged?.(change); proxies.schedule(); ingestion.backgroundChanged() }
+  server.addHook('onReady', async () => { workspace.startMonitoring(); void ingestion.status().catch(error => server.log.warn(error)) })
 
   if (thumbnailCacheDirectory && !cacheRoot) {
     server.addHook('onClose', async () => {
@@ -123,9 +123,8 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     mode: 'development-only'
   }))
 
-  server.get('/api/sources', () => sources.list())
   server.get('/api/application-status', () => application.status())
-  server.get('/api/organization/vocabulary', () => sources.scanner.vocabulary())
+  server.get('/api/organization/vocabulary', () => workspace.scanner.vocabulary())
   const optionProperties = Object.fromEntries(['identity', 'project', 'tags'].map(field => [field, {
     type: 'array', maxItems: 1000, items: { type: 'string', maxLength: 128 }
   }]))
@@ -135,7 +134,7 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     let removals: TagVocabulary
     try { removals = validateOptionRemovals(request.body) }
     catch (error) { throw Object.assign(error as Error, { statusCode: 400 }) }
-    return sources.previewOptions(removals)
+    return workspace.previewOptions(removals)
   })
   server.patch<{ Body: TagVocabulary & { reviewToken: string } }>('/api/organization/vocabulary', {
     schema: { body: { type: 'object', required: ['identity', 'project', 'tags', 'reviewToken'], additionalProperties: false,
@@ -145,7 +144,7 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     let removals: TagVocabulary
     try { removals = validateOptionRemovals(values) }
     catch (error) { throw Object.assign(error as Error, { statusCode: 400 }) }
-    return sources.saveOptions(removals, reviewToken)
+    return workspace.saveOptions(removals, reviewToken)
   })
   server.patch<{ Body: { shotIds: string[]; action: OrganizationAction } }>('/api/organization', {
     schema: { body: { type: 'object', required: ['shotIds', 'action'], additionalProperties: false, properties: {
@@ -159,45 +158,38 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     let action: OrganizationAction
     try { action = validateOrganizationAction(request.body.action) }
     catch (error) { throw Object.assign(error as Error, { statusCode: 400 }) }
-    return sources.scanner.updateOrganization(request.body.shotIds, action)
+    return workspace.scanner.updateOrganization(request.body.shotIds, action)
   })
-  server.post<{ Params: { id: string }; Body: { path: string } }>('/api/sources/:id/relink', {
-    schema: {
-      params: { type: 'object', required: ['id'], additionalProperties: false, properties: { id: { type: 'string', pattern: '^[a-zA-Z0-9-]+$' } } },
-      body: { type: 'object', required: ['path'], additionalProperties: false, properties: { path: { type: 'string', minLength: 1 } } }
-    }
-  }, (request) => sources.relink(request.params.id, request.body.path))
-  server.get('/api/cache', () => sources.scanner.cacheSummary())
-  server.delete('/api/cache', () => sources.scanner.clearCache())
-  server.get('/api/local-data', () => sources.localDataSummary())
+  server.get('/api/cache', () => workspace.scanner.cacheSummary())
+  server.delete('/api/cache', () => workspace.scanner.clearCache())
+  server.get('/api/local-data', () => workspace.localDataSummary())
   server.delete('/api/local-data', {
     schema: { body: { type: 'object', required: ['confirm'], additionalProperties: false,
       properties: { confirm: { type: 'boolean', const: true } } } }
   }, async () => {
-    sources.scanner.assertNoIngestion()
+    workspace.scanner.assertNoIngestion()
     const paused = proxies.status().paused
     await proxies.stop()
-    try { return await sources.clearLocalData() }
+    try { return await workspace.clearLocalData() }
     finally { if (!paused) proxies.resume() }
   })
-  server.post<{ Params: { id: string } }>('/api/sources/:id/refresh', (request) => sources.refresh(request.params.id))
-  server.get('/api/shots', () => sources.scanner.snapshot())
+  server.get('/api/shots', () => workspace.scanner.snapshot())
   server.get<{ Params: { id: string } }>('/api/shots/:id/lut', async (request) => {
-    const details = await sources.scanner.details(request.params.id)
+    const details = await workspace.scanner.details(request.params.id)
     const profile = viewingProfile(details.metadata)
     return profile ? loadViewingLut(profile) : null
   })
-  server.get<{ Params: { id: string } }>('/api/shots/:id/details', (request) => sources.scanner.details(request.params.id))
+  server.get<{ Params: { id: string } }>('/api/shots/:id/details', (request) => workspace.scanner.details(request.params.id))
   server.get<{ Params: { id: string } }>('/api/shots/:id/media/original', {
     schema: { params: { type: 'object', required: ['id'], properties: {
       id: { type: 'string', pattern: '^[a-f0-9]{64}$' }
     } } }
   }, async (request, reply) => {
-    const asset = await sources.scanner.openVideo(request.params.id)
+    const asset = await workspace.scanner.openVideo(request.params.id)
     return sendVideo(request, reply, asset.file, asset.path)
   })
   server.get<{ Params: { id: string } }>('/api/shots/:id/thumbnail', async (request) => ({
-    dataUrl: await sources.scanner.thumbnail(request.params.id)
+    dataUrl: await workspace.scanner.thumbnail(request.params.id)
   }))
   server.put<{ Params: { id: string }; Body: { dataUrl: string } }>('/api/shots/:id/thumbnail', {
     bodyLimit: 3000100,
@@ -208,12 +200,12 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
       } }
     }
   }, async (request, reply) => {
-    await sources.scanner.setThumbnail(request.params.id, request.body.dataUrl)
+    await workspace.scanner.setThumbnail(request.params.id, request.body.dataUrl)
     return reply.code(204).send()
   })
   server.addHook('onClose', async () => {
-    const activeClipIds = new Set(sources.scanner.snapshot().shots.map(shot => shot.id))
-    await ingestion.close(); await proxies.close(); await sources.close()
+    const activeClipIds = new Set(workspace.scanner.snapshot().shots.map(shot => shot.id))
+    await ingestion.close(); await proxies.close(); await workspace.close()
     if (cacheRoot) {
       try {
         await assertWritable?.()
@@ -223,13 +215,9 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
       } catch (error) { server.log.warn({ err: error }, 'Cache retention cleanup failed') }
     }
   })
-  server.post<{ Body: { path: string } }>('/api/sources', {
-    schema: { body: { type: 'object', required: ['path'], additionalProperties: false, properties: { path: { type: 'string', minLength: 1 } } } }
-  }, (request) => sources.add(request.body.path))
-  server.delete<{ Params: { id: string } }>('/api/sources/:id', async (request, reply) => {
-    await sources.remove(request.params.id)
-    return reply.code(204).send()
-  })
+  server.post<{ Body: { path: string } }>('/api/workspace/discover', {
+    schema: { body: { type: 'object', required: ['path'], additionalProperties: false, properties: { path: { type: 'string', pattern: '^/', minLength: 1, maxLength: 32768 } } } }
+  }, (request) => workspace.add(request.body.path))
 
   return server
 }

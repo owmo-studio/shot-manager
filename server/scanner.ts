@@ -2,12 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import type { FileHandle } from "node:fs/promises";
 import { open, realpath, stat } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { ImportSource } from "../shared/desktop";
+import type { DiscoveryRequest } from "../shared/shots";
 import type { IngestionReceipt, IngestState, ProxyState } from "../shared/ingestion";
 import { ingestAttributes } from "../shared/ingestion";
 import type { ClipAttributes, OrganizationAction, TagVocabulary } from "../shared/organization";
 import { organizationKey } from "../shared/organization";
-import type { ShotChange, ShotCollection, ShotDetails, SourceScan, VideoShot } from "../shared/shots";
+import type { ShotChange, ShotCollection, ShotDetails, DiscoveryScan, VideoShot } from "../shared/shots";
 import type { WorkspaceRestore } from "../shared/shots";
 import type { DiscoveredShot } from "./discovery";
 import { discoverShots } from "./discovery";
@@ -17,15 +17,12 @@ import { OrganizationStore } from "./organization";
 import { ThumbnailQueue } from "./thumbnails";
 
 interface ScanJob {
-    source: ImportSource;
-    status: SourceScan;
+    request: DiscoveryRequest;
+    status: DiscoveryScan;
     controller: AbortController;
     token: number;
     rootIdentity?: string;
     files?: string[];
-    refreshing: boolean;
-    before: Set<string>;
-    confirmed: Set<string>;
 }
 
 // Workspace membership and file access outlive the scan that discovered a clip.
@@ -33,7 +30,6 @@ interface WorkspaceClip {
     result: DiscoveredShot;
     controller: AbortController;
     previewIdentity: string;
-    reconciling?: number;
 }
 
 export class ShotScanner {
@@ -145,8 +141,8 @@ export class ShotScanner {
         if (this.clearingCache || this.updatingThumbnails.size)
             throw new Error("Wait for thumbnail changes to finish.");
         for (const id of ids) {
-            const { clip, result } = this.findShot(id);
-            if (this.ingestLocks.has(id) || this.ejecting.has(id) || !result.shot.available || this.isReconciling(clip))
+            const { result } = this.findShot(id);
+            if (this.ingestLocks.has(id) || this.ejecting.has(id) || !result.shot.available)
                 throw new Error("Clips are unavailable or already queued.");
         }
         ids.forEach((id) => this.ingestLocks.set(id, "queued"));
@@ -171,7 +167,6 @@ export class ShotScanner {
         if (
             this.clearingCache || this.ejecting.has(id) ||
             this.updatingThumbnails.has(id) ||
-            this.isReconciling(asset.clip) ||
             !shot.organization ||
             !shot.fingerprint ||
             shot.organization.skipped
@@ -204,10 +199,10 @@ export class ShotScanner {
         this.publish();
     }
 
-    sourceRoots() {
+    mediaDirectories() {
         return [...new Set([
             ...[...this.clips.values()].map(({ result }) => dirname(result.original)),
-            ...[...this.jobs.values()].filter(job => this.isBusy(job.source.id)).map(job => job.source.path),
+            ...[...this.jobs.values()].filter(job => this.isBusy(job.request.id)).map(job => job.request.path),
         ])];
     }
 
@@ -325,42 +320,7 @@ export class ShotScanner {
         this.progressTimer.unref();
     }
 
-    // Compatibility adapter for the current Source controls. Scans themselves never own clips.
-    sync(sources: ImportSource[]) {
-        const registered = new Set(sources.map(source => source.id));
-        const oldIds = new Set([...this.jobs.keys(), ...[...this.clips.values()].map(clip => clip.result.shot.sourceId)]);
-        for (const id of oldIds) if (!registered.has(id)) this.remove(id);
-        for (const source of sources) {
-            const job = this.jobs.get(source.id);
-            if (job) {
-                job.source = source;
-                if (!source.available && this.isBusy(source.id)) {
-                    job.status.state = "interrupted";
-                    job.status.error = "Scan interrupted because the folder became unavailable. Discovered clips have been retained.";
-                    job.controller.abort();
-                    this.finishScan(job);
-                    this.publish();
-                }
-            } else if (source.available) this.schedule(source);
-        }
-    }
-
-    schedule(source: ImportSource) {
-        if (this.jobs.has(source.id)) return;
-        this.enqueue(source, false);
-    }
-
-    discover(source: ImportSource) { this.enqueue(source, false); }
-
-    refresh(source: ImportSource) { this.enqueue(source, true); }
-
-    private finishScan(job: ScanJob) {
-        for (const clip of this.clips.values()) if (clip.reconciling === job.token) {
-            clip.reconciling = undefined;
-            this.queueThumbnail(clip);
-        }
-        job.before.clear(); job.confirmed.clear();
-    }
+    discover(request: DiscoveryRequest, files?: string[]) { this.enqueue(request, files); }
 
     // Cancelling/discarding discovery does not eject the clips it already published.
     cancelScan(id: string, publish = true) {
@@ -368,7 +328,6 @@ export class ShotScanner {
         if (!job) return;
         job.controller.abort();
         this.jobs.delete(id);
-        this.finishScan(job);
         if (publish) this.publish();
     }
 
@@ -378,55 +337,46 @@ export class ShotScanner {
             const directory = dirname(path);
             const files = groups.get(directory) ?? []; files.push(path); groups.set(directory, files);
         }
-        for (const [path, files] of groups) this.enqueue({ id: randomUUID(), path, name: path, type: "folder", available: true, cameraModels: [] }, false, files);
+        for (const [path, files] of groups) this.enqueue({ id: randomUUID(), path }, files);
     }
 
     restorePlan(): WorkspaceRestore {
-        const active = [...this.jobs.values()].filter(job => this.isBusy(job.source.id));
+        const active = [...this.jobs.values()].filter(job => this.isBusy(job.request.id));
         return {
             files: [...this.clips.values()].filter(clip => clip.result.shot.available).map(clip => clip.result.original),
-            scans: active.map(job => ({ path: job.source.path, files: job.files })),
+            scans: active.map(job => ({ path: job.request.path, files: job.files })),
             excludedIds: active.some(job => !job.files) ? [...this.ejectedAt.keys()].filter(id => !this.clips.has(id)) : [],
         };
     }
 
     restoreWorkspace(plan: WorkspaceRestore) {
         this.restoreFiles(plan.files);
-        for (const scan of plan.scans) this.enqueue({ id: randomUUID(), path: scan.path, name: scan.path, type: "folder", available: true, cameraModels: [] }, false, scan.files);
+        for (const scan of plan.scans) this.enqueue({ id: randomUUID(), path: scan.path }, scan.files);
         for (const id of plan.excludedIds) this.ejectedAt.set(id, this.scanToken);
     }
 
-    private enqueue(source: ImportSource, refreshing: boolean, files?: string[]) {
+    private enqueue(request: DiscoveryRequest, files?: string[]) {
         if (this.closed) return;
-        this.cancelScan(source.id, false);
+        this.cancelScan(request.id, false);
         const job: ScanJob = {
-            source, files, status: { sourceId: source.id, path: source.path, state: "queued", clipCount: 0, warnings: [] },
-            controller: new AbortController(), token: ++this.scanToken, refreshing,
-            before: new Set([...this.clips].filter(([, clip]) => clip.result.shot.sourceId === source.id).map(([id]) => id)),
-            confirmed: new Set(),
+            request, files, status: { discoveryId: request.id, path: request.path, state: "queued", clipCount: 0, warnings: [] },
+            controller: new AbortController(), token: ++this.scanToken,
         };
-        if (refreshing) for (const id of job.before) {
-            const clip = this.clips.get(id)!;
-            if (this.ingestLocks.has(id)) continue;
-            clip.controller.abort(); clip.controller = new AbortController();
-            clip.reconciling = job.token;
-            if (clip.result.shot.thumbnailStatus === "pending" || clip.result.shot.thumbnailStatus === "failed") clip.result.shot.thumbnailStatus = undefined;
-        }
-        this.jobs.set(source.id, job);
+        this.jobs.set(request.id, job);
         this.publish();
         this.pending = this.pending.catch(() => undefined).then(async () => {
             if (job.controller.signal.aborted) return;
             job.status.state = "scanning"; this.publish();
             try {
-                const root = await stat(source.path);
+                const root = await stat(request.path);
                 job.rootIdentity = `${root.dev}:${root.ino}:${root.birthtimeMs}`;
-                await discoverShots(source, job.controller.signal, async result => {
+                await discoverShots(request, job.controller.signal, async result => {
                     try {
                         result.shot.fingerprint = await this.fingerprints.identify(result.original, job.controller.signal);
                         if (!await this.fileMatches(result)) throw new Error("Video changed after metadata discovery.");
                     } catch (error) {
                         job.controller.signal.throwIfAborted();
-                        if (job.status.warnings.length < 100) job.status.warnings.push(`Could not fingerprint ${result.shot.filename}. ${error instanceof Error ? error.message : "Fingerprint unavailable."} File was skipped; refresh this source to retry.`);
+                        if (job.status.warnings.length < 100) job.status.warnings.push(`Could not fingerprint ${result.shot.filename}. ${error instanceof Error ? error.message : "Fingerprint unavailable."} File was skipped; add this folder again to retry.`);
                         return;
                     }
                     result.shot.id = result.shot.fingerprint.value;
@@ -435,13 +385,13 @@ export class ShotScanner {
                         result.shot.ingestion = await this.organization.ingestion(result.shot.fingerprint);
                     } catch {
                         job.controller.signal.throwIfAborted();
-                        if (job.status.warnings.length < 100) job.status.warnings.push(`Could not load attributes for ${result.shot.filename}. Saved data has been preserved. File was skipped; refresh this source to retry.`);
+                        if (job.status.warnings.length < 100) job.status.warnings.push(`Could not load attributes for ${result.shot.filename}. Saved data has been preserved. File was skipped; add this folder again to retry.`);
                         return;
                     }
                     try { await this.thumbnailQueue?.touch(result.original, job.rootIdentity ?? "", result.shot.metadata); }
                     catch { job.controller.signal.throwIfAborted(); }
                     job.controller.signal.throwIfAborted();
-                    if (this.jobs.get(source.id) !== job) return;
+                    if (this.jobs.get(request.id) !== job) return;
                     await this.admitClip(result, job);
                     const active = this.clips.get(result.shot.id);
                     if (active && active.result.original !== result.original) {
@@ -450,28 +400,21 @@ export class ShotScanner {
                         });
                     }
                     job.controller.signal.throwIfAborted();
-                    job.confirmed.add(result.shot.id);
                     job.status.clipCount++;
                     this.publishProgress();
                 }, message => { if (job.status.warnings.length < 100) job.status.warnings.push(message); }, job.files);
                 await this.organization.flushScans();
-                const currentRoot = await stat(source.path);
+                const currentRoot = await stat(request.path);
                 if (`${currentRoot.dev}:${currentRoot.ino}:${currentRoot.birthtimeMs}` !== job.rootIdentity) throw new Error("Folder replaced during scan");
                 job.controller.signal.throwIfAborted();
-                if (refreshing) {
-                    if (job.status.warnings.length) throw new Error("Refresh was incomplete");
-                    // Explicit legacy rescan reconciles only its previous active locations.
-                    for (const id of job.before) if (!job.confirmed.has(id) && !this.ingestLocks.has(id)) this.dropClip(id);
-                }
                 job.status.state = "complete";
             } catch {
                 if (!job.controller.signal.aborted) {
                     job.status.state = "failed";
-                    job.status.error = refreshing ? "Refresh incomplete. Previously discovered clips have been retained." : "Scan interrupted. Some clips may not have been discovered.";
+                    job.status.error = "Scan interrupted. Some clips may not have been discovered.";
                 }
             } finally {
-                this.finishScan(job);
-                if (this.jobs.get(source.id) === job) this.publish();
+                if (this.jobs.get(request.id) === job) this.publish();
             }
         });
     }
@@ -485,11 +428,10 @@ export class ShotScanner {
         const current = this.clips.get(id);
         const keep = current && (this.ingestLocks.has(id) || await this.fileMatches(current.result));
         job.controller.signal.throwIfAborted();
-        if (this.jobs.get(job.source.id) !== job || this.ejecting.has(id) || (this.ejectedAt.get(id) ?? -1) >= job.token) return;
+        if (this.jobs.get(job.request.id) !== job || this.ejecting.has(id) || (this.ejectedAt.get(id) ?? -1) >= job.token) return;
         if (current && keep) {
             // Rediscovery is idempotent; edits and the chosen path stay on the workspace record.
             if (!this.ingestLocks.has(id)) this.setAvailable(current, true);
-            if (current.reconciling === job.token) current.reconciling = undefined;
             this.queueThumbnail(current);
             return;
         }
@@ -520,7 +462,6 @@ export class ShotScanner {
                 ({ clip, result }) =>
                     this.clips.get(result.shot.id) === clip &&
                     !this.ingestLocks.has(result.shot.id) && !this.ejecting.has(result.shot.id) &&
-                    !this.isReconciling(clip) &&
                     !!result.shot.fingerprint &&
                     !!result.shot.organization,
             );
@@ -543,41 +484,61 @@ export class ShotScanner {
         return { collection: this.snapshot(), vocabulary: await this.vocabulary() };
     }
 
-    async revertOrganization(ids: string[], read: () => Promise<ClipAttributes[]>) {
-        const targets = [...new Set(ids)].map((id) => {
+    async revertOrganization(ids: string[], read: () => Promise<{ attributes: ClipAttributes; thumbnail: Buffer }[]>) {
+        const targets = [...new Set(ids)].map(id => {
             const asset = this.findShot(id);
-            return { ...asset, organization: JSON.stringify(asset.result.shot.organization) };
+            return { ...asset, organization: JSON.stringify(asset.result.shot.organization), revision: asset.result.shot.thumbnailRevision };
         });
-        const valid = () =>
-            !this.clearingCache &&
-            targets.every(
-                ({ clip, result, organization }) =>
-                    this.clips.get(result.shot.id) === clip &&
-                    !this.ingestLocks.has(result.shot.id) && !this.ejecting.has(result.shot.id) &&
-                    !this.isReconciling(clip) &&
-                    !!result.shot.fingerprint &&
-                    !!result.shot.organization &&
-                    JSON.stringify(result.shot.organization) === organization,
-            );
-        if (!targets.length || !valid())
-            throw new Error("Selected clips are locked or their attributes are unavailable.");
-        const attributes = await read();
-        if (attributes.length !== targets.length) throw new Error("Library attributes are incomplete.");
-        const changed = await this.organization.restore(
-            targets.map(({ result }, index) => ({
-                fingerprint: result.shot.fingerprint!,
-                attributes: attributes[index],
-            })),
-            valid,
-        );
-        for (const { result: { shot } } of this.clips.values()) {
-            if (shot.fingerprint) {
+        const valid = () => !this.closed && !this.clearingCache && targets.every(({ clip, result, organization, revision }) =>
+            this.clips.get(result.shot.id) === clip && !this.ingestLocks.has(result.shot.id) && !this.ejecting.has(result.shot.id) &&
+            !!result.shot.fingerprint && !!result.shot.organization && result.shot.thumbnailRevision === revision &&
+            JSON.stringify(result.shot.organization) === organization);
+        if (!targets.length || !valid() || targets.some(({ result }) => this.updatingThumbnails.has(result.shot.id)))
+            throw new Error('Selected clips are locked or their attributes are unavailable.');
+        if (!this.thumbnailQueue) throw new Error('Thumbnail cache is unavailable.');
+        targets.forEach(({ result }) => this.updatingThumbnails.add(result.shot.id));
+        let images: Awaited<ReturnType<ThumbnailQueue['stageRevertImages']>> | undefined;
+        let committed = false;
+        try {
+            const assets = await read();
+            if (!valid()) throw new Error('Selected clips changed. Try Revert again.');
+            if (assets.length !== targets.length) throw new Error('Library assets are incomplete.');
+            images = await this.thumbnailQueue.stageRevertImages(targets.map(({ result }, index) => ({
+                id: result.shot.id, metadata: result.shot.metadata, bytes: assets[index].thumbnail,
+            })));
+            await images.commit(valid);
+            const changed = await this.organization.restore(targets.map(({ result }, index) => ({
+                fingerprint: result.shot.fingerprint!, attributes: assets[index].attributes,
+            })), valid);
+            committed = true;
+            for (const { result: { shot } } of this.clips.values()) if (shot.fingerprint) {
                 const data = changed.drafts[organizationKey(shot.fingerprint)];
                 if (data) shot.organization = structuredClone(data);
             }
+            targets.forEach(({ result: { shot } }, index) => {
+                shot.thumbnailDigest = createHash('sha256').update(assets[index].thumbnail).digest('hex');
+                shot.hasCustomThumbnail = true; shot.hasThumbnail = true; shot.thumbnailStatus = 'ready';
+                shot.thumbnailRevision = (shot.thumbnailRevision ?? 0) + 1;
+                this.prepared.add(shot.id);
+            });
+            await images.finish().catch(() => undefined); // Unremoved backups are disposable Cache files.
+            this.publish();
+            return { collection: this.snapshot(), vocabulary: await this.vocabulary() };
+        } catch (error) {
+            if (images && !committed) {
+                try { await images.rollback(); }
+                catch { throw new Error('Revert failed and thumbnail rollback could not finish. Cache recovery files were kept.'); }
+            }
+            throw error;
+        } finally {
+            targets.forEach(({ clip, result: { shot } }) => {
+                this.updatingThumbnails.delete(shot.id);
+                if (shot.thumbnailStatus === 'pending') {
+                    shot.thumbnailRevision = (shot.thumbnailRevision ?? 0) + 1;
+                    shot.thumbnailStatus = undefined; this.queueThumbnail(clip);
+                }
+            });
         }
-        this.publish();
-        return { collection: this.snapshot(), vocabulary: await this.vocabulary() };
     }
 
     private optionsEditable = () =>
@@ -613,8 +574,6 @@ export class ShotScanner {
         this.publish();
         return { vocabulary: await this.vocabulary(), collection: this.snapshot() };
     }
-
-    private isReconciling(clip: WorkspaceClip) { return clip.reconciling !== undefined; }
 
     isEjecting(id: string) { return this.ejecting.has(id); }
 
@@ -653,14 +612,6 @@ export class ShotScanner {
         this.clips.delete(id); this.prepared.delete(id); this.proxies.delete(id); this.transferProgress.delete(id);
     }
 
-    // The existing Remove Source action explicitly removes its workspace members.
-    // Unlike cancelScan, this is a membership operation, retained until Eject replaces it.
-    remove(id: string, publish = true) {
-        this.cancelScan(id, false);
-        for (const [clipId, clip] of this.clips) if (clip.result.shot.sourceId === id && !this.ingestLocks.has(clipId)) this.dropClip(clipId);
-        if (publish) this.publish();
-    }
-
     private ingestState(shot: VideoShot): IngestState | undefined {
         const locked = this.ingestLocks.get(shot.id);
         if (locked) return locked;
@@ -685,7 +636,7 @@ export class ShotScanner {
             shots: [...this.clips.values()].map(clip => ({
                 ...clip.result.shot,
                 filePath: clip.result.original,
-                editable: !this.isReconciling(clip) && !this.ingestLocks.has(clip.result.shot.id) && !this.ejecting.has(clip.result.shot.id) &&
+                editable: !this.ingestLocks.has(clip.result.shot.id) && !this.ejecting.has(clip.result.shot.id) &&
                     (!this.thumbnailQueue || this.prepared.has(clip.result.shot.id) || clip.result.shot.hasThumbnail),
                 ingestState: this.ingestState(clip.result.shot),
                 ...this.proxies.get(clip.result.shot.id),
@@ -827,7 +778,7 @@ export class ShotScanner {
 
     private thumbnailCurrent(clip: WorkspaceClip, revision: number | undefined) {
         return !this.closed && !this.clearingCache && this.clips.get(clip.result.shot.id) === clip && clip.result.shot.available &&
-            !clip.controller.signal.aborted && !this.ejecting.has(clip.result.shot.id) && !this.isReconciling(clip) && clip.result.shot.thumbnailRevision === revision;
+            !clip.controller.signal.aborted && !this.ejecting.has(clip.result.shot.id) && !this.updatingThumbnails.has(clip.result.shot.id) && clip.result.shot.thumbnailRevision === revision;
     }
 
     private async thumbnailSourceValid(clip: WorkspaceClip, revision: number | undefined) {
@@ -871,8 +822,6 @@ export class ShotScanner {
         try {
             if (this.ingestLocks.has(id) || this.ejecting.has(id)) throw new Error("Clip is queued for a Library commit or being ejected.");
             const asset = await this.videoPath(id);
-            if (this.isReconciling(asset.clip))
-                throw Object.assign(new Error("Wait for rescanning to finish."), { statusCode: 409 });
             if (!this.thumbnailQueue) throw new Error("Thumbnail cache is unavailable.");
             const valid = async () => {
                 try {
@@ -880,8 +829,7 @@ export class ShotScanner {
                     return (
                         !this.ingestLocks.has(id) && !this.ejecting.has(id) &&
                         current.clip === asset.clip &&
-                        current.path === asset.path &&
-                        !this.isReconciling(asset.clip)
+                        current.path === asset.path
                     );
                 } catch {
                     return false;

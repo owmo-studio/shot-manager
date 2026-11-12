@@ -1,6 +1,8 @@
 import type { IngestionReceipt, IngestState, ProxyState } from './ingestion';
 import type { ShotOrganization } from './organization';
 
+export interface DiscoveryRequest { id: string; path: string }
+
 export interface VideoMetadata {
     device: { manufacturer: string | null; model: string | null; software: string | null; evidence: string | null };
     codec: { name: string | null; profile: string | null; bitDepth: number | null; chroma: string | null };
@@ -40,8 +42,6 @@ export interface VideoShot {
     // Published clips use fingerprint.value; paths describe occurrences, never clip identity.
     id: string;
     filePath: string;
-    // Discovery provenance retained for the existing Source controls, not clip ownership.
-    sourceId: string;
     filename: string;
     relativePath: string;
     bytes: number;
@@ -60,7 +60,7 @@ export interface VideoShot {
     thumbnailStatus?: "pending" | "ready" | "failed";
     warnings: string[];
     available: boolean;
-    // Draft-edit eligibility is independent of source availability; rescans/queue locks block edits.
+    // Draft-edit eligibility is independent of source availability; discovery preparation and Commit locks block edits.
     editable: boolean;
     ingestion?: IngestionReceipt;
     ingestState?: IngestState;
@@ -72,8 +72,8 @@ export interface VideoShot {
     transferPercent?: number;
 }
 
-export interface SourceScan {
-    sourceId: string;
+export interface DiscoveryScan {
+    discoveryId: string;
     path?: string;
     state: "queued" | "scanning" | "complete" | "failed" | "interrupted";
     clipCount: number;
@@ -91,7 +91,7 @@ export interface DirectoryAvailability {
 export interface ShotCollection {
     revision: number;
     shots: VideoShot[];
-    scans: SourceScan[];
+    scans: DiscoveryScan[];
     directories?: DirectoryAvailability[];
 }
 

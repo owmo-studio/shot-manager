@@ -13,6 +13,7 @@ import { rename } from 'node:fs/promises';
 
 export const scratchFolder = 'Shot Manager Cache';
 export const minimumFreeBytes = 512 * 1024 * 1024;
+const priorityInterruption = Symbol('commit-priority');
 type Scratch = { location: LibraryLocation; directory: string };
 export type ProxyAsset = { path: string; identity: string; bytes: number; scratch: Scratch };
 
@@ -97,7 +98,7 @@ export class ProxyQueue {
     private ready = new Map<string, string>();
     private failed = new Map<string, string>();
     private priority = new Set<string>();
-    private current?: { id: string; controller: AbortController; run: Promise<void> };
+    private current?: { id: string; controller: AbortController; run: Promise<void>; percent: number; finishing: boolean };
     private listeners = new Set<() => void>();
     private queued = 0;
     private error?: string;
@@ -123,7 +124,7 @@ export class ProxyQueue {
         this.timer.unref();
     }
     private async validateScratch(expected: Scratch) {
-        const current = await inspectScratch(await this.configuration(), this.scanner.sourceRoots());
+        const current = await inspectScratch(await this.configuration(), this.scanner.mediaDirectories());
         if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('Cache location changed during proxy generation.');
     }
     private async reconcile() {
@@ -139,7 +140,7 @@ export class ProxyQueue {
                     let nextScratch: Scratch | undefined;
                     const nextReady = new Map<string, string>();
                     if (configuration.scratchPath) {
-                        nextScratch = await inspectScratch(configuration, this.scanner.sourceRoots());
+                        nextScratch = await inspectScratch(configuration, this.scanner.mediaDirectories());
                         for (const entry of await readdir(nextScratch.directory, { withFileTypes: true })) {
                             const match = /^([a-f0-9]{64})\.proxy\.mov$/.exec(entry.name);
                             if (match && entry.isFile()) nextReady.set(match[1], join(nextScratch.directory, entry.name));
@@ -164,11 +165,12 @@ export class ProxyQueue {
                 else { this.scanner.setProxy(shot.id, 'queued'); candidates.push(shot); }
             }
             this.queued = candidates.length;
+            this.preemptBackground(candidates);
             if (!this.paused && !this.current && this.scratch && !this.scanner.thumbnailsBusy()) {
                 const shot = candidates.find(shot => this.priority.has(shot.id) && shot.hasThumbnail) ?? candidates.find(shot => shot.hasThumbnail);
                 if (shot) {
                     const controller = new AbortController();
-                    const current = { id: shot.id, controller, run: Promise.resolve() };
+                    const current = { id: shot.id, controller, run: Promise.resolve(), percent: 0, finishing: false };
                     this.current = current;
                     this.scanner.setProxy(shot.id, 'encoding', 0);
                     current.run = this.generate(shot, this.scratch, controller).finally(() => {
@@ -197,7 +199,12 @@ export class ProxyQueue {
                 if (info.bavail * info.bsize < minimumFreeBytes) { spaceError = true; controller.abort(); }
             }).catch(() => controller.abort()); }, 1000);
             monitor.unref();
-            await this.encode(input.path, temporary, input.shot, signal, percent => this.scanner.setProxy(shot.id, 'encoding', percent));
+            await this.encode(input.path, temporary, input.shot, signal, percent => {
+                if (signal.aborted || this.current?.controller !== controller) return;
+                this.current.percent = Math.max(this.current.percent, Math.max(0, Math.min(99, percent)));
+                this.scanner.setProxy(shot.id, 'encoding', this.current.percent);
+            });
+            if (this.current?.controller === controller) this.current.finishing = true;
             await this.scanner.validateIngest(shot.id, input.path, input.fileIdentity);
             await this.validateScratch(scratch);
             signal.throwIfAborted();
@@ -210,18 +217,27 @@ export class ProxyQueue {
                 const message = spaceError ? 'Cache drive is low on free space. Free space, then Refresh to resume.' : error instanceof Error ? error.message : 'Proxy generation failed.';
                 if (spaceError || message.includes('low on free space')) { this.paused = true; this.error = message; }
                 this.failed.set(shot.id, message); this.scanner.setProxy(shot.id, 'failed', undefined, message); this.onError?.(shot, message);
-            } else this.scanner.setProxy(shot.id, 'missing');
+            } else this.scanner.setProxy(shot.id, signal.reason === priorityInterruption && !this.paused && !this.closed ? 'queued' : 'missing');
         } finally {
             clearInterval(monitor);
             // Never unlink through a missing/replaced mount or directory.
             await this.validateScratch(scratch).then(() => unlink(temporary)).catch(() => undefined);
         }
     }
-    prioritize(ids: string[]) { this.priority = new Set(ids); this.schedule(); }
+    private preemptBackground(shots = this.scanner.snapshot().shots) {
+        const current = this.current;
+        if (!current || current.controller.signal.aborted || current.finishing || current.percent >= 20 ||
+            this.priority.has(current.id) || this.paused || this.closed || !this.scratch) return;
+        const waiting = shots.some(shot => shot.id !== current.id && this.priority.has(shot.id) && shot.available &&
+            shot.hasThumbnail && !this.scanner.isEjecting(shot.id) && this.scanner.libraryProxy(shot.id) === false &&
+            !this.ready.has(shot.id) && !this.failed.has(shot.id));
+        if (waiting) current.controller.abort(priorityInterruption);
+    }
+    prioritize(ids: string[]) { this.priority = new Set(ids); this.preemptBackground(); this.schedule(); }
     refresh() { this.reloadScratch = true; this.schedule(); }
     retry(ids: string[]) { ids.forEach(id => this.failed.delete(id)); this.schedule(); }
     async checkConfiguration(ids: string[]) {
-        if (ids.some(id => this.scanner.libraryProxy(id) !== true)) await inspectScratch(await this.configuration(), this.scanner.sourceRoots());
+        if (ids.some(id => this.scanner.libraryProxy(id) !== true)) await inspectScratch(await this.configuration(), this.scanner.mediaDirectories());
     }
     readyFor(id: string) { return this.scanner.libraryProxy(id) === true || this.ready.has(id) || this.failed.has(id) || !!this.error; }
     async asset(id: string): Promise<ProxyAsset | null> {

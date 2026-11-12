@@ -21,14 +21,14 @@ function gate(signal) {
     let manager, proxies, queue, releasePublication;
     try {
         const entry = join(root, 'entry.ts');
-        await fs.writeFile(entry, ['server/sources.ts', 'server/proxies.ts', 'server/ingestion.ts', 'server/library.ts', 'server/rsync.ts', 'server/app.ts']
+        await fs.writeFile(entry, ['server/workspace.ts', 'server/proxies.ts', 'server/ingestion.ts', 'server/library.ts', 'server/rsync.ts', 'server/app.ts']
             .map(path => `export * from ${JSON.stringify(resolve(path))};`).join('\n'));
         const bundle = await (await import('vite')).build({ configFile: false, logLevel: 'silent', build: {
             ssr: true, write: false, rollupOptions: { input: entry, external: ['fastify'], output: { format: 'cjs' } },
         } });
         const loaded = new (require('node:module'))(__filename, module); loaded.paths = module.paths;
         loaded._compile(bundle.output.find(item => item.type === 'chunk' && item.isEntry).code, __filename);
-        const { SourceRegistry, ProxyQueue, IngestQueue, inspectLibrary, rsyncFile, scratchFolder, createServer } = loaded.exports;
+        const { WorkspaceManager, ProxyQueue, IngestQueue, inspectLibrary, rsyncFile, scratchFolder, createServer } = loaded.exports;
         const input = join(root, 'input'), media = join(input, 'media'), extra = join(root, 'extra'), library = join(root, 'library'), scratch = join(root, 'scratch');
         await Promise.all([media, extra, library, scratch].map(path => fs.mkdir(path, { recursive: true })));
         for (const [name, color] of [['a', 'blue'], ['b', 'red'], ['c', 'green']]) {
@@ -36,7 +36,7 @@ function gate(signal) {
         }
         const originals = await Promise.all((await fs.readdir(media)).map(async name => [name, await fs.readFile(join(media, name))]));
         const config = { version: 1, libraryPath: library, libraryMount: (await inspectLibrary(library)).mount, scratchPath: scratch, scratchMount: (await inspectLibrary(scratch)).mount };
-        manager = new SourceRegistry(join(root, 'thumbs'), join(root, 'fingerprints'), join(root, 'metadata.json'));
+        manager = new WorkspaceManager(join(root, 'thumbs'), join(root, 'fingerprints'), join(root, 'metadata.json'));
         const scanner = manager.scanner;
         const holds = new Map(); let holdName = 'c.mp4', activeTransfer, encodeCount = 0;
         proxies = new ProxyQueue(scanner, async () => config, async (_input, output, shot, signal, progress) => {
@@ -60,9 +60,9 @@ function gate(signal) {
         await scanner.updateOrganization([a.id], { field: 'notes', operation: 'set', value: 'Retained draft' });
         const plan = await queue.preview([a.id, b.id, c.id]); await queue.submit(plan.token, [a.id, b.id, c.id]);
         await until(() => !!activeTransfer, 'active transfer');
-        await assert.rejects(queue.eject([a.id]), error => error.code === 'EJECT_CONFIRMATION_REQUIRED');
+        await assert.rejects(queue.eject([a.id]), error => error.code === 'CLIP_COMMIT_ACTIVE');
         assert.equal(scanner.snapshot().shots.length, 3, 'No membership or cancellation changes before confirmation');
-        await queue.eject([b.id], true);
+        await queue.cancel([b.id]); await queue.eject([b.id]);
         assert.equal((await queue.status()).current.id, a.id, 'Ejecting a waiting clip leaves another transfer active');
         assert.equal(scanner.snapshot().shots.some(shot => shot.id === b.id), false);
         assert.ok(await fs.stat(join(scratch, scratchFolder, 'proxies', `${b.id}.proxy.mov`)), 'Completed cache proxy retained');
@@ -137,14 +137,14 @@ function gate(signal) {
         for (const [name, bytes] of originals) assert.deepEqual(await fs.readFile(join(media, name)), bytes, 'Original fixture media preserved');
         // Restore exactly current file paths after Cache clearing, never a broad folder containing ejected clips.
         const paths = scanner.snapshot().shots.map(shot => shot.filePath);
-        const restore = new SourceRegistry(join(root, 'restore-thumbs'), join(root, 'restore-fingerprints'), join(root, 'restore-metadata.json'));
+        const restore = new WorkspaceManager(join(root, 'restore-thumbs'), join(root, 'restore-fingerprints'), join(root, 'restore-metadata.json'));
         try {
             restore.scanner.restoreFiles(paths);
             await until(() => restore.scanner.snapshot().scans.every(scan => scan.state === 'complete'), 'exact workspace restore');
             assert.deepEqual(restore.scanner.snapshot().shots.map(shot => shot.filePath).sort(), paths.sort());
         } finally { await restore.close(); }
         // Eject drains only the selected active thumbnail; ongoing discovery keeps adding other clips.
-        const thumbnails = new SourceRegistry(join(root, 'eject-thumbs'), join(root, 'eject-fingerprints'), join(root, 'eject-metadata.json'));
+        const thumbnails = new WorkspaceManager(join(root, 'eject-thumbs'), join(root, 'eject-fingerprints'), join(root, 'eject-metadata.json'));
         const thumbnailQueue = new IngestQueue(thumbnails.scanner, async () => null);
         let releaseLate;
         try {
@@ -173,9 +173,9 @@ function gate(signal) {
             const planDuringScan = thumbnails.scanner.restorePlan();
             assert.ok(planDuringScan.excludedIds.includes(b.id), 'Cache handoff retains Eject exclusions for pending discovery');
             releaseLate();
-            await until(() => thumbnails.scanner.snapshot().scans.find(scan => scan.sourceId === request.id)?.state === 'complete', 'late discovery completes');
+            await until(() => thumbnails.scanner.snapshot().scans.find(scan => scan.discoveryId === request.id)?.state === 'complete', 'late discovery completes');
             assert.equal(thumbnails.scanner.snapshot().shots.some(shot => shot.id === b.id), false, 'Late scan callback cannot reintroduce an ejected clip');
-            const pendingRestore = new SourceRegistry(join(root, 'pending-thumbs'), join(root, 'pending-fingerprints'), join(root, 'pending-metadata.json'));
+            const pendingRestore = new WorkspaceManager(join(root, 'pending-thumbs'), join(root, 'pending-fingerprints'), join(root, 'pending-metadata.json'));
             try {
                 pendingRestore.scanner.restoreWorkspace(planDuringScan);
                 await until(() => pendingRestore.scanner.snapshot().scans.every(scan => scan.state === 'complete'), 'restore pending discovery');
@@ -188,6 +188,8 @@ function gate(signal) {
         } finally { releaseLate?.(); await thumbnailQueue.close(); await thumbnails.close(); }
         const server = createServer('fixture-token');
         try {
+            for (const [method, url] of [['GET','/api/sources'],['POST','/api/sources/example/refresh'],['POST','/api/sources/example/relink'],['DELETE','/api/sources/example']])
+                assert.equal((await server.inject({method,url,headers:{authorization:'Bearer fixture-token'}})).statusCode,404,'Legacy Source routes are removed');
             for (const route of ['/api/workspace/eject', '/api/workspace/cancel']) {
             assert.equal((await server.inject({ method: 'POST', url: route, payload: { shotIds: [a.id] } })).statusCode, 401);
             assert.equal((await server.inject({ method: 'POST', url: route, headers: { authorization: 'Bearer fixture-token' }, payload: { shotIds: ['../../arbitrary-file'] } })).statusCode, 400);

@@ -1,6 +1,6 @@
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
-import type { AppConfiguration, ApplicationStatus, ImportSource } from '../shared/desktop';
+import type { AppConfiguration, ApplicationStatus } from '../shared/desktop';
 import { inspectLibrary } from './library';
 
 type Issue = ApplicationStatus & { key: string };
@@ -12,7 +12,7 @@ export class ApplicationMonitor {
     private reports = new Map<string, { issue: Issue; order: number }>();
     private order = 0;
 
-    constructor(private configuration: () => Promise<AppConfiguration>, private sources: () => Pick<ImportSource, 'id' | 'name' | 'path' | 'available' | 'warning'>[],
+    constructor(private configuration: () => Promise<AppConfiguration>, private locations: () => { id: string; name: string; path: string; available: boolean; warning?: string }[],
         private workError: () => string | undefined) {}
 
     invalidate() { this.generation++; this.pending = undefined; }
@@ -39,12 +39,12 @@ export class ApplicationMonitor {
             issues.push({ key: 'configuration', level: 'error', message: 'Configuration Error', detail: String(error) });
             return generation === this.generation ? this.summarize(issues) : { level: 'warning', message: 'Checking Status' };
         }
-        const sources = this.sources();
+        const locations = this.locations();
         if (!configuration.libraryPath || !configuration.libraryMount) {
             issues.push({ key: 'configuration', level: 'error', message: 'Library Not Set', detail: 'Set and save a Library location in Configuration.' });
             return generation === this.generation ? this.summarize(issues) : { level: 'warning', message: 'Checking Status' };
         }
-        const roots = sources.map(source => source.path);
+        const roots = locations.map(source => source.path);
         try {
             const location = await inspectLibrary(configuration.libraryPath, roots);
             if (location.mount !== configuration.libraryMount) throw new Error('The configured volume is not mounted at its expected location.');
@@ -52,7 +52,7 @@ export class ApplicationMonitor {
         } catch (error) {
             issues.push({ key: 'library', level: 'error', message: 'Library Unavailable', detail: error instanceof Error ? error.message : String(error) });
         }
-        for (const source of sources) if (!source.available) issues.push({ key: `media:${source.id}`, level: 'warning', message: 'Media Unavailable', detail: `${source.name}: ${source.warning ?? source.path}` });
+        for (const source of locations) if (!source.available) issues.push({ key: `media:${source.id}`, level: 'warning', message: 'Media Unavailable', detail: `${source.name}: ${source.warning ?? source.path}` });
         const error = this.workError();
         if (error) issues.push({ key: 'work', level: 'warning', message: 'Proxy Unavailable', detail: error });
         return generation === this.generation ? this.summarize(issues) : { level: 'warning', message: 'Checking Status' };

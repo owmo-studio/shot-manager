@@ -85,17 +85,17 @@ export async function libraryFileIdentity(path: string): Promise<string | null> 
     }
 }
 
-// Explicit Revert reads only the selected metadata, never media or arbitrary paths.
-export async function readLibraryAttributes(location: LibraryLocation, id: string) {
+// Selected Revert assets only; never read source videos or enumerate Library contents.
+async function readRevertAsset(location: LibraryLocation, id: string, role: 'metadata' | 'thumb', extension: string, limit: number) {
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid clip ID.');
-    const path = join(location.path, libraryAssetName(id, 'metadata', 'json'));
+    const label = role === 'thumb' ? 'thumbnail' : 'metadata';
+    const path = join(location.path, libraryAssetName(id, role, extension));
     const identity = await libraryFileIdentity(path);
-    if (!identity) throw new Error(`Library metadata is missing for clip ${id}.`);
+    if (!identity) throw new Error(`Library ${label} is missing for clip ${id}.`);
     const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
         const info = await file.stat();
-        const limit = 1024 * 1024;
-        if (!info.isFile() || info.size > limit) throw new Error('Library metadata is not a supported JSON file.');
+        if (!info.isFile() || info.size > limit) throw new Error(`Library ${label} exceeds the supported size.`);
         const buffer = Buffer.alloc(limit + 1);
         let length = 0;
         while (length < buffer.length) {
@@ -103,14 +103,30 @@ export async function readLibraryAttributes(location: LibraryLocation, id: strin
             if (!bytesRead) break;
             length += bytesRead;
         }
-        if (length > limit) throw new Error('Library metadata exceeds the size limit.');
+        if (length > limit) throw new Error(`Library ${label} exceeds the size limit.`);
         const current = await file.stat();
         if ([current.dev, current.ino, current.size, current.mtimeMs, current.ctimeMs].join(':') !== identity ||
-            await libraryFileIdentity(path) !== identity) throw new Error('Library metadata changed while reading. Try Revert again.');
-        let data: Record<string, unknown>;
-        try { data = JSON.parse(buffer.subarray(0, length).toString('utf8')); }
-        catch { throw new Error('Library metadata contains invalid JSON. Local attributes have been preserved.'); }
-        if (!data || data.id !== id) throw new Error('Library metadata does not match this clip.');
-        return validateClipAttributes(data);
+            await libraryFileIdentity(path) !== identity) throw new Error(`Library ${label} changed while reading. Try Revert again.`);
+        return { bytes: buffer.subarray(0, length), identity, path };
     } finally { await file.close(); }
+}
+
+export async function readLibraryAttributes(location: LibraryLocation, id: string) {
+    const { bytes } = await readRevertAsset(location, id, 'metadata', 'json', 1024 * 1024);
+    let data: Record<string, unknown>;
+    try { data = JSON.parse(bytes.toString('utf8')); }
+    catch { throw new Error('Library metadata contains invalid JSON. Local changes have been preserved.'); }
+    if (!data || data.id !== id) throw new Error('Library metadata does not match this clip.');
+    return validateClipAttributes(data);
+}
+
+export async function readLibraryRevertAssets(location: LibraryLocation, id: string) {
+    const metadataPath = join(location.path, libraryAssetName(id, 'metadata', 'json'));
+    const metadataIdentity = await libraryFileIdentity(metadataPath);
+    const attributes = await readLibraryAttributes(location, id);
+    const thumbnail = await readRevertAsset(location, id, 'thumb', 'jpg', 2 * 1024 * 1024);
+    if (thumbnail.bytes.length < 4 || thumbnail.bytes[0] !== 0xff || thumbnail.bytes[1] !== 0xd8 ||
+        thumbnail.bytes.at(-2) !== 0xff || thumbnail.bytes.at(-1) !== 0xd9) throw new Error(`Library thumbnail is invalid for clip ${id}.`);
+    if (await libraryFileIdentity(metadataPath) !== metadataIdentity) throw new Error('Library metadata changed while reading. Try Revert again.');
+    return { attributes, thumbnail: thumbnail.bytes };
 }

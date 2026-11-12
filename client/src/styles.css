@@ -26,23 +26,6 @@ body {
   -webkit-user-select: none;
 }
 
-.work-control-activity,
-.work-control-stop {
-  transition: opacity 120ms ease;
-}
-
-.work-control-stop {
-  opacity: 0;
-}
-
-.work-control:enabled:is(:hover, :focus-visible, :active) .work-control-activity {
-  opacity: 0;
-}
-
-.work-control:enabled:is(:hover, :focus-visible, :active) .work-control-stop {
-  opacity: 1;
-}
-
 @keyframes shot-card-enter {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
@@ -58,10 +41,13 @@ body {
   filter: grayscale(80%);
 }
 
-/* Active work needs gentle contrast while preserving the thumbnail’s color. */
-[data-shot-preview][data-shot-working="true"] {
-  opacity: 1;
-  filter: brightness(0.8);
+/* Work overlays add contrast without replacing the base clip state's styling. */
+[data-shot-preview][data-shot-working="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 20%);
+  pointer-events: none;
 }
 
 .ingest-card-busy [data-shot-filename] {
@@ -207,26 +193,6 @@ textarea,
 [data-inspector-preview] > [role="status"] {
   height: 100%;
   aspect-ratio: auto;
-}
-
-/* Keep the centered ingestion track prominent without a surrounding card. */
-.ingest-progress {
-  appearance: none;
-  overflow: hidden;
-  border: 0;
-  border-radius: 999px;
-  background: #24352e;
-}
-
-.ingest-progress::-webkit-progress-bar {
-  border-radius: 999px;
-  background: #24352e;
-  box-shadow: inset 0 1px 3px rgb(0 0 0 / 25%);
-}
-
-.ingest-progress::-webkit-progress-value {
-  border-radius: 999px;
-  background: linear-gradient(90deg, #10b981, #34d399);
 }
 
 .shot-card-action:enabled:hover svg {

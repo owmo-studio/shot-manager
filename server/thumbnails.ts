@@ -69,6 +69,8 @@ export function isJpeg(bytes: Buffer): boolean {
         bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9;
 }
 
+const customPreviewKey = (transform: string, fingerprint: string) => `custom-preview-rec709-sampled-v4:${transform}:${fingerprint}`;
+
 function fileIdentity(info: Stats): string {
     return `${info.dev}:${info.ino}:${info.birthtimeMs}:${info.size}:${info.mtimeMs}`;
 }
@@ -128,7 +130,7 @@ export class ThumbnailQueue {
             identity,
             fingerprint,
             ctimeMs: info.ctimeMs,
-            custom: filename(`custom-preview-rec709-sampled-v4:${transform}:${digest}`),
+            custom: filename(customPreviewKey(transform, digest)),
             generated: filename(`first-frame-rec709-sampled-v4:${transform}:480x270:${digest}`),
             legacyCustom: legacy.map((location) => filename(`custom-preview-rec709-v2:${transform}:${location.sourceIdentity}:${location.input}:${identity}`)),
             legacyGenerated: legacy.map((location) => filename(`first-frame-rec709-v2:${transform}:480x270:${location.sourceIdentity}:${location.input}:${identity}`)),
@@ -186,6 +188,58 @@ export class ThumbnailQueue {
             await this.assertWritable?.();
             await rename(temporaryPath, path);
         } finally { await unlink(temporaryPath).catch(() => undefined); }
+    }
+
+    // Stage an entire Revert before publishing any cache image. Backups stay until the draft save succeeds.
+    async stageRevertImages(entries: { id: string; metadata: VideoMetadata; bytes: Buffer }[]) {
+        const staged: { path: string; temporary: string; backup: string; previous: string | null; published: boolean }[] = [];
+        const cleanup = async () => {
+            await this.assertWritable?.();
+            await Promise.all(staged.flatMap(item => [item.temporary, item.backup]).map(path => unlink(path).catch(() => undefined)));
+        };
+        try {
+            await this.assertWritable?.();
+            await mkdir(this.cacheDirectory, { recursive: true, mode: 0o700 });
+            for (const entry of entries) {
+                if (!/^[a-f0-9]{64}$/.test(entry.id) || entry.bytes.length > maximumImageBytes || !isJpeg(entry.bytes)) throw new Error('Invalid Revert thumbnail.');
+                const profile = viewingProfile(entry.metadata);
+                const transform = profile ? (await loadViewingLut(profile)).fingerprint : 'passthrough';
+                const name = createHash('sha256').update(customPreviewKey(transform, entry.id)).digest('hex');
+                const path = join(this.cacheDirectory, `${name}.jpg`);
+                const item = { path, temporary: join(this.cacheDirectory, `${name}.${randomUUID()}.tmp`), backup: join(this.cacheDirectory, `${name}.${randomUUID()}.tmp`), previous: null as string | null, published: false };
+                staged.push(item);
+                await this.assertWritable?.();
+                try {
+                    const info = await lstat(path);
+                    if (!info.isFile() || info.isSymbolicLink()) throw new Error('Cached thumbnail is not a regular file.');
+                    item.previous = fileIdentity(info);
+                    await link(path, item.backup);
+                } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+                await writeFile(item.temporary, entry.bytes, { flag: 'wx', mode: 0o600, flush: true });
+            }
+        } catch (error) { await cleanup(); throw error; }
+        return {
+            commit: async (validate: () => boolean) => {
+                for (const item of staged) {
+                    if (!validate()) throw new Error('Selected clips changed. Try Revert again.');
+                    await this.assertWritable?.();
+                    const info = await lstat(item.path).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
+                    if ((info ? fileIdentity(info) : null) !== item.previous || info?.isSymbolicLink()) throw new Error('Cached thumbnail changed. Try Revert again.');
+                    await rename(item.temporary, item.path); item.published = true;
+                }
+            },
+            rollback: async () => {
+                // If rollback fails, leave backups available rather than deleting recovery data.
+                for (const item of [...staged].reverse()) if (item.published) {
+                    await this.assertWritable?.();
+                    if (item.previous) await rename(item.backup, item.path);
+                    else await unlink(item.path);
+                    item.published = false;
+                }
+                await cleanup();
+            },
+            finish: cleanup,
+        };
     }
 
     enqueue(inputs: string[], sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>, completed: (image: string | null) => void, metadata?: VideoMetadata) {

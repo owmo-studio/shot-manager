@@ -77,6 +77,7 @@ if (!process.versions.electron) {
                 revision: statusOverride.revision + 1,
                 active: false,
                 current: undefined,
+                tasks: { completed: 0, total: 0, percent: 0, proxiesRemaining: 0, transfersRemaining: 0 },
                 work: {
                     paused: all,
                     busy: !all && !refresh,
@@ -156,10 +157,10 @@ if (!process.versions.electron) {
             );
             assert.equal(
                 await js(
-                    `Array.from(document.querySelectorAll('button[aria-label="Add clips"]')).length===2 && Array.from(document.querySelectorAll('button[aria-label="Add clips"]')).every(button=>button.disabled)`,
+                    `Array.from(document.querySelectorAll('button[aria-label="Add clips"]')).length===1 && Array.from(document.querySelectorAll('button[aria-label="Add clips"]')).every(button=>button.disabled)`,
                 ),
                 true,
-                "Critical status disables both Add Source buttons",
+                "Critical status disables the empty-workspace Add button",
             );
             assert.equal(
                 await js(
@@ -169,11 +170,11 @@ if (!process.versions.electron) {
                 "Empty workspace reflects the critical status",
             );
             await assert.rejects(
-                js(`window.desktop.chooseSource()`),
+                js(`window.desktop.chooseClips()`),
                 /Library Not Set/,
                 "Source IPC rejects a critical status",
             );
-            // Exercise the real source IPC without exposing renderer paths: chooseSource uses the native picker.
+            // Exercise the real source IPC without exposing renderer paths: chooseClips uses the native picker.
             wrapped.dialog = {
                 ...electron.dialog,
                 showOpenDialog: async (_owner, options) => ({
@@ -203,13 +204,14 @@ if (!process.versions.electron) {
                 );
                 assert.equal(
                     await js(`document.querySelector('[aria-label="Library location"]').textContent`),
-                    "library needs to be set",
+                    "Library Not Set",
                     "Header shows committed location",
                 );
             };
             await openConfiguration();
             await until(() => js(`document.querySelector('[aria-label="Cache summary"]')?.textContent.includes('Metadata:') && document.querySelector('[aria-label="Cache summary"]')?.textContent.includes('Proxies:')`), 'Cache Summary did not load');
             assert.ok(await js(`document.querySelector('#cache-summary-title + p + p')?.textContent.includes('90 days')`), 'Cache retention note missing');
+            if(process.env.SHOT_MANAGER_UX_SCREENSHOTS) { await new Promise(resolve=>setTimeout(resolve,150)); await fs.promises.writeFile('/tmp/owmo-ux-configuration.png',(await window.webContents.capturePage()).toPNG()); }
             assert.equal(
                 await js(`!!document.querySelector('button[aria-label="Configured Cache location"]')`),
                 false,
@@ -264,7 +266,18 @@ if (!process.versions.electron) {
                     ),
                 "Saving valid locations did not show green Ready",
             );
-            await js("window.desktop.chooseSource()");
+            // Native-backed File -> renderer drop -> preload -> main -> backend.
+            await js(`(() => { const input=document.createElement('input'); input.type='file'; input.id='fixture-file-drop'; input.hidden=true; document.body.append(input); })()`);
+            window.webContents.debugger.attach('1.3');
+            try {
+                const {root:documentRoot}=await window.webContents.debugger.sendCommand('DOM.getDocument');
+                const {nodeId}=await window.webContents.debugger.sendCommand('DOM.querySelector',{nodeId:documentRoot.nodeId,selector:'#fixture-file-drop'});
+                await window.webContents.debugger.sendCommand('DOM.setFileInputFiles',{nodeId,files:[join(root,'source','blue.mp4')]});
+            } finally { window.webContents.debugger.detach(); }
+            await js(`(() => { const input=document.getElementById('fixture-file-drop'); const data=new DataTransfer(); data.items.add(input.files[0]); document.querySelector('main > section').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:data})); input.remove(); })()`);
+            await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===1&&window.desktop.getShots().then(value=>value.scans.every(scan=>scan.state==='complete'))`),'Dropped video file was not added individually');
+            assert.equal((await js('window.desktop.getShots()')).shots[0].filename,'blue.mp4','File drop excludes sibling red.mp4');
+            await js("window.desktop.chooseClips()");
             await until(
                 () =>
                     js(
@@ -411,6 +424,10 @@ if (!process.versions.electron) {
                     ),
                 "Metadata edit did not show the pending-update card style",
             );
+            const committedThumbnail = 'data:image/jpeg;base64,'+fs.readFileSync(join(root,'library',`${ingested.id}.thumb.jpg`)).toString('base64');
+            const replacementThumbnail = await js(`window.desktop.getShots().then(collection=>window.desktop.getShotThumbnail(collection.shots.find(shot=>shot.id!==${JSON.stringify(ingested.id)}).id))`);
+            assert.notEqual(replacementThumbnail,committedThumbnail);
+            await js(`window.desktop.setShotThumbnail(${JSON.stringify(ingested.id)},${JSON.stringify(replacementThumbnail)})`);
             await js(`document.getElementById('shot-${ingested.id}').click()`);
             await until(
                 () =>
@@ -430,12 +447,14 @@ if (!process.versions.electron) {
                 () => js(`!!document.querySelector('#revert-organization-title')`),
                 "Revert confirmation missing",
             );
+            if(process.env.SHOT_MANAGER_UX_SCREENSHOTS) { await new Promise(resolve=>setTimeout(resolve,150)); await fs.promises.writeFile('/tmp/owmo-ux-revert.png',(await window.webContents.capturePage()).toPNG()); }
             await click("Cancel");
             assert.equal(
                 await js(`document.querySelector('[aria-label="Notes"]').value`),
                 "Updated after ingestion",
                 "Cancel preserves local edits",
             );
+            assert.equal(await js(`window.desktop.getShotThumbnail(${JSON.stringify(ingested.id)})`),replacementThumbnail,'Cancel preserves the local thumbnail');
             await js(
                 `(() => { const notes = document.querySelector('[aria-label="Notes"]'); Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(notes, 'Typing immediately before Revert'); notes.dispatchEvent(new Event('input', { bubbles: true })); })()`,
             );
@@ -448,6 +467,8 @@ if (!process.versions.electron) {
                     ),
                 "Revert did not restore Notes and Synced immediately",
             );
+            assert.equal(await js(`window.desktop.getShotThumbnail(${JSON.stringify(ingested.id)})`),committedThumbnail,'Revert restores the Library thumbnail through real IPC');
+            await until(()=>js(`document.getElementById('shot-${ingested.id}').querySelector('[data-shot-image]')?.src===${JSON.stringify(committedThumbnail)}`),'Reverted thumbnail did not refresh in the card');
             await new Promise((resolve) => setTimeout(resolve, 700));
             assert.equal(
                 await js(
@@ -477,7 +498,7 @@ if (!process.versions.electron) {
                 "Replacement not labeled",
             );
             assert.ok(
-                await js(`document.querySelector('dialog').textContent.includes('Additional assets are preserved')`),
+                await js(`document.querySelector('dialog').textContent.includes('existing Library clip')`),
             );
             await click("Cancel");
             // Existing Library assets must indicate an update even without a local receipt.
@@ -565,6 +586,7 @@ if (!process.versions.electron) {
                 "Transfer progress is shown on its thumbnail",
             );
             assert.equal(await js(`document.querySelector('[data-shot-status="processing"] [data-shot-progress]').dataset.workType`), "sync", "Transfer uses the green progress style");
+            assert.equal(await js(`(() => { const preview=document.querySelector('[data-shot-status="queued"] [data-shot-preview]'); const style=getComputedStyle(preview); return style.opacity==='0.45'&&style.filter.includes('grayscale(0.8)')&&getComputedStyle(preview,'::after').backgroundColor==='rgba(0, 0, 0, 0.2)'; })()`), true, 'Queued proxy encoding retains locked thumbnail styling');
             assert.equal(
                 await js(
                     `document.querySelector('[data-proxy-state="encoding"]').parentElement.querySelector('[data-shot-progress]').value`,
@@ -603,14 +625,14 @@ if (!process.versions.electron) {
             await until(
                 () =>
                     js(
-                        `document.querySelector('[data-ingest-progress]')?.getAttribute('aria-label')==='3 tasks remaining'`,
+                        `document.querySelector('[data-ingest-progress]')?.getAttribute('aria-label')==='1 proxy, 2 commits'`,
                     ),
                 "Active footer summary missing",
             );
             assert.equal(
-                await js(`document.querySelector('footer progress').value`),
-                48,
-                "Footer shows combined proxy and transfer progress",
+                await js(`document.querySelector('footer progress')`),
+                null,
+                "Footer uses task counts without an aggregate progress bar",
             );
             const originalQueuedShots = shotsOverride.shots;
             shotsOverride = { ...shotsOverride, revision: shotsOverride.revision + 1, shots: [...originalQueuedShots, {
@@ -636,7 +658,7 @@ if (!process.versions.electron) {
             assert.equal(ingestReads, activeReads, "Progress notifications do not poll ingestion status");
             assert.equal(
                 await js(`document.querySelector('[data-ingest-progress]').getAttribute('aria-label')`),
-                "3 tasks remaining",
+                "1 proxy, 2 commits",
                 "Stale snapshots cannot regress the sync summary",
             );
             const checkProgressLayout = async (label) => {
@@ -671,14 +693,14 @@ if (!process.versions.electron) {
             await until(
                 () =>
                     js(
-                        `document.querySelector('dialog[open] #ingest-dialog-title')?.textContent==='Stop all work?'`,
+                        `document.querySelector('dialog[open] #ingest-dialog-title')?.textContent==='Stop All Work?'`,
                     ),
                 "Stop-all confirmation missing",
             );
             await click("Cancel");
             assert.equal(await js(`document.querySelector('dialog[open]')===null && !!document.querySelector('header [aria-label="Stop all work"]')`), true, 'Cancel preserves active work');
             await js(`document.querySelector('header [aria-label="Stop all work"]').click()`);
-            await click("Stop");
+            await click("Stop All");
             await until(
                 () =>
                     js(
@@ -687,9 +709,9 @@ if (!process.versions.electron) {
                 "Toolbar did not return to Refresh after stopping",
             );
             assert.equal(
-                await js(`document.querySelector('[data-ingest-progress]')`),
+                await js(`document.querySelector('[data-work-progress]')`),
                 null,
-                "No standalone X or Resume remains in idle footer",
+                "Idle footer has no work summary",
             );
             await js(`document.querySelector('header [aria-label="Refresh assets"]').click()`);
             await until(
@@ -764,17 +786,21 @@ if (!process.versions.electron) {
             await openConfiguration();
             await click("Clear Cache");
             await until(() => js(`!!document.querySelector('[aria-label="Confirm clear cache"]')`), "Empty-workspace Clear Cache confirmation missing");
+            if(process.env.SHOT_MANAGER_UX_SCREENSHOTS) { await new Promise(resolve=>setTimeout(resolve,150)); await fs.promises.writeFile('/tmp/owmo-ux-cache.png',(await window.webContents.capturePage()).toPNG()); }
             const beforeEmptyClear = rendererLoads;
             await js(`document.querySelector('[aria-label="Confirm clear cache"]').click()`);
             await until(() => rendererLoads > beforeEmptyClear, "Empty-workspace Clear Cache did not reload the renderer");
             await until(() => js(`!document.querySelector('dialog[open]') && !!document.querySelector('[data-application-level="ready"]')`), "Empty-workspace Clear Cache did not finish");
-            await js("window.desktop.chooseSource()");
+            await js("window.desktop.chooseClips()");
             await until(
                 () => js(`document.querySelectorAll('[data-shot-status]').length===2 && window.desktop.getShots().then(value=>value.scans.every(scan=>scan.state==='complete'))`),
                 "Re-added source stayed Queued after removing sources and clearing Cache",
             );
             const ejectShot = await js(`window.desktop.getShots().then(value=>value.shots[0])`);
             await js(`document.querySelector('button[aria-label="Eject ${ejectShot.filename}"]').click()`);
+            await until(()=>js(`!!document.querySelector('#eject-title')`),'Card Eject confirmation missing');
+            assert.equal(await js(`document.querySelectorAll('[data-shot-card]').length`),2,'Card remains before Eject confirmation');
+            await js(`document.querySelector('button[aria-label="Confirm eject clips"]').click()`);
             await until(() => js(`document.querySelectorAll('[data-shot-card]').length===1`), 'Card Eject did not remove one clip');
             assert.equal(fs.readdirSync(join(root,'source')).length,2,'Eject preserves original media');
             assert.deepEqual(fs.readdirSync(join(root,'library')),libraryBeforeClear,'Eject preserves Library assets');
@@ -788,13 +814,15 @@ if (!process.versions.electron) {
             await js(`document.querySelector('[aria-label="Confirm clear cache"]').click()`);
             await until(()=>rendererLoads>loadsBeforeEjectedClear,'Cache clear after Eject did not reload');
             await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===1`),'Cache clear reintroduced an ejected clip');
-            await js(`window.desktop.chooseSource()`);
+            await js(`window.desktop.chooseClips()`);
             await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===2`),'Explicit re-add did not restore the ejected clip');
             const selectedButtons = await js(`Array.from(document.querySelectorAll('[data-shot-card] > button[aria-label^="Inspect "]')).map(button=>button.id)`);
             await js(`document.getElementById(${JSON.stringify(selectedButtons[0])}).click()`);
             await js(`document.getElementById(${JSON.stringify(selectedButtons[1])}).dispatchEvent(new MouseEvent('click',{bubbles:true,metaKey:true}))`);
             await until(()=>js(`!!document.querySelector('button[aria-label="Eject selected clips"]:not(:disabled)')`),'Bulk Eject action missing');
             await js(`document.querySelector('button[aria-label="Eject selected clips"]').click()`);
+            await until(()=>js(`!!document.querySelector('#eject-title')`),'Bulk Eject confirmation missing');
+            await js(`document.querySelector('button[aria-label="Confirm eject clips"]').click()`);
             await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===0`),'Bulk Eject did not clear selected cards');
             await fs.promises.writeFile(join(root, "validated"), "passed");
             clearTimeout(timer);

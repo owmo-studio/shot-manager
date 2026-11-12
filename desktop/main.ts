@@ -45,7 +45,7 @@ async function flushDrafts() {
 
 async function assertSourceAddingReady() {
   const status = await backendRequest<ApplicationStatus>('/api/application-status')
-  if (status.level === 'error') throw new Error(`${status.message}. Resolve this issue before adding sources.`)
+  if (status.level === 'error') throw new Error(`${status.message}. Resolve this issue before adding clips.`)
 }
 
 async function managedCacheLocation() {
@@ -196,13 +196,12 @@ if (!app.requestSingleInstanceLock()) {
         method: 'POST', body: JSON.stringify({ shotIds })
       }))
     })
-    handle('workspace:eject', async (event, value: unknown, cancelQueued: unknown) => {
+    handle('workspace:eject', async (event, value: unknown) => {
       requireMainWindow(event)
       const shotIds = validateIngestIds(value)
-      if (typeof cancelQueued !== 'boolean') throw new Error('Invalid Eject confirmation')
       await flushDrafts()
       return organizationWrites.run(() => backendRequest('/api/workspace/eject', {
-        method: 'POST', body: JSON.stringify({ shotIds, cancelQueued })
+        method: 'POST', body: JSON.stringify({ shotIds })
       }))
     })
     handle('ingestion:status', event => { requireMainWindow(event); return backendRequest('/api/ingestion') })
@@ -446,16 +445,16 @@ if (!app.requestSingleInstanceLock()) {
       if (typeof dataUrl !== 'string' || dataUrl.length > 3000000 || !dataUrl.startsWith('data:image/jpeg;base64,')) throw new Error('Invalid thumbnail')
       await backendRequest(`/api/shots/${id}/thumbnail`, { method: 'PUT', body: JSON.stringify({ dataUrl }) })
     })
-    handle('sources:drop', async (event, path: unknown) => {
+    handle('workspace:drop', async (event, path: unknown) => {
       requireMainWindow(event)
       await assertSourceAddingReady()
       if (typeof path !== 'string' || !isAbsolute(path) || path.includes('\0')) {
-        throw new Error('Drop a folder from your computer')
+        throw new Error('Drop a video file or folder from your computer')
       }
       await flushDrafts()
-      return backendRequest('/api/sources', { method: 'POST', body: JSON.stringify({ path }) })
+      return backendRequest('/api/workspace/discover', { method: 'POST', body: JSON.stringify({ path }) })
     })
-    handle('sources:choose', async (event) => {
+    handle('workspace:choose', async (event) => {
       const owner = requireMainWindow(event)
       await assertSourceAddingReady()
       if (choosingSource) return null
@@ -469,7 +468,7 @@ if (!app.requestSingleInstanceLock()) {
         })
         if (result.canceled || !result.filePaths[0]) return null
         await flushDrafts()
-        return await backendRequest('/api/sources', { method: 'POST', body: JSON.stringify({ path: result.filePaths[0] }) })
+        return await backendRequest('/api/workspace/discover', { method: 'POST', body: JSON.stringify({ path: result.filePaths[0] }) })
       } finally {
         choosingSource = false
       }

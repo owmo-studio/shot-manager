@@ -1,3 +1,4 @@
+import { secondaryButton, primaryButton } from "./buttonStyles";
 import type { Ref } from "react";
 import { useEffect, useRef, useState } from "react";
 import type { AppConfiguration, CacheInventory, LocationChoice } from "../../shared/desktop";
@@ -200,8 +201,7 @@ export function Configuration({ libraryActionsRef }: { libraryActionsRef?: Ref<H
         }
     }
 
-    const buttonStyle =
-        "rounded-md border border-white/10 bg-white/5 px-3 py-2 text-xs text-zinc-200 transition hover:bg-white/10 disabled:opacity-40";
+    const buttonStyle = secondaryButton;
     const libraryPath = configuration?.libraryPath;
     const draftLibraryPath = clearLibrary ? null : (libraryChoice?.path ?? libraryPath);
     return (
@@ -213,10 +213,10 @@ export function Configuration({ libraryActionsRef }: { libraryActionsRef?: Ref<H
                     className={`max-w-72 truncate px-2 py-1 text-xs ${libraryPath ? "text-zinc-400" : "text-red-400"}`}
                 >
                     {configuration
-                        ? (libraryPath ?? "library needs to be set")
+                        ? (libraryPath ?? "Library Not Set")
                         : libraryError
                           ? "configuration unavailable"
-                          : "Loading configuration…"}
+                          : "Loading…"}
                 </span>
                 <div ref={libraryActionsRef} className="flex shrink-0 items-center" />
                 <button
@@ -283,10 +283,10 @@ export function Configuration({ libraryActionsRef }: { libraryActionsRef?: Ref<H
                                 {libraryError ??
                                     draftLibraryPath ??
                                     (clearLibrary
-                                        ? "Will clear on Save"
+                                        ? "Clears on Save"
                                         : configuration
-                                          ? "library needs to be set"
-                                          : "Loading configuration…")}
+                                          ? "Library Not Set"
+                                          : "Loading…")}
                             </p>
                             {(libraryChoice || configuration?.libraryPath) && (
                                 <button
@@ -395,7 +395,7 @@ export function Configuration({ libraryActionsRef }: { libraryActionsRef?: Ref<H
                             aria-label="Save configuration"
                             disabled={!!busy || !hasChanges || (hasOptionChanges && !vocabulary)}
                             onClick={() => void saveOptions()}
-                            className="rounded-md bg-blue-500 px-4 py-2 text-xs font-medium text-white hover:bg-blue-400 disabled:opacity-40"
+                            className={primaryButton}
                         >
                             {busy === "save" ? "Saving…" : "Save"}
                         </button>

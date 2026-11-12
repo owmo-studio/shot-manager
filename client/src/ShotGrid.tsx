@@ -296,7 +296,7 @@ export function ShotGrid({
                 .filter((scan) => scan.error || scan.warnings.length)
                 .map((scan) => (
                     <p
-                        key={scan.sourceId}
+                        key={scan.discoveryId}
                         role="status"
                         className={`mb-4 rounded-lg border p-3 text-xs ${scan.error ? "border-red-400/25 text-red-300" : "border-amber-400/20 text-amber-300"}`}
                     >

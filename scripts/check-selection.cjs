@@ -54,14 +54,13 @@ if (!process.versions.electron) {
             let collection = {
                 revision: 1,
                 scans: sources.map((source) => ({
-                    sourceId: source.id,
+                    discoveryId: source.id,
                     state: "complete",
                     clipCount: 3,
                     warnings: [],
                 })),
                 shots: Array.from({ length: 6 }, (_, i) => ({
                     id: String(i + 1).padStart(64, "0"),
-                    sourceId: i < 3 ? "A" : "B",
                     filename: `Clip ${i + 1}.mp4`,
                     relativePath: `${i + 1}.mp4`,
                     filePath: `/synthetic/${i < 3 ? 'A' : 'B'}/${i + 1}.mp4`,
@@ -217,24 +216,6 @@ if (!process.versions.electron) {
                     return organize(null, ids, action);
                 }
             });
-            let cancelRelink = true;
-            let relinkCalls = 0;
-            ipcMain.handle("fixture:relink", (_, id) => {
-                relinkCalls += 1;
-                if (cancelRelink) return null;
-                sources = sources.map((source) =>
-                    source.id === id ? { ...source, path: "/synthetic/relinked", available: true } : source,
-                );
-                collection = {
-                    ...collection,
-                    revision: collection.revision + 1,
-                    scans: collection.scans.map((scan) => (scan.sourceId === id ? { ...scan, state: "queued" } : scan)),
-                    shots: collection.shots.map((shot) =>
-                        shot.sourceId === id ? { ...shot, available: true, editable: false } : shot,
-                    ),
-                };
-                return { source: sources.find((source) => source.id === id), collection };
-            });
             let configuration = { version: 1, libraryPath: null };
             let cache = { bytes: 2048, files: 2 };
             let cancelLibrary = true;
@@ -277,9 +258,9 @@ if (!process.versions.electron) {
                 collection={...collection,revision:collection.revision+1,shots:collection.shots.map(shot=>ids.includes(shot.id)&&['queued','processing'].includes(shot.ingestState)?{...shot,editable:true,ingestState:undefined}:shot)};
                 return collection;
             });
-            ipcMain.handle("fixture:eject", (_, ids, confirmed) => {
+            ipcMain.handle("fixture:eject", (_, ids) => {
                 const targets=collection.shots.filter(shot=>ids.includes(shot.id));
-                if(targets.some(shot=>['queued','processing'].includes(shot.ingestState))&&!confirmed) throw new Error('Confirmation required');
+                if(targets.some(shot=>['queued','processing'].includes(shot.ingestState))) throw new Error('Stop queued clips first');
                 ejectedSelections.push([...ids]);
                 collection={...collection,revision:collection.revision+1,shots:collection.shots.filter(shot=>!ids.includes(shot.id))};
                 return collection;
@@ -292,11 +273,11 @@ if (!process.versions.electron) {
                 getCacheSummary:()=>ipcRenderer.invoke('fixture:cache'),clearCache:()=>ipcRenderer.invoke('fixture:clear-cache'),
                 getLocalDataSummary:()=>ipcRenderer.invoke('fixture:local-summary'),clearLocalData:selection=>ipcRenderer.invoke('fixture:local-clear',selection),browseCache:async()=>{},getCacheInventory:async()=>({metadata:{files:1,bytes:200},thumbnails:{files:2,bytes:2048},fingerprints:{files:6,bytes:600},proxies:{files:1,bytes:4096},total:{files:10,bytes:6944}}),
                 previewConfigurationOptions:removals=>ipcRenderer.invoke('fixture:preview-options',removals),saveConfigurationOptions:(removals,reviewToken)=>ipcRenderer.invoke('fixture:save-options',removals,reviewToken),getTagVocabulary:()=>ipcRenderer.invoke('fixture:vocabulary'),updateOrganization:(ids,action)=>ipcRenderer.invoke('fixture:organization',ids,action),
-                getBackendStatus:async()=>({state:'connected',health:{status:'ok'}}),getSources:()=>ipcRenderer.invoke('fixture:sources'),getShots:()=>ipcRenderer.invoke('fixture:shots'),
+                getBackendStatus:async()=>({state:'connected',health:{status:'ok'}}),getShots:()=>ipcRenderer.invoke('fixture:shots'),
                 onShotsChanged:listener=>{const fn=(_,value)=>listener(value);ipcRenderer.on('shots:changed',fn);return()=>ipcRenderer.removeListener('shots:changed',fn)},
                 getShotThumbnail:async()=>null,getShotDetails:async()=>({file:{filename:'fixture',path:'/synthetic/fixture',bytes:100},embeddedMetadata:[],errors:[]}),
                 cancelClips:ids=>ipcRenderer.invoke('fixture:cancel',ids),
-                ejectClips:(ids,confirmed=false)=>ipcRenderer.invoke('fixture:eject',ids,confirmed)
+                ejectClips:ids=>ipcRenderer.invoke('fixture:eject',ids)
             });`,
             );
             protocol.handle("shot-media", () => new Response(null, { status: 404 }));
@@ -367,14 +348,14 @@ if (!process.versions.electron) {
             const duplicate = {
                 ...structuredClone(originals[0]),
                 id: originals[0].id,
-                sourceId: "B",
+                discoveryId: "B",
                 filename: "Copied Clip.mp4",
             };
             await push([...originals, duplicate]);
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
             assert.equal(
                 await js(`document.querySelector('[aria-label="Total clips"]').textContent.trim()`),
-                "6 clips",
+                "6",
                 "Duplicate hashes do not increase the total",
             );
             await push([{ ...originals[0], available: false }, ...originals.slice(1), duplicate]);
@@ -395,10 +376,18 @@ if (!process.versions.electron) {
             );
             await push([...originals, duplicate]);
             await wait(`!!document.querySelector('[aria-label="Inspect Clip 1.mp4"]')`);
+            assert.equal(await js(`document.querySelector('[aria-label="Show all clips"]').hasAttribute('aria-pressed')`),false,'All is a neutral reset action');
+            assert.equal(await js(`!!document.querySelector('aside [aria-label="Add clips"]')`),false,'Sidebar has no Add button');
             await click("Filter clips by device: ZV-E10 II");
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===3`);
+            assert.equal(await js(`document.querySelector('[aria-label="Show all clips"]').hasAttribute('aria-pressed')`),false,'All stays neutral with a device selected');
             assert.equal(await js(`!!document.querySelector('[aria-label="Inspect Copied Clip.mp4"]')`),false,"Filtering uses per-clip metadata, independent of discovery folder");
-            await click("Filter clips by device: ZV-E10 II");
+            await click("Filter clips by device: FX30");
+            assert.equal(await js(`document.querySelector('[aria-label="Show all clips"]').hasAttribute('aria-pressed')`),false,'All stays neutral with multiple device filters');
+            await click("Show all clips");
+            await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
+            assert.equal(await js(`document.querySelector('[aria-label="Show all clips"]').hasAttribute('aria-pressed')`),false);
+            assert.equal(await js(`document.querySelectorAll('[aria-label^="Filter clips by device:"][aria-pressed="true"]').length`),0,'All clears every device filter');
             await push([...originals.slice(1), duplicate]);
             await wait(`!!document.querySelector('[aria-label="Inspect Copied Clip.mp4"]')`);
             assert.equal(
@@ -446,7 +435,7 @@ if (!process.versions.electron) {
             await push(originals);
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
             await wait(
-                `document.querySelector('[aria-label="Library location"]').textContent.includes('library needs to be set')`,
+                `document.querySelector('[aria-label="Library location"]').textContent.includes('Library Not Set')`,
             );
             await click("Configuration");
             await wait(`!!document.querySelector('dialog[open] [aria-label="Identity options"]')`);
@@ -518,7 +507,7 @@ if (!process.versions.electron) {
             await click("Delete Identity option owmo");
             await click("Save configuration");
             await wait(
-                `document.querySelector('[role="alertdialog"]')?.textContent.includes('2 clips will be affected')`,
+                `document.querySelector('[role="alertdialog"]')?.textContent.includes('saved options and 2 clip drafts')`,
             );
             assert.equal(
                 await js(`document.querySelectorAll('[aria-label="Clips affected by removal"] tbody tr').length`),
@@ -532,7 +521,7 @@ if (!process.versions.electron) {
             assert.equal(await js(`document.querySelectorAll('[aria-label="Active clip"]').length`), 2);
             assert.equal(
                 await js(`document.querySelector('#remove-options-title').textContent`),
-                "Removing Clip Attributes",
+                "Remove Saved Values?",
             );
             assert.ok(
                 await js(
@@ -639,8 +628,8 @@ if (!process.versions.electron) {
             await wait(`document.querySelector('[aria-label="Library location"]')?.textContent==='/synthetic/library'`);
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
             assert.equal(
-                await js(`document.querySelector('p[aria-label="Total clips"]').textContent.trim()`),
-                "6 clips",
+                await js(`document.querySelector('[aria-label="Total clips"]').textContent.trim()`),
+                "6",
             );
             assert.equal(await js(`document.querySelector('button[aria-label="Reverse order"]')`), null);
             assert.equal(await js(`document.querySelector('main > section header')`), null);
@@ -839,8 +828,8 @@ if (!process.versions.electron) {
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===3`);
             assert.deepEqual(await selected(), []);
             assert.equal(
-                await js(`document.querySelector('p[aria-label="Total clips"]').textContent.trim()`),
-                "6 clips",
+                await js(`document.querySelector('[aria-label="Total clips"]').textContent.trim()`),
+                "6",
             );
             assert.ok(await js(`document.querySelector('footer').textContent.includes('1 skipped')`));
             await inspect(5);
@@ -918,10 +907,20 @@ if (!process.versions.electron) {
             await check(2);
             await inspect(3, {metaKey:true});
             await click("Eject selected clips");
+            await wait(`!!document.querySelector('#eject-title')`);
+            assert.equal(collection.shots.length,5,'Eject makes no changes before confirmation');
+            assert.equal(await js(`document.querySelector('dialog p').textContent`),'Remove these clips from the workspace.');
+            assert.equal(await js(`document.querySelectorAll('dialog ul[aria-label="Affected clips"] li').length`),2);
+            await js(`document.querySelector('dialog[open]').dispatchEvent(new Event('cancel',{bubbles:true,cancelable:true}))`);
+            await wait(`!document.querySelector('#eject-title')`);
+            assert.deepEqual(await selected(),[2,3],'Dismissed Eject preserves selection');
+            await click("Eject selected clips");
+            await wait(`!!document.querySelector('#eject-title')`);
+            await click("Confirm eject clips");
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===3`);
             assert.equal(
-                await js(`document.querySelector('p[aria-label="Total clips"]').textContent.trim()`),
-                "3 clips",
+                await js(`document.querySelector('[aria-label="Total clips"]').textContent.trim()`),
+                "3",
             );
             await wait(`document.querySelector('footer').textContent.includes('0 skipped')`);
             assert.deepEqual(await selected(), []);
@@ -1300,7 +1299,7 @@ if (!process.versions.electron) {
             );
             assert.equal(
                 await js(`document.querySelector('#clear-organization-description').textContent.trim()`),
-                "Attributes will be cleared for 2 selected clips.",
+                "Clear all assigned attributes for 2 selected clips.",
             );
             assert.equal(
                 await js(
@@ -1308,11 +1307,13 @@ if (!process.versions.electron) {
                 ),
                 false,
             );
-            if (process.env.SHOT_MANAGER_CLEAR_SCREENSHOT)
+            if (process.env.SHOT_MANAGER_CLEAR_SCREENSHOT) {
+                await new Promise(resolve=>setTimeout(resolve,150));
                 await writeFile(
                     process.env.SHOT_MANAGER_CLEAR_SCREENSHOT,
                     (await window.webContents.capturePage()).toPNG(),
                 );
+            }
             await click("Confirm clear clip information");
             await wait(`!document.querySelector('#clear-organization-title')`);
             await wait(
@@ -1336,20 +1337,42 @@ if (!process.versions.electron) {
             await inspect(4); await inspect(5,{metaKey:true});
             assert.equal(await js(`Array.from(document.querySelectorAll('[aria-pressed="true"].ingest-card-busy')).every(card=>getComputedStyle(card).boxShadow.includes('2px'))`),true,'Queued and active selection has a clear outline');
             await click("Stop selected clips");
+            await wait(`!!document.querySelector('#stop-title')`);
+            assert.equal(await js(`document.querySelector('#stop-title').textContent`),'Stop Commit?');
+            assert.equal(await js(`document.querySelectorAll('dialog ul[aria-label="Affected clips"] li').length`),2);
+            assert.ok(collection.shots.filter(shot=>['Clip 4.mp4','Clip 5.mp4'].includes(shot.filename)).every(shot=>!shot.editable),'Stop awaits confirmation');
+            await js(`Array.from(document.querySelectorAll('dialog button')).find(button=>button.textContent==='Cancel').click()`);
+            await wait(`!document.querySelector('#stop-title')`);
+            await click("Stop selected clips");
+            await wait(`!!document.querySelector('#stop-title')`);
+            await click("Confirm stop clips");
             await wait(`!!document.querySelector('button[aria-label="Eject selected clips"]')`);
             assert.equal(collection.shots.length,3,'Cancel preserves workspace membership');
             assert.deepEqual(await selected(),[4,5],'Cancel preserves selection');
             assert.ok(collection.shots.filter(shot=>['Clip 4.mp4','Clip 5.mp4'].includes(shot.filename)).every(shot=>shot.editable));
             await js(`document.querySelector('button[aria-label="Stop Clip 6.mp4"]').click()`);
+            await wait(`!!document.querySelector('#stop-title')`);
+            await click("Confirm stop clips");
             await wait(`!!document.querySelector('button[aria-label="Eject Clip 6.mp4"]')`);
             assert.equal(collection.shots.length,3,'Card Cancel also preserves membership');
             await push(collection.shots.map(shot=>shot.filename==='Clip 6.mp4'?{...shot,editable:false,ingestState:'queued'}:shot));
             await inspect(6,{metaKey:true});
             await click("Stop selected clip");
+            await wait(`!!document.querySelector('#stop-title')`);
+            assert.equal(await js(`document.querySelectorAll('dialog ul[aria-label="Affected clips"] li').length`),1,'Mixed Stop lists only the queued clip');
+            // Completion during review cannot turn Stop into Eject.
+            await push(collection.shots.map(shot=>({...shot,editable:true,ingestState:undefined})));
+            await click("Confirm stop clips");
             await wait(`!!document.querySelector('button[aria-label="Eject selected clips"]')`);
             assert.equal(collection.shots.length,3,'Mixed selection Cancel never ejects already editable clips');
             assert.deepEqual(await selected(),[4,5,6]);
             await js(`document.querySelector('button[aria-label="Eject Clip 6.mp4"]').click()`);
+            await wait(`!!document.querySelector('#eject-title')`);
+            await js(`Array.from(document.querySelectorAll('dialog button')).find(button=>button.textContent==='Cancel').click()`);
+            assert.equal(collection.shots.length,3,'Cancel button preserves the card');
+            await js(`document.querySelector('button[aria-label="Eject Clip 6.mp4"]').click()`);
+            await wait(`!!document.querySelector('#eject-title')`);
+            await click("Confirm eject clips");
             await wait(`document.querySelectorAll('[data-shot-card]').length===2`);
             await push(readyCards);
             collection={...collection,directories:[{path:'/synthetic/B',clipIds:collection.shots.map(shot=>shot.id),available:false,outage:1}]};
@@ -1366,6 +1389,8 @@ if (!process.versions.electron) {
             await push(collection.shots.map(shot=>({...shot,available:false})));
             await wait(`!!document.querySelector('#unavailable-directory-title')`);
             await js(`Array.from(document.querySelectorAll('dialog button')).find(button=>button.textContent==='Eject affected clips').click()`);
+            await wait(`!!document.querySelector('#eject-title')`);
+            await click("Confirm eject clips");
             await wait(`document.querySelectorAll('[data-shot-card]').length===0`);
             assert.equal(ejectedSelections.at(-1).length,3,'Eject affected clips removes exactly the directory members');
             console.log(

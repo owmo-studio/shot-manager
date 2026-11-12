@@ -16,7 +16,7 @@ async function until(test, description) {
     let scanner, queue, server;
     try {
         const entry = join(root, 'entry.ts');
-        await fs.writeFile(entry, ['server/ingestion.ts', 'server/scanner.ts', 'server/library.ts', 'server/rsync.ts', 'server/app.ts', 'server/sources.ts'].map(path => `export * from ${JSON.stringify(join(__dirname, '..', path))};`).join('\n'));
+        await fs.writeFile(entry, ['server/ingestion.ts', 'server/scanner.ts', 'server/library.ts', 'server/rsync.ts', 'server/app.ts', 'server/workspace.ts'].map(path => `export * from ${JSON.stringify(join(__dirname, '..', path))};`).join('\n'));
         const { build } = await import('vite');
         const bundle = await build({ configFile: false, logLevel: 'silent', build: { ssr: true, write: false,
             rollupOptions: { input: entry, external: ['fastify'], output: { format: 'cjs' } } } });
@@ -32,7 +32,7 @@ async function until(test, description) {
         const originals = await Promise.all((await fs.readdir(source)).map(async name => [name, await fs.readFile(join(source, name))]));
         const organization = join(root, 'organization.json');
         scanner = new ShotScanner(join(root, 'thumbs'), join(root, 'fingerprints'), organization);
-        scanner.sync([{ id: 'test-source', path: source, name: 'Synthetic', type: 'folder', cameraModels: [], available: true }]);
+        scanner.discover({ id: 'test-source', path: source, name: 'Synthetic', type: 'folder', cameraModels: [], available: true });
         await until(() => scanner.snapshot().shots.length === 3 && scanner.snapshot().shots.every(shot => shot.thumbnailStatus === 'ready'), 'synthetic scan/thumbnails');
         const shots = scanner.snapshot().shots;
         const [a, b, c] = shots;
@@ -104,9 +104,14 @@ async function until(test, description) {
         assert.equal(scanner.snapshot().shots.find(shot => shot.id === a.id).ingestState, 'synced');
         assert.ok(!await fs.stat(join(library, `${c.id}.metadata.json`)).catch(() => null));
         assert.ok((await scanner.snapshot()).shots.every(shot => shot.editable));
-        // Revert reads the Library JSON, atomically restoring only descriptive attributes.
+        // Revert restores selected Library attributes and thumbnails as one local batch.
         const revertReceipt = scanner.snapshot().shots.find(shot => shot.id === a.id).ingestion;
         const libraryJSON = await fs.readFile(jsonPath);
+        const aThumbPath = join(library, `${a.id}.thumb.jpg`), bThumbPath = join(library, `${b.id}.thumb.jpg`);
+        const aLibraryThumb = await fs.readFile(aThumbPath), bLibraryThumb = await fs.readFile(bThumbPath);
+        const alternateThumb = await scanner.thumbnail(c.id);
+        await scanner.setThumbnail(a.id, alternateThumb);
+        const changedThumbnailRevision = scanner.snapshot().shots.find(shot=>shot.id===a.id).thumbnailRevision;
         for (const action of [
             { field: 'identity', operation: 'add', value: 'Changed Identity' },
             { field: 'project', operation: 'add', value: 'Changed Project' },
@@ -120,10 +125,41 @@ async function until(test, description) {
         assert.deepEqual(reverted.organization, { identity: null, project: null, scene: '', notes: '', tags: [], skipped: true });
         assert.deepEqual(reverted.ingestion, revertReceipt, 'Revert preserves the successful processing record');
         assert.equal(reverted.ingestState, 'synced', 'Restoring Library attributes restores Synced');
+        assert.deepEqual(Buffer.from((await scanner.thumbnail(a.id)).split(',')[1],'base64'), aLibraryThumb, 'Revert restores the exact committed thumbnail');
+        assert.ok(reverted.thumbnailRevision > changedThumbnailRevision, 'Restored thumbnails invalidate renderer caches');
+        assert.deepEqual(await fs.readFile(aThumbPath),aLibraryThumb,'Revert never writes the Library thumbnail');
         assert.deepEqual(await fs.readFile(jsonPath), libraryJSON, 'Revert never writes Library metadata');
         await scanner.updateOrganization([a.id], { field: 'skip', operation: 'set', value: 'false' });
 
         await scanner.updateOrganization([a.id], { field: 'notes', operation: 'set', value: 'Keep if restore fails' });
+        await scanner.setThumbnail(a.id,alternateThumb);
+        const localThumbBeforeFailure = await scanner.thumbnail(a.id);
+        await fs.writeFile(bThumbPath,'invalid JPEG');
+        await assert.rejects(queue.revert([a.id,b.id]),/thumbnail is invalid/);
+        assert.equal(await scanner.thumbnail(a.id),localThumbBeforeFailure,'Invalid thumbnail rejects the entire batch');
+        assert.equal(scanner.snapshot().shots.find(shot=>shot.id===a.id).organization.notes,'Keep if restore fails');
+        await fs.unlink(bThumbPath);
+        await assert.rejects(queue.revert([a.id,b.id]),/thumbnail is missing/);
+        await fs.symlink(aThumbPath,bThumbPath);
+        await assert.rejects(queue.revert([a.id,b.id]),/not a regular file/);
+        await fs.unlink(bThumbPath); await fs.writeFile(bThumbPath,bLibraryThumb);
+        const draftsBeforeFailure = await fs.readFile(organization);
+        const save = scanner.organization.save.bind(scanner.organization);
+        scanner.organization.save = async()=>{throw new Error('Synthetic Revert save failure');};
+        try { await assert.rejects(queue.revert([a.id,b.id]),/Synthetic Revert save failure/); }
+        finally { scanner.organization.save=save; }
+        assert.equal(await scanner.thumbnail(a.id),localThumbBeforeFailure,'Draft-save failure rolls thumbnails back');
+        assert.deepEqual(await fs.readFile(organization),draftsBeforeFailure,'Failed Revert preserves persisted drafts and receipts');
+        const stage = scanner.thumbnailQueue.stageRevertImages.bind(scanner.thumbnailQueue);
+        scanner.thumbnailQueue.stageRevertImages=async(...args)=>{
+            const batch=await stage(...args);
+            return {...batch,commit:async valid=>{let checked=0;return batch.commit(()=>++checked===1&&valid());}};
+        };
+        try { await assert.rejects(queue.revert([a.id,b.id]),/Selected clips changed/); }
+        finally { scanner.thumbnailQueue.stageRevertImages=stage; }
+        assert.equal(await scanner.thumbnail(a.id),localThumbBeforeFailure,'Partially published thumbnail batch rolls back');
+        assert.deepEqual(await fs.readFile(organization),draftsBeforeFailure);
+        assert.equal((await fs.readdir(join(root,'thumbs'))).filter(name=>name.endsWith('.tmp')).length,0,'Success and rollback clean staging files');
         const bJSONPath = join(library, `${b.id}.metadata.json`);
         const bJSON = await fs.readFile(bJSONPath);
         await fs.writeFile(bJSONPath, '{broken');
@@ -321,7 +357,7 @@ async function until(test, description) {
         await queue.close(); await scanner.close();
         scanner = new ShotScanner(join(root, 'thumbs'), join(root, 'fingerprints'), organization);
         scanner.setIngestLibrary(library);
-        scanner.sync([{ id: 'reloaded', path: source, name: 'Synthetic', type: 'folder', cameraModels: [], available: true }]);
+        scanner.discover({ id: 'reloaded', path: source, name: 'Synthetic', type: 'folder', cameraModels: [], available: true });
         await until(() => scanner.snapshot().shots.length === 3 && scanner.snapshot().shots.every(shot => shot.thumbnailStatus === 'ready'), 'reload scan');
         assert.equal(scanner.snapshot().shots.find(shot => shot.id === a.id).ingestState, 'unverified', 'A receipt alone is not a presence check');
         const restartedQueue = new IngestQueue(scanner, async () => library);
@@ -333,7 +369,7 @@ async function until(test, description) {
         const freshScanner = new ShotScanner(join(root, 'fresh-thumbs'), join(root, 'fresh-fingerprints'), join(root, 'fresh-drafts.json'));
         const noReceiptQueue = new IngestQueue(freshScanner, async () => library);
         try {
-            freshScanner.sync([{ id: 'fresh-source', path: source, name: 'Synthetic', type: 'folder', cameraModels: [], available: true }]);
+            freshScanner.discover({ id: 'fresh-source', path: source, name: 'Synthetic', type: 'folder', cameraModels: [], available: true });
             await until(() => freshScanner.snapshot().shots.length === 3 && freshScanner.snapshot().shots.every(shot => shot.thumbnailStatus === 'ready'), 'scan without local receipts');
             await noReceiptQueue.refreshLibrary();
             const existing = freshScanner.snapshot().shots.find(shot => shot.id === a.id);

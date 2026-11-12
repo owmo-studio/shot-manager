@@ -129,7 +129,7 @@ if (!process.versions.electron) {
 
             const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
             const source = join(root, 'dummy-source'); fs.mkdirSync(source); fs.writeFileSync(join(source, 'clip.mp4'), 'synthetic test video');
-            await originalFetch(`${backendURL}/api/sources`, { method: 'POST', headers, body: JSON.stringify({ path: source }) });
+            await originalFetch(`${backendURL}/api/workspace/discover`, { method: 'POST', headers, body: JSON.stringify({ path: source }) });
             let shot;
             await wait(async () => {
                 const collection = await (await originalFetch(`${backendURL}/api/shots`, { headers })).json();

@@ -135,7 +135,7 @@ export function PreviewPlayer({ shot, lutEnabled, ref, onReady, onScrubbing }: {
         onLoadedMetadata={() => setDuration(Number.isFinite(video.current?.duration) ? video.current!.duration : 0)}
         onTimeUpdate={() => setPosition(video.current?.currentTime ?? 0)}
         onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}
-        onError={() => { readyCallback.current(false); setError('This video cannot be played here. Its codec may be unsupported, or the file may be unavailable.') }} />
+        onError={() => { readyCallback.current(false); setError('Preview unavailable. Check the file or codec.') }} />
       {!gpuError && <canvas ref={canvas} className="absolute inset-0 size-full object-contain" aria-label="Video viewing image" />}
     </div>
     {!gpuError && <div className="flex items-center gap-3 px-3 py-2 text-xs text-zinc-400">
@@ -160,7 +160,7 @@ export function PreviewPlayer({ shot, lutEnabled, ref, onReady, onScrubbing }: {
       </button>
     </div>}
     {(error || gpuError || lutError || (lutEnabled && unsupportedColor)) && <p role="status" className="px-3 pb-3 text-xs leading-5 text-amber-300">
-      {error ?? (gpuError ? 'GPU viewing is unavailable. Showing the original video; LUT capture is disabled.' : lutError ?? 'No matching viewing transform is available for this color space. Showing the original video.')}
+      {error ?? (gpuError ? 'Viewing LUT unavailable. Showing original video.' : lutError ?? 'No matching LUT. Showing original video.')}
     </p>}
   </div>
 }

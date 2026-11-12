@@ -227,7 +227,7 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
                 <input aria-label="Scene" type="text" autoComplete="off" maxLength={SCENE_MAX_LENGTH} value={scene}
                     aria-describedby={sceneHintId} aria-invalid={!!sceneError}
                     title="A short sentence. Letters, numbers, spaces, apostrophes, commas, periods, and hyphens."
-                    placeholder={mixedScene ? 'Different scenes — typing replaces all selected' : shots.length ? 'Describe what happens in this shot…' : ''}
+                    placeholder={mixedScene ? 'Mixed scenes — typing replaces selected values' : shots.length ? 'Describe the shot…' : ''}
                     onBlur={() => { setScene(normalizeScene(scene)); setSceneError(null); void window.desktop.flushOrganizationText().catch(() => undefined); }}
                     onChange={event => {
                         const value = event.target.value.normalize('NFC').replace(/[‘’]/g, "'").replace(/[–—]/g, '-');
@@ -245,13 +245,13 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
             <label data-attribute-field="notes" className="block text-xs text-zinc-400"><span className="attribute-label">Notes</span>
                 <textarea aria-label="Notes" rows={6} maxLength={10000} value={notes}
                     onBlur={() => { void window.desktop.flushOrganizationText().catch(() => undefined); }}
-                    placeholder={mixedNotes ? 'Different notes — typing replaces notes on all selected clips' : shots.length ? 'Optional notes' : ''}
+                    placeholder={mixedNotes ? 'Mixed notes — typing replaces selected values' : shots.length ? 'Optional notes' : ''}
                     onChange={event => { setNotes(event.target.value); void submit({ field: 'notes', operation: 'set', value: event.target.value }); }}
                     className="mt-1.5 block w-full resize-none rounded-lg border border-white/10 bg-black/10 px-3 py-2 text-xs text-zinc-200 outline-none focus:border-blue-400/50 placeholder:text-zinc-600" />
             </label>
             <TagFieldInput field="tags" shots={shots} vocabulary={vocabulary.tags} disabled={disabled} submit={action => void submit(action)} />
         </fieldset>
-        {!!shots.length && disabled && <p className="text-[11px] text-zinc-500">{shots.some(shot => !shot.editable) ? 'Editing locked while clips are being prepared or committed.' : 'Saved tags unavailable. Add the folder again to retry.'}</p>}
+        {!!shots.length && disabled && !shots.some(shot => !shot.editable) && <p className="text-[11px] text-zinc-500">Saved attributes unavailable. Add the clips again to retry.</p>}
         {failure && <div role="alert" className="text-xs text-red-300">
             {failure}<button type="button" aria-label="Retry organization save" onClick={async () => {
                 try {
