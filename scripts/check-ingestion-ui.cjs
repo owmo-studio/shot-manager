@@ -156,7 +156,7 @@ if (!process.versions.electron) {
             );
             assert.equal(
                 await js(
-                    `Array.from(document.querySelectorAll('button[aria-label="Add Source"]')).length===2 && Array.from(document.querySelectorAll('button[aria-label="Add Source"]')).every(button=>button.disabled)`,
+                    `Array.from(document.querySelectorAll('button[aria-label="Add clips"]')).length===2 && Array.from(document.querySelectorAll('button[aria-label="Add clips"]')).every(button=>button.disabled)`,
                 ),
                 true,
                 "Critical status disables both Add Source buttons",
@@ -272,8 +272,8 @@ if (!process.versions.electron) {
                     ),
                 "Clips did not become eligible",
             );
+            assert.equal(await js(`!!document.querySelector('ul[aria-label="Import sources"]') || Array.from(document.querySelectorAll('aside h2')).some(item=>['Sources','Devices'].includes(item.textContent))`), false, 'Source list and Devices heading are removed');
             const idleReads = ingestReads;
-            await until(() => js(`(() => { const buttons=document.querySelectorAll('ul[aria-label="Import sources"] button[aria-label^="Refresh "], ul[aria-label="Import sources"] button[aria-label^="Remove "]'); return buttons.length===2 && Array.from(buttons).every(button=>!button.disabled); })()`), 'Source controls did not enable after scanning');
             await new Promise((resolve) => setTimeout(resolve, 1200));
             assert.equal(ingestReads, idleReads, "Idle footer does not poll ingestion status");
             await click("Commit");
@@ -518,7 +518,6 @@ if (!process.versions.electron) {
                     ),
                 "Transfer spinner or proxy readiness dot missing",
             );
-            assert.equal(await js(`(() => { const buttons=document.querySelectorAll('ul[aria-label="Import sources"] button[aria-label^="Refresh "], ul[aria-label="Import sources"] button[aria-label^="Remove "]'); return buttons.length===2 && Array.from(buttons).every(button=>button.disabled); })()`), true, 'Queued or active Commit clips disable source Refresh and Remove');
             assert.equal(
                 await js(`getComputedStyle(document.querySelector('[data-proxy-state="encoding"]')).opacity`),
                 "1",
@@ -720,7 +719,7 @@ if (!process.versions.electron) {
                 () => js(`window.desktop.getShots().then(value=>value.scans.every(scan=>scan.state==='complete'))`),
                 "Restored sources did not finish scanning after Clear Cache",
             );
-            await js(`(async()=>{for(const source of await window.desktop.getSources()) await window.desktop.removeSource(source.id)})()`);
+            await js(`window.desktop.getShots().then(value=>window.desktop.ejectClips(value.shots.map(shot=>shot.id)))`);
             await openConfiguration();
             await click("Clear Cache");
             await until(() => js(`!!document.querySelector('[aria-label="Confirm clear cache"]')`), "Empty-workspace Clear Cache confirmation missing");
@@ -733,6 +732,29 @@ if (!process.versions.electron) {
                 () => js(`document.querySelectorAll('[data-shot-status]').length===2 && window.desktop.getShots().then(value=>value.scans.every(scan=>scan.state==='complete'))`),
                 "Re-added source stayed Queued after removing sources and clearing Cache",
             );
+            const ejectShot = await js(`window.desktop.getShots().then(value=>value.shots[0])`);
+            await js(`document.querySelector('button[aria-label="Eject ${ejectShot.filename}"]').click()`);
+            await until(() => js(`document.querySelectorAll('[data-shot-card]').length===1`), 'Card Eject did not remove one clip');
+            assert.equal(fs.readdirSync(join(root,'source')).length,2,'Eject preserves original media');
+            assert.deepEqual(fs.readdirSync(join(root,'library')),libraryBeforeClear,'Eject preserves Library assets');
+            const draftsAfterEject=JSON.parse(fs.readFileSync(join(root,'profile','Shot Manager Cache','metadata.json'),'utf8'));
+            assert.ok(Object.values(draftsAfterEject.drafts).some(record=>record.clip?.path===ejectShot.filePath),'Eject preserves cached metadata');
+            // Cache clearing must restore exact workspace membership, not rescan ejected siblings.
+            const loadsBeforeEjectedClear=rendererLoads;
+            await openConfiguration(); await click("Clear Cache");
+            await until(()=>js(`!!document.querySelector('[aria-label="Confirm clear cache"]')`),'Eject Cache confirmation missing');
+            await js(`document.querySelector('[aria-label="Keep metadata"]').click()`);
+            await js(`document.querySelector('[aria-label="Confirm clear cache"]').click()`);
+            await until(()=>rendererLoads>loadsBeforeEjectedClear,'Cache clear after Eject did not reload');
+            await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===1`),'Cache clear reintroduced an ejected clip');
+            await js(`window.desktop.chooseSource()`);
+            await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===2`),'Explicit re-add did not restore the ejected clip');
+            const selectedButtons = await js(`Array.from(document.querySelectorAll('[data-shot-card] > button[aria-label^="Inspect "]')).map(button=>button.id)`);
+            await js(`document.getElementById(${JSON.stringify(selectedButtons[0])}).click()`);
+            await js(`document.getElementById(${JSON.stringify(selectedButtons[1])}).dispatchEvent(new MouseEvent('click',{bubbles:true,metaKey:true}))`);
+            await until(()=>js(`!!document.querySelector('button[aria-label="Eject selected clips"]:not(:disabled)')`),'Bulk Eject action missing');
+            await js(`document.querySelector('button[aria-label="Eject selected clips"]').click()`);
+            await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===0`),'Bulk Eject did not clear selected cards');
             await fs.promises.writeFile(join(root, "validated"), "passed");
             clearTimeout(timer);
             console.log(

@@ -95,13 +95,10 @@ export interface DesktopAPI {
   getCacheSummary: () => Promise<CacheSummary>
   clearCache: () => Promise<CacheSummary>
   getBackendStatus: () => Promise<BackendStatus>
-  getSources: () => Promise<ImportSource[]>
   chooseSource: () => Promise<ImportSource | null>
   addDroppedSource: (file: File) => Promise<ImportSource>
-  removeSource: (id: string) => Promise<void>
-  refreshSource: (id: string) => Promise<{ source: ImportSource; collection: ShotCollection }>
-  relinkSource: (id: string) => Promise<{ source: ImportSource; collection: ShotCollection } | null>
   getShots: () => Promise<ShotCollection>
+  ejectClips: (shotIds: string[], cancelQueued?: boolean) => Promise<ShotCollection>
   onShotsChanged: (listener: (change: ShotChange) => void) => () => void
   getShotThumbnail: (id: string) => Promise<string | null>
   setShotThumbnail: (id: string, dataUrl: string) => Promise<void>

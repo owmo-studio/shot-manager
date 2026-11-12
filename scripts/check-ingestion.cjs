@@ -80,8 +80,8 @@ async function until(test, description) {
         assert.equal(scanner.snapshot().shots.find(shot => shot.id === c.id).organization.skipped, false);
         await assert.rejects(scanner.updateOrganization([a.id], { field: 'notes', operation: 'set', value: 'locked' }), /locked/);
         await assert.rejects(scanner.setThumbnail(a.id, 'data:image/jpeg;base64,/9j/2Q=='), /queued/);
-        await assert.rejects(scanner.clearCache(), /queued to commit/);
-        await assert.rejects(scanner.clearLocalData(), /queued to commit/);
+        await assert.rejects(scanner.clearCache(), error => error.statusCode === 409);
+        await assert.rejects(scanner.clearLocalData(), error => error.statusCode === 409);
         await assert.rejects(queue.revert([a.id]), /Selected clips are locked/);
         assert.throws(() => scanner.previewOptions({ identity: [], project: [], tags: [] }), /Wait for scanning/);
         gate = false; release();

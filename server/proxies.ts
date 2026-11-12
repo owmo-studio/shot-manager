@@ -150,9 +150,10 @@ export class ProxyQueue {
                 }
             }
             const shots = [...new Map(this.scanner.snapshot().shots.map(shot => [shot.id, shot])).values()];
-            if (this.current && !shots.some(shot => shot.id === this.current!.id && shot.available && (!shot.organization?.skipped || this.priority.has(shot.id)))) this.current.controller.abort();
+            if (this.current && !shots.some(shot => shot.id === this.current!.id && !this.scanner.isEjecting(shot.id) && shot.available && (!shot.organization?.skipped || this.priority.has(shot.id)))) this.current.controller.abort();
             const candidates: VideoShot[] = [];
             for (const shot of shots) {
+                if (this.scanner.isEjecting(shot.id)) continue;
                 if (this.current?.id === shot.id) continue;
                 const library = this.scanner.libraryProxy(shot.id);
                 if (library === true) this.scanner.setProxy(shot.id, 'ready', undefined, undefined, 'library');
@@ -262,6 +263,14 @@ export class ProxyQueue {
         this.paused = true; this.priority.clear(); this.queued = 0; this.current?.controller.abort();
         await this.current?.run;
         this.schedule(); this.changed();
+    }
+    async cancel(ids: string[]) {
+        for (const id of ids) { this.priority.delete(id); this.failed.delete(id); }
+        const current = this.current && ids.includes(this.current.id) ? this.current : undefined;
+        current?.controller.abort();
+        this.changed(); this.schedule();
+        await current?.run;
+        this.changed(); this.schedule();
     }
     resume() { this.paused = false; this.failed.clear(); this.error = undefined; this.scratchKey = ''; this.schedule(); this.changed(); }
     async close() { await this.stop(); this.closed = true; clearTimeout(this.timer); }

@@ -122,10 +122,10 @@ if (!process.versions.electron) {
             const wait = async condition => { for (let i = 0; i < 150; i++) { if (await condition()) return; await new Promise(resolve => setTimeout(resolve, 20)); } throw new Error('Quit fixture did not settle'); };
             await wait(() => backendURL && window && !window.webContents.isLoading());
             assert.equal(Menu.getApplicationMenu().getMenuItemById('quit-shot-manager').accelerator, 'CommandOrControl+Q');
-            const ipcError = await window.webContents.executeJavaScript(`window.desktop.refreshSource('missing-source').then(()=>null,error=>({message:error.message,code:error.code,status:error.status,outcome:error.outcome}))`);
+            const ipcError = await window.webContents.executeJavaScript(`window.desktop.getShotDetails('0'.repeat(64)).then(()=>null,error=>({message:error.message,code:error.code,status:error.status,outcome:error.outcome}))`);
             assert.equal(ipcError.status,404,'HTTP status survives the real preload boundary');
             assert.equal(ipcError.outcome,'failed');
-            assert.ok(ipcError.code && ipcError.message.includes('Source not found'));
+            assert.ok(ipcError.code && ipcError.message.includes('Clip is no longer available'));
 
             const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
             const source = join(root, 'dummy-source'); fs.mkdirSync(source); fs.writeFileSync(join(source, 'clip.mp4'), 'synthetic test video');

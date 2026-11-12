@@ -76,6 +76,7 @@ function fileIdentity(info: Stats): string {
 export class ThumbnailQueue {
     private pending: Promise<void> = Promise.resolve();
     private shutdown = new AbortController();
+    private active?: { signal: AbortSignal; run: Promise<void> };
     private cacheDirectory: string;
     private legacyLocations = new Map<string, { input: string; sourceIdentity: string }[]>();
 
@@ -189,7 +190,8 @@ export class ThumbnailQueue {
 
     enqueue(inputs: string[], sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>, completed: (image: string | null) => void, metadata?: VideoMetadata) {
         const combinedSignal = AbortSignal.any([signal, this.shutdown.signal]);
-        this.pending = this.pending.then(async () => {
+        const run = this.pending.then(async () => {
+            this.active = { signal, run };
             let image: string | null = null;
             try {
                 for (const input of inputs) {
@@ -205,8 +207,14 @@ export class ThumbnailQueue {
             } catch {
                 image = null;
             }
-            if (!combinedSignal.aborted) completed(image);
+            try { if (!combinedSignal.aborted) completed(image); }
+            finally { if (this.active?.run === run) this.active = undefined; }
         }).catch(() => undefined);
+        this.pending = run;
+    }
+
+    async waitFor(signals: AbortSignal[]) {
+        if (this.active && signals.includes(this.active.signal)) await this.active.run;
     }
 
     private async extract(input: string, sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>, metadata?: VideoMetadata): Promise<string | null> {

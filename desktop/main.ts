@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, protocol, shell, utilityProcess } 
 import type { IpcMainInvokeEvent, UtilityProcess } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { mkdir, realpath, stat } from 'node:fs/promises'
 import type { LibraryLocation } from '../server/library'
 import { inspectLibrary } from '../server/library'
@@ -16,6 +16,7 @@ import { installApplicationMenu } from './menu'
 import { requestBackend } from './backendRequest'
 import { AppError, errorDetails } from '../shared/errors'
 import type { ApplicationStatus, BackendHealth, BackendStatus } from '../shared/desktop'
+import type { WorkspaceRestore } from '../shared/shots'
 
 let mainWindow: BrowserWindow | null = null
 let backend: UtilityProcess | null = null
@@ -187,6 +188,15 @@ if (!app.requestSingleInstanceLock()) {
       if (!Array.isArray(value) || !value.length || value.length > 1000 || value.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id))) throw new Error('Invalid commit selection')
       return [...new Set(value)]
     }
+    handle('workspace:eject', async (event, value: unknown, cancelQueued: unknown) => {
+      requireMainWindow(event)
+      const shotIds = validateIngestIds(value)
+      if (typeof cancelQueued !== 'boolean') throw new Error('Invalid Eject confirmation')
+      await flushDrafts()
+      return organizationWrites.run(() => backendRequest('/api/workspace/eject', {
+        method: 'POST', body: JSON.stringify({ shotIds, cancelQueued })
+      }))
+    })
     handle('ingestion:status', event => { requireMainWindow(event); return backendRequest('/api/ingestion') })
     handle('ingestion:refresh-library', event => { requireMainWindow(event); return backendRequest('/api/work/refresh', { method: 'POST' }) })
     handle('ingestion:review', async (event, value: unknown) => {
@@ -255,7 +265,7 @@ if (!app.requestSingleInstanceLock()) {
         const status = await backendRequest<{ active: boolean }>('/api/ingestion')
         if (status.active) throw new Error('Wait for the sync queue to finish before clearing Cache.')
         await backendRequest('/api/work/stop', { method: 'POST' })
-        const sources = await backendRequest<{ path: string; available: boolean }[]>('/api/sources')
+        const restore = await backendRequest<WorkspaceRestore>('/api/workspace/restore-plan')
         let clearError: unknown
         try {
           if (backend) {
@@ -268,9 +278,7 @@ if (!app.requestSingleInstanceLock()) {
           await clearSelectedCache(storage.root, value as CacheSelection, configuration.libraryPath)
         } catch (error) { clearError = error }
         finally { await startBackend() }
-        for (const source of sources.filter(source => source.available)) {
-          await backendRequest('/api/sources', { method: 'POST', body: JSON.stringify({ path: source.path }) }).catch(error => console.warn('Source could not be restored after Cache clearing.', error))
-        }
+        await backendRequest('/api/workspace/restore', { method: 'POST', body: JSON.stringify(restore) })
         if (clearError) throw clearError
         return { configuration, collection: await backendRequest('/api/shots'), workspaceReset: true }
       })
@@ -357,8 +365,8 @@ if (!app.requestSingleInstanceLock()) {
           next.libraryPath = location.path; next.libraryMount = location.mount
           selected.push(kind)
         }
-        const sources = await backendRequest<{ path: string }[]>('/api/sources')
-        const sourcePaths = sources.map(source => source.path)
+        const workspace = await backendRequest<{ shots: { filePath: string }[] }>('/api/shots')
+        const sourcePaths = [...new Set(workspace.shots.map(shot => dirname(shot.filePath)))]
         if (next.libraryPath) await inspectLibrary(next.libraryPath, sourcePaths)
         const status = await backendRequest<{ active: boolean; stopping: boolean; work?: { paused: boolean } }>('/api/ingestion')
         if (status.active || status.stopping) throw new Error('Wait for the sync queue to finish or stop it before saving locations.')
@@ -430,32 +438,6 @@ if (!app.requestSingleInstanceLock()) {
       if (typeof dataUrl !== 'string' || dataUrl.length > 3000000 || !dataUrl.startsWith('data:image/jpeg;base64,')) throw new Error('Invalid thumbnail')
       await backendRequest(`/api/shots/${id}/thumbnail`, { method: 'PUT', body: JSON.stringify({ dataUrl }) })
     })
-    handle('sources:refresh', async (event, id: unknown) => {
-      requireMainWindow(event)
-      if (typeof id !== 'string' || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Invalid source ID')
-      await flushDrafts()
-      return backendRequest(`/api/sources/${encodeURIComponent(id)}/refresh`, { method: 'POST' })
-    })
-    handle('sources:relink', async (event, id: unknown) => {
-      const owner = requireMainWindow(event)
-      if (typeof id !== 'string' || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Invalid source ID')
-      if (choosingSource) return null
-      choosingSource = true
-      try {
-        const result = await dialog.showOpenDialog(owner, {
-          title: 'Re-link Source', buttonLabel: 'Re-link Source', properties: ['openDirectory']
-        })
-        if (result.canceled || !result.filePaths[0]) return null
-        await flushDrafts()
-        return await backendRequest(`/api/sources/${encodeURIComponent(id)}/relink`, {
-          method: 'POST', body: JSON.stringify({ path: result.filePaths[0] })
-        })
-      } finally { choosingSource = false }
-    })
-    handle('sources:list', async (event) => {
-      requireMainWindow(event)
-      return backendRequest('/api/sources')
-    })
     handle('sources:drop', async (event, path: unknown) => {
       requireMainWindow(event)
       await assertSourceAddingReady()
@@ -465,12 +447,6 @@ if (!app.requestSingleInstanceLock()) {
       await flushDrafts()
       return backendRequest('/api/sources', { method: 'POST', body: JSON.stringify({ path }) })
     })
-    handle('sources:remove', async (event, id: unknown) => {
-      requireMainWindow(event)
-      if (typeof id !== 'string' || !/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Invalid source ID')
-      await flushDrafts()
-      await backendRequest(`/api/sources/${encodeURIComponent(id)}`, { method: 'DELETE' })
-    })
     handle('sources:choose', async (event) => {
       const owner = requireMainWindow(event)
       await assertSourceAddingReady()
@@ -478,8 +454,8 @@ if (!app.requestSingleInstanceLock()) {
       choosingSource = true
       try {
         const result = await dialog.showOpenDialog(owner, {
-          title: 'Add Source',
-          buttonLabel: 'Add Source',
+          title: 'Add Clips',
+          buttonLabel: 'Add Clips',
           message: 'Choose the root of a mounted card, or a folder containing video files.',
           properties: ['openDirectory']
         })

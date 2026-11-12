@@ -39,6 +39,8 @@ export interface VideoFingerprint {
 export interface VideoShot {
     // Published clips use fingerprint.value; paths describe occurrences, never clip identity.
     id: string;
+    filePath: string;
+    // Discovery provenance retained for the existing Source controls, not clip ownership.
     sourceId: string;
     filename: string;
     relativePath: string;
@@ -72,16 +74,32 @@ export interface VideoShot {
 
 export interface SourceScan {
     sourceId: string;
+    path?: string;
     state: "queued" | "scanning" | "complete" | "failed" | "interrupted";
     clipCount: number;
     warnings: string[];
     error?: string;
 }
 
+export interface DirectoryAvailability {
+    path: string;
+    available: boolean;
+    clipIds: string[];
+    outage: number;
+}
+
 export interface ShotCollection {
     revision: number;
     shots: VideoShot[];
     scans: SourceScan[];
+    directories?: DirectoryAvailability[];
+}
+
+// Transient main/backend handoff during Clear Cache; never persisted or renderer-supplied.
+export interface WorkspaceRestore {
+    files: string[];
+    scans: { path: string; files?: string[] }[];
+    excludedIds: string[];
 }
 
 export interface ShotChange { revision: number; vocabularyRevision: number }

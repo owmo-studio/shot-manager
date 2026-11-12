@@ -42,13 +42,10 @@ const desktop: DesktopBridge = {
   getCacheSummary: () => invoke('cache:summary'),
   clearCache: () => invoke('cache:clear'),
   getBackendStatus: () => invoke('backend:status'),
-  getSources: () => invoke('sources:list'),
   chooseSource: () => invoke('sources:choose'),
   addDroppedSource: (file) => invoke('sources:drop', webUtils.getPathForFile(file)),
-  removeSource: (id) => invoke('sources:remove', id),
-  refreshSource: (id) => invoke('sources:refresh', id),
-  relinkSource: (id) => invoke('sources:relink', id),
   getShots: () => invoke('shots:list'),
+  ejectClips: (shotIds, cancelQueued = false) => invoke('workspace:eject', shotIds, cancelQueued),
   onShotsChanged: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, collection: Parameters<typeof listener>[0]) => listener(collection)
     ipcRenderer.on('shots:changed', handler)

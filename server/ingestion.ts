@@ -8,6 +8,7 @@ import { ShotScanner } from './scanner';
 import { inspectLibrary, libraryAssetName, libraryFileIdentity, listLibrary, readLibraryAttributes } from './library';
 import type { LibraryLocation, LibraryPresence } from './library';
 import { rsyncFile } from './rsync';
+import { AppError } from '../shared/errors';
 import type { ProxyQueue } from './proxies';
 
 type Capture = Awaited<ReturnType<ShotScanner['captureIngest']>>;
@@ -27,6 +28,8 @@ export class IngestQueue {
     private preparing?: Promise<void>;
     private controller?: AbortController;
     private queuedIds: string[] = [];
+    private cancelledIds = new Set<string>();
+    private activeTransfer?: { id: string; controller: AbortController; done: Promise<void> };
     private submission = 0;
     private tasks = new Map<string, { kind: 'proxy' | 'transfer'; percent: number }>();
     private progressTimer?: ReturnType<typeof setTimeout>;
@@ -41,7 +44,7 @@ export class IngestQueue {
         if (proxies) {
             proxies.onChange = () => this.backgroundChanged();
             proxies.onError = (shot, message) => {
-                if (!this.queuedIds.includes(shot.id)) this.state.errors.push({ id: shot.id, filename: shot.filename, message, eventId: randomUUID() });
+                if (!this.queuedIds.includes(shot.id) && !this.scanner.isEjecting(shot.id)) this.state.errors.push({ id: shot.id, filename: shot.filename, message, eventId: randomUUID() });
                 this.publish();
             };
         }
@@ -141,7 +144,7 @@ export class IngestQueue {
         const ready = new Set(shots.filter(shot => shot.proxyState === 'ready').map(shot => `proxy:${shot.id}`));
         const pending = new Map<string, { kind: 'proxy' | 'transfer'; percent: number }>();
         for (const shot of shots) {
-            if (shot.available && (!shot.organization?.skipped || this.queuedIds.includes(shot.id)) &&
+            if (!this.scanner.isEjecting(shot.id) && shot.available && (!shot.organization?.skipped || this.queuedIds.includes(shot.id)) &&
                 (shot.proxyState === 'queued' || shot.proxyState === 'encoding')) {
                 pending.set(`proxy:${shot.id}`, { kind: 'proxy', percent: Math.max(0, Math.min(99, shot.proxyPercent ?? 0)) });
             }
@@ -237,6 +240,8 @@ export class IngestQueue {
             await this.location(location);
             if (generation !== this.workGeneration || this.state.stopping) throw new Error('Work was stopped. Refresh or Commit again when ready.');
             if (this.proxies?.status().paused || this.scanner.workPaused) this.resume();
+            const present = new Set(this.scanner.snapshot().shots.map(shot => shot.id));
+            if (entries.some(entry => !present.has(entry.capture.shot.id) || this.scanner.isEjecting(entry.capture.shot.id))) throw new Error('Clips changed while preparing review. Review again.');
             this.review = { token: randomUUID(), location, entries, created: Date.now() };
             return { token: this.review.token, libraryPath: location.path, proxyPreparation: !!this.proxies, clips: entries.map(entry => ({
                 id: entry.capture.shot.id, filename: entry.capture.shot.filename, bytes: entry.capture.shot.bytes + entry.capture.thumbnail.length,
@@ -264,6 +269,7 @@ export class IngestQueue {
             this.state = { ...this.state, active: true, stopping: false, position: 0, completed: 0, waiting: 0, total: entries.length, current: undefined };
             this.submission++;
             this.queuedIds = unique;
+            this.cancelledIds.clear();
             this.publish();
             this.preparing = new Promise(resolve => { preparationFinished = resolve; });
             await this.location(review.location);
@@ -271,16 +277,20 @@ export class IngestQueue {
             const listing = await readdir(review.location.path);
             for (const entry of entries) {
                 signal.throwIfAborted();
-                const current = await this.scanner.captureIngest(entry.capture.shot.id);
-                signal.throwIfAborted();
-                if (current.signature !== entry.capture.signature || current.path !== entry.capture.path || current.fileIdentity !== entry.capture.fileIdentity) throw new Error('Clips changed since review. Review the commit plan again.');
-                await this.checkExisting(review.location, entry, listing);
+                if (this.cancelledIds.has(entry.capture.shot.id)) continue;
+                try {
+                    const current = await this.scanner.captureIngest(entry.capture.shot.id);
+                    signal.throwIfAborted();
+                    if (this.cancelledIds.has(entry.capture.shot.id)) continue;
+                    if (current.signature !== entry.capture.signature || current.path !== entry.capture.path || current.fileIdentity !== entry.capture.fileIdentity) throw new Error('Clips changed since review. Review the commit plan again.');
+                    await this.checkExisting(review.location, entry, listing);
+                } catch (error) { if (!this.cancelledIds.has(entry.capture.shot.id)) throw error; }
             }
             signal.throwIfAborted();
             this.review = undefined;
             if (this.proxies?.status().paused) this.resume();
-            this.proxies?.prioritize(unique);
-            this.proxies?.retry(unique);
+            this.proxies?.prioritize(this.queuedIds);
+            this.proxies?.retry(this.queuedIds);
             this.run = this.process(entries, review.location, signal);
             locked = []; // Worker owns the locks now.
             return structuredClone(this.state);
@@ -306,8 +316,10 @@ export class IngestQueue {
 
     private async process(entries: Entry[], location: LibraryLocation, signal: AbortSignal) {
         try {
-            const pending = [...entries];
+            let pending = [...entries];
             while (pending.length && !signal.aborted) {
+                pending = pending.filter(entry => !this.cancelledIds.has(entry.capture.shot.id));
+                if (!pending.length) break;
                 const available = new Set(this.scanner.snapshot().shots.filter(shot => shot.available).map(shot => shot.id));
                 const index = this.proxies ? pending.findIndex(entry => this.proxies!.readyFor(entry.capture.shot.id) || !available.has(entry.capture.shot.id)) : 0;
                 if (index < 0) {
@@ -317,23 +329,29 @@ export class IngestQueue {
                 }
                 const entry = pending.splice(index, 1)[0];
                 const { shot } = entry.capture;
+                const controller = new AbortController();
+                let finish!: () => void;
+                const done = new Promise<void>(resolve => { finish = resolve; });
+                this.activeTransfer = { id: shot.id, controller, done };
+                const clipSignal = AbortSignal.any([signal, controller.signal]);
                 this.state.waiting = 0;
                 this.state.position++;
                 this.state.current = { id: shot.id, filename: shot.filename, percent: 0, phase: 'transferring' };
                 this.scanner.processingIngest(shot.id);
                 this.publish();
                 try {
-                    await this.execute(entry, location, signal);
+                    await this.execute(entry, location, clipSignal);
                     this.state.current!.percent = 100;
                     this.state.completed = (this.state.completed ?? 0) + 1;
                     this.publish();
                 } catch (error) {
-                    if (!signal.aborted) this.state.errors.push({ id: shot.id, filename: shot.filename,
+                    if (!clipSignal.aborted) this.state.errors.push({ id: shot.id, filename: shot.filename,
                         message: error instanceof Error ? error.message : String(error), eventId: randomUUID() });
                     this.publish();
                 } finally {
                     this.queuedIds = this.queuedIds.filter(id => id !== shot.id); this.scanner.unlockIngest([shot.id]);
                     this.proxies?.prioritize(this.queuedIds);
+                    this.activeTransfer = undefined; finish();
                 }
             }
         } finally {
@@ -343,6 +361,32 @@ export class IngestQueue {
             if (!signal.aborted) this.state.stopping = false;
             this.state.current = undefined; this.state.waiting = 0;
             this.publish();
+        }
+    }
+
+    async eject(ids: string[], cancelQueued = false) {
+        if (this.closing) throw new Error('The app is closing.');
+        const unique = [...new Set(ids)];
+        if (!cancelQueued && unique.some(id => this.queuedIds.includes(id))) {
+            throw new AppError('Some clips are queued or committing. Confirm Eject to cancel their unfinished work.', 'EJECT_CONFIRMATION_REQUIRED', 'failed', 409);
+        }
+        this.scanner.beginEject(unique);
+        try {
+            const active = this.activeTransfer && unique.includes(this.activeTransfer.id) ? this.activeTransfer : undefined;
+            unique.forEach(id => this.cancelledIds.add(id));
+            this.queuedIds = this.queuedIds.filter(id => !unique.includes(id));
+            active?.controller.abort();
+            this.scanner.unlockIngest(unique.filter(id => id !== active?.id));
+            this.proxies?.prioritize(this.queuedIds);
+            if (this.review?.entries.some(entry => unique.includes(entry.capture.shot.id))) this.review = undefined;
+            await Promise.all([this.preparing, active?.done, this.proxies?.cancel(unique), this.scanner.settleEject(unique)]);
+            this.state.errors = this.state.errors.filter(error => !unique.includes(error.id));
+            const collection = this.scanner.finishEject(unique);
+            this.publish();
+            return collection;
+        } catch (error) {
+            this.scanner.abortEject(unique);
+            throw error;
         }
     }
 

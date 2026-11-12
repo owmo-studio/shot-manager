@@ -75,8 +75,8 @@ async function* candidates(source: ImportSource, signal: AbortSignal, warn: (mes
     }
 }
 
-export async function discoverShots(source: ImportSource, signal: AbortSignal, found: (result: DiscoveredShot) => void | Promise<void>, warn: (message: string) => void): Promise<void> {
-    for await (const original of candidates(source, signal, warn)) {
+export async function discoverShots(source: ImportSource, signal: AbortSignal, found: (result: DiscoveredShot) => void | Promise<void>, warn: (message: string) => void, files?: string[]): Promise<void> {
+    for await (const original of files ?? candidates(source, signal, warn)) {
         signal.throwIfAborted();
         try {
             const info = await stat(original);
@@ -115,7 +115,7 @@ export async function discoverShots(source: ImportSource, signal: AbortSignal, f
                 fileIdentity: [info.dev, info.ino, info.birthtimeMs, info.size, info.mtimeMs].join(":"),
                 shot: {
                     id: "", // Internal candidate; scanner assigns the fingerprint before publication.
-                    sourceId: source.id, filename: original.split("/").pop()!, relativePath, bytes: info.size,
+                    filePath: original, sourceId: source.id, filename: original.split("/").pop()!, relativePath, bytes: info.size,
                     timestamp: normalized.timestamp?.value ?? info.mtime.toISOString(),
                     dateSource: normalized.timestamp?.capture ? "camera" : normalized.timestamp ? "embedded" : "file-modified",
                     dateEvidence: normalized.timestamp?.source ?? "File modification time (capture time unknown)",

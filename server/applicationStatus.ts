@@ -12,7 +12,7 @@ export class ApplicationMonitor {
     private reports = new Map<string, { issue: Issue; order: number }>();
     private order = 0;
 
-    constructor(private configuration: () => Promise<AppConfiguration>, private sources: () => ImportSource[],
+    constructor(private configuration: () => Promise<AppConfiguration>, private sources: () => Pick<ImportSource, 'id' | 'name' | 'path' | 'available' | 'warning'>[],
         private workError: () => string | undefined) {}
 
     invalidate() { this.generation++; this.pending = undefined; }
@@ -52,7 +52,7 @@ export class ApplicationMonitor {
         } catch (error) {
             issues.push({ key: 'library', level: 'error', message: 'Library Unavailable', detail: error instanceof Error ? error.message : String(error) });
         }
-        for (const source of sources) if (!source.available) issues.push({ key: `source:${source.id}`, level: 'warning', message: 'Source Unavailable', detail: `${source.name}: ${source.warning ?? source.path}` });
+        for (const source of sources) if (!source.available) issues.push({ key: `media:${source.id}`, level: 'warning', message: 'Media Unavailable', detail: `${source.name}: ${source.warning ?? source.path}` });
         const error = this.workError();
         if (error) issues.push({ key: 'work', level: 'warning', message: 'Proxy Unavailable', detail: error });
         return generation === this.generation ? this.summarize(issues) : { level: 'warning', message: 'Checking Status' };

@@ -1,9 +1,9 @@
-import { errorMessage } from '../../shared/errors';
+import { AppError, errorMessage } from '../../shared/errors';
 import type { DragEvent } from "react";
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { BackendStatus, ImportSource } from "../../shared/desktop";
-import type { ShotCollection } from "../../shared/shots";
+import type { BackendStatus } from "../../shared/desktop";
+import type { DirectoryAvailability, ShotCollection, VideoShot } from "../../shared/shots";
 import { ClipInspector } from "./ClipInspector";
 import { Configuration } from "./Configuration";
 import { SaveStatusBanner } from "./SaveStatusBanner";
@@ -12,40 +12,29 @@ import { CollectionUpdates } from "./collectionUpdates";
 import { MultiClipInspector } from "./MultiClipInspector";
 import { clipIdentity, uniqueShots, orderedShots, useShotSelection } from "./shotSelection";
 import { deviceLabel } from "./mediaInfo";
-import { RemoveSourceDialog } from "./RemoveSourceDialog";
 import { MIN_INSPECTOR_WIDTH } from "./ResizableInspector";
 import { ApplicationIndicator, applicationStatus } from "./ApplicationIndicator";
 import { IngestFooter } from "./IngestFooter";
 import { ShotGrid } from "./ShotGrid";
 import { scrollShotIntoView } from "./scrollShotIntoView";
-import { newlyUnavailableSources } from "./sourceAvailability";
 import { SourceErrorDialog } from "./SourceErrorDialog";
-import { SourceListItem } from "./SourceListItem";
-import { SourceUnavailableDialog } from "./SourceUnavailableDialog";
+import { EjectDialog } from "./EjectDialog";
+import { DirectoryUnavailableDialog } from "./DirectoryUnavailableDialog";
 import "./styles.css";
 
 function App() {
     const [status, setStatus] = useState<BackendStatus>({ state: "starting", message: "Starting backend…" });
-    const [sources, setSources] = useState<ImportSource[]>([]);
-    const [sourcesLoaded, setSourcesLoaded] = useState(false);
-    const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
+    const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
     const [selectedDevices, setSelectedDevices] = useState<string[]>([]);
     const newestFirst = true;
     const [libraryActions, setLibraryActions] = useState<HTMLDivElement | null>(null);
     const [inspectorWidth, setInspectorWidth] = useState(MIN_INSPECTOR_WIDTH);
     const [shotCollection, setShotCollection] = useState<ShotCollection>({ revision: 0, shots: [], scans: [] });
     const latestShotRevision = useRef(-1);
-    const filteredSources = sources.filter((source) => selectedSourceIds.includes(source.id));
-    const filteredIds = new Set(filteredSources.map((source) => source.id));
     const allUniqueShots = uniqueShots(shotCollection.shots);
-    const commitQueued = shotCollection.shots.some(shot => shot.ingestState === "queued" || shot.ingestState === "processing");
-    const sourceCollection = {
-        ...shotCollection,
-        shots: uniqueShots(shotCollection.shots.filter((shot) => !filteredIds.size || filteredIds.has(shot.sourceId))),
-        scans: shotCollection.scans.filter((scan) => !filteredIds.size || filteredIds.has(scan.sourceId)),
-    };
+    const workspaceCollection = { ...shotCollection, shots: allUniqueShots };
     const deviceCounts = new Map<string, number>();
-    for (const shot of sourceCollection.shots) {
+    for (const shot of workspaceCollection.shots) {
         const device = deviceLabel(shot.metadata.device) ?? "Video";
         deviceCounts.set(device, (deviceCounts.get(device) ?? 0) + 1);
     }
@@ -53,13 +42,12 @@ function App() {
     const deviceKeys = JSON.stringify(devices.map(([name]) => name));
     const activeDevices = selectedDevices.filter((name) => deviceCounts.has(name));
     const visibleCollection = activeDevices.length ? {
-        ...sourceCollection,
-        shots: sourceCollection.shots.filter((shot) => activeDevices.includes(deviceLabel(shot.metadata.device) ?? "Video")),
-    } : sourceCollection;
+        ...workspaceCollection,
+        shots: workspaceCollection.shots.filter((shot) => activeDevices.includes(deviceLabel(shot.metadata.device) ?? "Video")),
+    } : workspaceCollection;
     const selection = useShotSelection(shotCollection.shots, visibleCollection.shots);
     const selectedShots = visibleCollection.shots.filter((shot) => selection.editingIds.includes(shot.id));
     const inspectedShot = selectedShots.length === 1 ? selectedShots[0] : undefined;
-    const availableSourceIds = new Set(sources.filter((source) => source.available).map((source) => source.id));
     const displayedShots = orderedShots(visibleCollection.shots, newestFirst);
     const selectableShots = displayedShots
         .filter((shot) => shot.editable);
@@ -85,7 +73,7 @@ function App() {
             clearEditingSelection();
             return;
         }
-        selection.dispatch({ type: "select", id, orderedIds: selectableShots.map((shot) => shot.id),
+        selection.dispatch({ type: "select", id, orderedIds: displayedShots.map((shot) => shot.id),
             additive: modifiers.ctrlKey || modifiers.metaKey, range: modifiers.shiftKey });
     }
 
@@ -150,34 +138,26 @@ function App() {
     }, [selection.editingIds]);
 
     useEffect(() => {
-        setSelectedSourceIds((current) => current.some((id) => !sources.some((source) => source.id === id))
-            ? current.filter((id) => sources.some((source) => source.id === id)) : current);
-    }, [sources]);
-
-    useEffect(() => {
         const available = new Set<string>(JSON.parse(deviceKeys));
         setSelectedDevices((current) => current.some((name) => !available.has(name))
             ? current.filter((name) => available.has(name)) : current);
     }, [deviceKeys]);
 
-    const [choosingSource, setChoosingSource] = useState(false);
-    const [refreshingSourceId, setRefreshingSourceId] = useState<string | null>(null);
-    const [sourceError, setSourceError] = useState<string | null>(null);
-    const sourceRefreshFailed = useRef(false);
+    const [addingClips, setAddingClips] = useState(false);
+    const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+    const refreshFailed = useRef(false);
     const [communicationError, setCommunicationError] = useState(false);
-    const [removalSourceId, setRemovalSourceId] = useState<string | null>(null);
-    const [removingSource, setRemovingSource] = useState(false);
-    const [removalError, setRemovalError] = useState<string | null>(null);
-    const removalSource = sources.find((source) => source.id === removalSourceId);
-    const removalScan = shotCollection.scans.find((scan) => scan.sourceId === removalSourceId);
-    const [unavailableSources, setUnavailableSources] = useState<ImportSource[]>([]);
+    const [ejectTargets, setEjectTargets] = useState<VideoShot[] | null>(null);
+    const [ejectBusy, setEjectBusy] = useState(false);
+    const ejectMutation = useRef(false);
+    const [ejectError, setEjectError] = useState<string | null>(null);
+    const [unavailableDirectories, setUnavailableDirectories] = useState<DirectoryAvailability[]>([]);
     const notifiedUnavailable = useRef(new Set<string>());
     const [draggingFolders, setDraggingFolders] = useState(false);
     const dragDepth = useRef(0);
-    const sourceRevision = useRef(0);
-    const sourceMutation = useRef(false);
+    const workspaceMutation = useRef(false);
     const workspaceStatus = applicationStatus(status, communicationError);
-    const canAddSource = sourcesLoaded && !choosingSource && !refreshingSourceId && status.state === "connected"
+    const canAddClips = workspaceLoaded && !addingClips && !ejectBusy && status.state === "connected"
         && !!status.application && workspaceStatus.level !== "error";
 
     function receiveShots(collection: ShotCollection) {
@@ -192,109 +172,60 @@ function App() {
         return () => { unsubscribe(); updates.dispose(); };
     }, []);
 
-    async function refreshSource(id: string) {
-        if (sourceMutation.current || commitQueued) return;
-        sourceMutation.current = true;
-        sourceRevision.current += 1;
-        setRefreshingSourceId(id);
-        setSourceError(null);
-        try {
-            const result = await window.desktop.refreshSource(id);
-            rememberSource(result.source);
-            receiveShots(result.collection);
-        } catch (error) {
-            setSourceError(errorMessage(error, "Could not refresh this source. Check that it is available and not already scanning."));
-        } finally {
-            sourceRevision.current += 1;
-            sourceMutation.current = false;
-            setRefreshingSourceId(null);
-        }
-    }
-
-    async function relinkSource(id: string) {
-        if (sourceMutation.current || commitQueued) return;
-        sourceMutation.current = true;
-        sourceRevision.current += 1;
-        setRefreshingSourceId(id);
-        setSourceError(null);
-        try {
-            const result = await window.desktop.relinkSource(id);
-            if (!result) return;
-            setSources((current) => current.map((source) => source.id === id ? result.source : source));
-            setSelectedSourceIds((current) => current.map((selected) => selected === id ? result.source.id : selected));
-            setUnavailableSources((current) => current.filter((source) => source.id !== id));
-            receiveShots(result.collection);
-        } catch (error) {
-            setSourceError(errorMessage(error, "Could not re-link this source. Choose a readable folder that has not already been added."));
-        } finally {
-            sourceRevision.current += 1;
-            sourceMutation.current = false;
-            setRefreshingSourceId(null);
-        }
-    }
-
-    function rememberSource(source: ImportSource) {
-        setSources((current) =>
-            current.some((item) => item.path === source.path)
-                ? current.map((item) => (item.path === source.path ? source : item))
-                : [...current, source],
-        );
-    }
-
     useEffect(() => {
-        const registeredIds = new Set(sources.map((source) => source.id));
-        setShotCollection((current) => ({
-            revision: current.revision,
-            shots: current.shots.filter((shot) => registeredIds.has(shot.sourceId)),
-            scans: current.scans.filter((scan) => registeredIds.has(scan.sourceId)),
-        }));
-        const additions = newlyUnavailableSources(sources, notifiedUnavailable.current);
-        const unavailableIds = new Set(sources.filter((source) => !source.available).map((source) => source.id));
-        setUnavailableSources((current) => [
-            ...current.filter((source) => unavailableIds.has(source.id)).map((source) => sources.find((item) => item.id === source.id)!),
+        const missing = (shotCollection.directories ?? []).filter(directory => !directory.available && directory.clipIds.length);
+        const currentKeys = new Set(missing.map(directory => `${directory.path}:${directory.outage}`));
+        for (const key of notifiedUnavailable.current) if (!currentKeys.has(key)) notifiedUnavailable.current.delete(key);
+        const additions = missing.filter(directory => !notifiedUnavailable.current.has(`${directory.path}:${directory.outage}`));
+        additions.forEach(directory => notifiedUnavailable.current.add(`${directory.path}:${directory.outage}`));
+        setUnavailableDirectories(current => [
+            ...current.flatMap(directory => missing.find(item => item.path === directory.path && item.outage === directory.outage) ?? []),
             ...additions,
         ]);
-    }, [sources]);
+    }, [shotCollection.directories]);
 
-    async function addSource(droppedFiles?: File[]) {
-        if (sourceMutation.current) return;
-        if (!canAddSource) {
-            setSourceError(workspaceStatus.level === "error"
-                ? `${workspaceStatus.message}. Resolve this issue before adding a source.`
-                : "Please wait for the application status check before adding a source.");
+    async function addClips(droppedFiles?: File[]) {
+        if (workspaceMutation.current) return;
+        if (!canAddClips) {
+            setWorkspaceError(workspaceStatus.level === "error" ? `${workspaceStatus.message}. Resolve this issue before adding clips.` : "Please wait for the application status check before adding clips.");
             return;
         }
-        sourceMutation.current = true;
-        sourceRevision.current += 1;
-        setChoosingSource(true);
-        setSourceError(null);
+        workspaceMutation.current = true; setAddingClips(true); setWorkspaceError(null);
         try {
             if (droppedFiles) {
                 const errors: string[] = [];
                 for (const file of droppedFiles) {
-                    try {
-                        const source = await window.desktop.addDroppedSource(file);
-                        rememberSource(source);
-                    } catch (error) {
-                        errors.push(errorMessage(error, "Drop readable folders or card roots, rather than individual files."));
-                    }
+                    try { await window.desktop.addDroppedSource(file); }
+                    catch (error) { errors.push(errorMessage(error, "Drop readable folders or card roots, rather than individual files.")); }
                 }
-                if (errors.length)
-                    setSourceError(
-                        `${errors.length} dropped item${errors.length === 1 ? " could" : "s could"} not be added. ${[...new Set(errors)].join(" ")}`,
-                    );
-            } else {
-                const source = await window.desktop.chooseSource();
-                if (!source) return;
-                rememberSource(source);
-            }
+                if (errors.length) setWorkspaceError(`${errors.length} dropped item${errors.length === 1 ? " could" : "s could"} not be added. ${[...new Set(errors)].join(" ")}`);
+            } else await window.desktop.chooseSource();
+            receiveShots(await window.desktop.getShots());
+        } catch (error) { setWorkspaceError(errorMessage(error, "Could not scan this folder. Check that it is connected and readable.")); }
+        finally { setAddingClips(false); workspaceMutation.current = false; }
+    }
+
+    async function performEject(targets: VideoShot[], confirmed: boolean) {
+        if (ejectMutation.current) return;
+        ejectMutation.current = true;
+        setEjectBusy(true); setEjectError(null);
+        try {
+            receiveShots(await window.desktop.ejectClips(targets.map(shot => shot.id), confirmed));
+            setEjectTargets(null);
         } catch (error) {
-            setSourceError(errorMessage(error, "Could not inspect this source. Check that it is connected and readable, then try again."));
-        } finally {
-            setChoosingSource(false);
-            sourceRevision.current += 1;
-            sourceMutation.current = false;
-        }
+            if (error instanceof AppError && error.code === "EJECT_CONFIRMATION_REQUIRED") setEjectTargets(targets);
+            else if (confirmed) setEjectError(errorMessage(error, "Could not eject the selected clips."));
+            else setWorkspaceError(errorMessage(error, "Could not eject the selected clips."));
+        } finally { setEjectBusy(false); ejectMutation.current = false; }
+    }
+
+    function requestEject(ids: string[]) {
+        if (ejectBusy) return;
+        const targets = allUniqueShots.filter(shot => ids.includes(shot.id));
+        if (!targets.length) return;
+        if (targets.some(shot => shot.ingestState === "queued" || shot.ingestState === "processing")) {
+            setEjectError(null); setEjectTargets(targets);
+        } else void performEject(targets, false);
     }
 
     function dragEnter(event: DragEvent<HTMLElement>) {
@@ -315,7 +246,7 @@ function App() {
         dragDepth.current = 0;
         setDraggingFolders(false);
         const files = Array.from(event.dataTransfer.files);
-        if (files.length) void addSource(files);
+        if (files.length) void addClips(files);
     }
 
     useEffect(() => {
@@ -327,26 +258,6 @@ function App() {
             window.removeEventListener("drop", preventNavigation);
         };
     }, []);
-
-    async function removeSource(id: string) {
-        if (sourceMutation.current || commitQueued) return;
-        sourceMutation.current = true;
-        sourceRevision.current += 1;
-        setSourceError(null);
-        setRemovalError(null);
-        setRemovingSource(true);
-        try {
-            await window.desktop.removeSource(id);
-            setSources((current) => current.filter((source) => source.id !== id));
-            setRemovalSourceId(null);
-        } catch (error) {
-            setRemovalError(errorMessage(error, "Could not remove the source. If it is scanning, wait for it to finish, then try again."));
-        } finally {
-            setRemovingSource(false);
-            sourceRevision.current += 1;
-            sourceMutation.current = false;
-        }
-    }
 
     useEffect(() => {
         let disposed = false;
@@ -364,23 +275,20 @@ function App() {
                 const nextStatus = await window.desktop.getBackendStatus();
                 if (nextStatus.state === "starting") nextDelay = 250;
                 if (!disposed && version === configurationVersion) setStatus(nextStatus);
-                if (nextStatus.state === "connected" && !sourceMutation.current) {
-                    const revision = sourceRevision.current;
+                if (nextStatus.state === "connected" && !workspaceMutation.current) {
                     try {
-                        const currentSources = await window.desktop.getSources();
                         const currentShots = await window.desktop.getShots();
-                        if (!disposed && revision === sourceRevision.current) {
-                            sourceRefreshFailed.current = false;
+                        if (!disposed) {
+                            refreshFailed.current = false;
                             setCommunicationError(false);
-                            setSources(currentSources);
                             receiveShots(currentShots);
-                            setSourcesLoaded(true);
+                            setWorkspaceLoaded(true);
                         }
                     } catch {
                         if (!disposed) setCommunicationError(true);
-                        if (!disposed && !sourceRefreshFailed.current) {
-                            sourceRefreshFailed.current = true;
-                            setSourceError("Could not refresh sources. The app will retry shortly.");
+                        if (!disposed && !refreshFailed.current) {
+                            refreshFailed.current = true;
+                            setWorkspaceError("Could not refresh the workspace. The app will retry shortly.");
                         }
                     }
                 }
@@ -429,42 +337,11 @@ function App() {
             <main className="flex min-h-0 flex-1">
                 <aside className="w-60 shrink-0 overflow-y-auto border-r border-white/8 bg-white/1.5 p-3">
                     <div className="flex items-center justify-between gap-2">
-                        <div>
-                            <h2 className="text-lg font-medium text-zinc-300">Sources</h2>
-                            {allUniqueShots.length > 0 && <p aria-label="Total clips" className="mt-0.5 text-xs text-zinc-500">
-                                {allUniqueShots.length.toLocaleString()} {allUniqueShots.length === 1 ? "clip" : "clips"} total
-                            </p>}
-                        </div>
-                        <button
-                            onClick={() => void addSource()}
-                            disabled={!canAddSource}
-                            aria-label="Add Source"
-                            className="rounded-md border border-white/10 bg-white/4 px-2.5 py-1.5 text-xs text-zinc-300 transition hover:bg-white/8 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40"
-                        >
-                            +
-                        </button>
+                        <p aria-label="Total clips" className="text-xs text-zinc-500">{allUniqueShots.length.toLocaleString()} {allUniqueShots.length === 1 ? "clip" : "clips"}</p>
+                        <button onClick={() => void addClips()} disabled={!canAddClips} aria-label="Add clips" title="Scan a folder for clips"
+                            className="rounded-md border border-white/10 bg-white/4 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-white/8 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">+</button>
                     </div>
-                    <ul aria-label="Import sources" className="mt-4 space-y-2">
-                        {sources.map((source) => (
-                            <SourceListItem
-                                key={source.id}
-                                source={source}
-                                selected={filteredIds.has(source.id)}
-                                onToggle={() => setSelectedSourceIds((current) => current.includes(source.id)
-                                    ? current.filter((id) => id !== source.id) : [...current, source.id])}
-                                scan={shotCollection.scans.find((scan) => scan.sourceId === source.id)}
-                                refreshing={refreshingSourceId === source.id}
-                                commitQueued={commitQueued}
-                                onRefresh={() => void (source.available ? refreshSource(source.id) : relinkSource(source.id))}
-                                onRemove={() => {
-                                    setRemovalError(null);
-                                    setRemovalSourceId(source.id);
-                                }}
-                            />
-                        ))}
-                    </ul>
-                    <section aria-labelledby="device-filters-heading" className="mt-6 border-t border-white/8 pt-4">
-                        <h2 id="device-filters-heading" className="text-lg font-medium text-zinc-300">Devices</h2>
+                    <section aria-label="Filters" className="mt-3">
                         <ul aria-label="Device filters" className="mt-3 space-y-1">
                             {devices.map(([name, count]) => (
                                 <li key={name}>
@@ -497,20 +374,21 @@ function App() {
                     onDragLeave={dragLeave}
                     onDragOver={(event) => {
                         event.preventDefault();
-                        event.dataTransfer.dropEffect = canAddSource ? "copy" : "none";
+                        event.dataTransfer.dropEffect = canAddClips ? "copy" : "none";
                     }}
                     onDrop={dropSources}
                     className={`relative flex min-w-0 flex-1 items-center justify-center overflow-y-auto text-center transition ${draggingFolders ? "bg-blue-400/5 outline-2 -outline-offset-4 outline-dashed outline-blue-400/50" : ""}`}
                 >
                     {draggingFolders ? (
                         <p className="pointer-events-none text-sm text-blue-300">
-                            {canAddSource ? "Drop folders or a card root to add sources" : "Adding sources is unavailable"}
+                            {canAddClips ? "Drop folders or a card root to add clips" : "Adding clips is unavailable"}
                         </p>
-                    ) : sources.length ? (
+                    ) : shotCollection.shots.length || shotCollection.scans.length ? (
                         <ShotGrid
                             collection={visibleCollection}
                             newestFirst={newestFirst}
-                            sources={sources}
+                            onEject={id => requestEject([id])}
+                            ejectBusy={ejectBusy}
                             selectedShotIds={selection.editingIds}
                             skippedShotIds={skippedShotIds}
                             onSelect={selectShot}
@@ -518,10 +396,10 @@ function App() {
                     ) : (
                         <div className="max-w-md p-10">
                             <button
-                                onClick={() => void addSource()}
-                                disabled={!canAddSource}
-                                aria-label="Add Source"
-                                title="Add Source"
+                                onClick={() => void addClips()}
+                                disabled={!canAddClips}
+                                aria-label="Add clips"
+                                title="Add clips"
                                 className="mx-auto mb-6 grid size-14 place-items-center rounded-2xl border border-white/10 bg-white/4 text-2xl text-zinc-400 transition hover:border-white/20 hover:bg-white/8 hover:text-zinc-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40"
                             >
                                 ＋
@@ -532,42 +410,28 @@ function App() {
                 </section>
                     {selectedShots.length > 1 ? <MultiClipInspector
                         onOrganizationUpdated={receiveShots}
-                        shots={orderedShots(selectedShots, newestFirst)} sources={sources} skippedCount={selectedSkippedCount} disabled={selectedLocked}
+                        onEject={() => requestEject(selectedShots.map(shot => shot.id))} ejectBusy={ejectBusy}
+                        shots={orderedShots(selectedShots, newestFirst)} skippedCount={selectedSkippedCount} disabled={selectedLocked}
                         width={inspectorWidth} onResize={setInspectorWidth}
                         onSkipChange={(skipped) => changeSkip(selectedShots.map((shot) => shot.id), skipped)}
                     /> : <ClipInspector
                         onOrganizationUpdated={receiveShots}
+                        onEject={() => requestEject(selectedShots.map(shot => shot.id))} ejectBusy={ejectBusy}
                         key={inspectedShot?.id ?? "empty"}
                         shot={inspectedShot}
-                        source={sources.find((source) => source.id === inspectedShot?.sourceId)}
                         width={inspectorWidth}
                         onResize={setInspectorWidth}
                         skipped={selectedSkippedCount === 1}
                         onSkipChange={(skipped) => changeSkip(selectedShots.map((shot) => shot.id), skipped)}
                     />}
             </main>
-            {removalSource && (
-                <RemoveSourceDialog
-                    key={removalSource.id}
-                    source={removalSource}
-                    removing={removingSource}
-                    scanning={removalScan?.state === "queued" || removalScan?.state === "scanning"}
-                    commitQueued={commitQueued}
-                    error={removalError}
-                    onCancel={() => setRemovalSourceId(null)}
-                    onProceed={() => void removeSource(removalSource.id)}
-                />
-            )}
-            {skipError && <SourceErrorDialog title="Skip could not be saved" message={skipError} onDismiss={() => setSkipError(null)} />}
-            {!skipError && !removalSource && sourceError && (
-                <SourceErrorDialog message={sourceError} onDismiss={() => setSourceError(null)} />
-            )}
-            {!skipError && !removalSource && !sourceError && unavailableSources.length > 0 && (
-                <SourceUnavailableDialog
-                    sources={unavailableSources}
-                    onDismiss={() => setUnavailableSources([])}
-                />
-            )}
+            {ejectTargets && <EjectDialog shots={ejectTargets} busy={ejectBusy} error={ejectError}
+                onCancel={() => { if (!ejectBusy) setEjectTargets(null); }} onConfirm={() => void performEject(ejectTargets, true)} />}
+            {!ejectTargets && skipError && <SourceErrorDialog title="Skip could not be saved" message={skipError} onDismiss={() => setSkipError(null)} />}
+            {!ejectTargets && !skipError && workspaceError && <SourceErrorDialog title="Workspace error" message={workspaceError} onDismiss={() => setWorkspaceError(null)} />}
+            {!ejectTargets && !skipError && !workspaceError && unavailableDirectories.length > 0 && <DirectoryUnavailableDialog
+                directories={unavailableDirectories} onDismiss={() => setUnavailableDirectories([])}
+                onEject={ids => { setUnavailableDirectories([]); requestEject(ids); }} />}
             <footer className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-5 border-t border-white/8 px-5 py-3 text-xs text-zinc-500">
                 <ApplicationIndicator backend={status} communicationError={communicationError} />
                 <IngestFooter refreshTarget={libraryActions} shots={allUniqueShots} connected={status.state === 'connected'} onRefresh={async () => receiveShots(await window.desktop.getShots())} />

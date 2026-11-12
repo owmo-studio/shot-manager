@@ -1,19 +1,21 @@
+import { EjectIcon } from "./EjectButton";
 import type { MouseEvent } from "react";
 import { useEffect, useRef, useState } from "react";
-import type { ImportSource } from "../../shared/desktop";
 import type { ShotCollection, VideoShot } from "../../shared/shots";
-import { cardDuration, deviceLabel, sourceFilePath } from "./mediaInfo";
+import { cardDuration, deviceLabel } from "./mediaInfo";
 import { orderedShots } from "./shotSelection";
 
 function ShotCard({
     shot,
-    source,
+    onEject,
+    ejectBusy,
     selected,
     skipped,
     onSelect,
 }: {
     shot: VideoShot;
-    source?: ImportSource;
+    onEject: () => void;
+    ejectBusy: boolean;
     selected: boolean;
     skipped: boolean;
     onSelect: (event: MouseEvent<HTMLButtonElement>) => void;
@@ -21,12 +23,12 @@ function ShotCard({
     const [thumbnail, setThumbnail] = useState<string | null>(null);
     const [failedImage, setFailedImage] = useState(false);
     const card = useRef<HTMLButtonElement>(null);
-    const unavailable = !shot.available || !source?.available;
+    const unavailable = !shot.available;
     const inactive = !unavailable && !shot.editable;
     const cardStyle = unavailable
         ? `${selected ? "ring-red-400" : "ring-red-500/30"} bg-red-500/8 group-hover/shot:bg-red-500/15 group-hover/shot:ring-red-400/60`
         : inactive
-          ? `cursor-not-allowed ${selected ? "ring-zinc-300" : "ring-transparent"}`
+          ? `cursor-default ${selected ? "ring-zinc-300" : "ring-transparent"}`
           : skipped
             ? `${selected ? "ring-zinc-300 group-hover/shot:ring-zinc-200" : "ring-transparent group-hover/shot:ring-zinc-400/35"} bg-black/40 group-hover/shot:bg-black/50`
             : selected
@@ -124,7 +126,6 @@ function ShotCard({
                 ref={card}
                 type="button"
                 onClick={onSelect}
-                disabled={!shot.editable}
                 aria-label={`Inspect ${shot.filename}`}
                 aria-description={`${activity}. ${proxyLabel}`}
                 aria-pressed={selected}
@@ -134,7 +135,7 @@ function ShotCard({
                 data-shot-status={shot.ingestState ?? (discovering ? "discover" : "editable")}
                 className={`-m-2 w-[calc(100%+16px)] min-w-0 rounded-lg p-2 text-left ring-1 transition duration-75 focus-visible:outline-2 focus-visible:outline-offset-2 ${skipped ? "focus-visible:outline-zinc-300" : "focus-visible:outline-blue-400"} disabled:cursor-not-allowed ${cardStyle} ${statusCardStyle}`}
                 title={[
-                    sourceFilePath(source?.path, shot.relativePath),
+                    shot.filePath ?? shot.relativePath,
                     activity,
                     ...(unavailable
                         ? ["Source unavailable. Attributes and cached file information remain accessible."]
@@ -155,7 +156,7 @@ function ShotCard({
                             role="img"
                             aria-label={proxyLabel}
                             title={proxyLabel}
-                            className={`absolute right-2 top-2 z-10 size-2.5 rounded-full ${proxyLibrary ? "bg-emerald-400" : proxyLocal ? "bg-yellow-400" : "border border-white/65"}`}
+                            className={`absolute left-2 top-2 z-10 size-2.5 rounded-full ${proxyLibrary ? "bg-emerald-400" : proxyLocal ? "bg-yellow-400" : "border border-white/65"}`}
                         />
                     )}
                     {(transferring || proxyEncoding) && (
@@ -246,6 +247,11 @@ function ShotCard({
                     <span className="mt-1 block text-xs text-amber-300">Metadata incomplete</span>
                 )}
             </button>
+            <button type="button" onClick={event => { event.stopPropagation(); onEject(); }} disabled={ejectBusy}
+                aria-label={`Eject ${shot.filename}`} title="Eject from workspace"
+                className="absolute top-2 right-2 z-20 grid size-7 place-items-center rounded-md bg-black/70 text-zinc-300 opacity-0 transition group-hover/shot:opacity-100 hover:text-white focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
+                <EjectIcon />
+            </button>
         </div>
     );
 }
@@ -253,14 +259,16 @@ function ShotCard({
 export function ShotGrid({
     collection,
     newestFirst,
-    sources,
+    onEject,
+    ejectBusy,
     selectedShotIds,
     skippedShotIds,
     onSelect,
 }: {
     collection: ShotCollection;
     newestFirst: boolean;
-    sources: ImportSource[];
+    onEject: (id: string) => void;
+    ejectBusy: boolean;
     selectedShotIds: string[];
     skippedShotIds: string[];
     onSelect: (id: string, event: MouseEvent<HTMLButtonElement>) => void;
@@ -273,9 +281,14 @@ export function ShotGrid({
         group.push(shot);
         groups.set(day, group);
     }
-    const busy = collection.scans.some((scan) => scan.state === "queued" || scan.state === "scanning");
+    const activeScans = collection.scans.filter(scan => scan.state === "queued" || scan.state === "scanning");
+    const busy = activeScans.length > 0;
     return (
         <div className="w-full shrink-0 self-start p-5 pr-8 pb-12 text-left">
+            {busy && <div role="status" aria-label="Discovery progress" title={activeScans.map(scan => scan.path).filter(Boolean).join("\n")}
+                className="mb-4 rounded-lg bg-white/4 px-3 py-2 text-left text-xs text-zinc-400">
+                {activeScans.length > 1 ? `Scanning ${activeScans.length} folders…` : "Scanning…"} · {activeScans.reduce((total, scan) => total + scan.clipCount, 0)} clips found
+            </div>}
             {collection.scans
                 .filter((scan) => scan.error || scan.warnings.length)
                 .map((scan) => (
@@ -284,14 +297,14 @@ export function ShotGrid({
                         role="status"
                         className={`mb-4 rounded-lg border p-3 text-xs ${scan.error ? "border-red-400/25 text-red-300" : "border-amber-400/20 text-amber-300"}`}
                     >
-                        {sources.find((source) => source.id === scan.sourceId)?.name}:{" "}
+                        {scan.path ? `${scan.path}: ` : ""}
                         {scan.error ??
                             `${scan.warnings.length} scan issue(s). Some files or folders could not be read.`}
                     </p>
                 ))}
             {!collection.shots.length && (
                 <p className="mt-20 text-center text-sm text-zinc-500">
-                    {busy ? "Looking for videos…" : "No videos found in the available sources."}
+                    {busy ? "Looking for videos…" : "No clips in the workspace."}
                 </p>
             )}
             {[...groups].map(([day, shots]) => (
@@ -309,7 +322,8 @@ export function ShotGrid({
                             <ShotCard
                                 key={shot.id}
                                 shot={shot}
-                                source={sources.find((source) => source.id === shot.sourceId)}
+                                onEject={() => onEject(shot.id)}
+                                ejectBusy={ejectBusy}
                                 selected={selectedShotIds.includes(shot.id)}
                                 skipped={skippedShotIds.includes(shot.id)}
                                 onSelect={(event) => onSelect(shot.id, event)}

@@ -8,7 +8,7 @@ import { IngestQueue } from './ingestion';
 import Fastify from 'fastify'
 import type { AppConfiguration, BackendHealth } from '../shared/desktop'
 import type { IngestStatus } from '../shared/ingestion';
-import type { ShotChange } from '../shared/shots'
+import type { ShotChange, WorkspaceRestore } from '../shared/shots'
 import { SourceRegistry } from './sources'
 import { pruneThumbnailCache } from './thumbnails'
 import { sendVideo } from './media'
@@ -30,7 +30,13 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     ? () => assertCacheReady(process.env.SHOT_MANAGER_CACHE_PARENT!, cacheRoot, process.env.SHOT_MANAGER_CACHE_MOUNT!) : undefined
   const sources = new SourceRegistry(thumbnailCacheDirectory, fingerprintDirectory, organizationFile, assertWritable)
   const proxies = new ProxyQueue(sources.scanner, configuration)
-  const application = new ApplicationMonitor(configuration, () => sources.list(), () => proxies.status().error)
+  const application = new ApplicationMonitor(configuration, () => {
+    const available = new Map(sources.scanner.snapshot().shots.map(shot => [shot.id, shot.available]))
+    return sources.scanner.directoryAvailability().map(directory => ({
+      id: directory.path, path: directory.path, name: `${directory.clipIds.length} clips`,
+      available: directory.available && directory.clipIds.every(id => available.get(id)),
+    }))
+  }, () => proxies.status().error)
   const ingestion = new IngestQueue(sources.scanner, async () => (await configuration()).libraryPath, async (path, roots) => {
     const configured = await configuration()
     if (!configured.libraryMount) throw new Error('Choose the Library location again in Configuration to confirm its volume.')
@@ -40,6 +46,23 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
   }, rsyncFile, proxies)
   ingestion.onChange = onIngestChanged
   const ids = { type: 'array', minItems: 1, maxItems: 1000, uniqueItems: true, items: { type: 'string', pattern: '^[a-f0-9]{64}$' } }
+  server.post<{ Body: { shotIds: string[]; cancelQueued?: boolean } }>('/api/workspace/eject', {
+    schema: { body: { type: 'object', required: ['shotIds'], additionalProperties: false,
+      properties: { shotIds: ids, cancelQueued: { type: 'boolean' } } } }
+  }, async request => {
+    try { return await ingestion.eject(request.body.shotIds, request.body.cancelQueued) }
+    catch (error) { throw Object.assign(error as Error, { statusCode: (error as { status?: number }).status ?? 409 }) }
+  })
+  // Only Electron main calls this after Cache clearing, using paths from the previous backend snapshot.
+  const restorePath = { type: 'string', pattern: '^/', maxLength: 32768 }
+  const restoreFiles = { type: 'array', maxItems: 10000, items: restorePath }
+  server.get('/api/workspace/restore-plan', () => sources.scanner.restorePlan())
+  server.post<{ Body: WorkspaceRestore }>('/api/workspace/restore', {
+    bodyLimit: 8 * 1024 * 1024,
+    schema: { body: { type: 'object', required: ['files', 'scans', 'excludedIds'], additionalProperties: false,
+      properties: { files: restoreFiles, excludedIds: { ...ids, minItems: 0, maxItems: 10000 }, scans: { type: 'array', maxItems: 1000,
+        items: { type: 'object', required: ['path'], additionalProperties: false, properties: { path: restorePath, files: restoreFiles } } } } } }
+  }, request => { sources.scanner.restoreWorkspace(request.body); return sources.scanner.snapshot() })
   server.post<{ Body: { shotIds: string[] } }>('/api/organization/revert', {
     schema: { body: { type: 'object', required: ['shotIds'], additionalProperties: false, properties: { shotIds: ids } } }
   }, async request => {

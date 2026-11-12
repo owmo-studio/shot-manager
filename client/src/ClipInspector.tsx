@@ -1,14 +1,14 @@
 import { errorMessage } from '../../shared/errors';
 import { useEffect, useRef, useState } from "react";
-import type { ImportSource } from "../../shared/desktop";
 import type { ShotCollection, ShotDetails, VideoShot } from "../../shared/shots";
 import { emptyVideoMetadata } from "../../shared/shots";
 import { viewingProfile } from "../../shared/viewing";
-import { durationRow, primaryMetadataRows, quickMediaSummary, sourceFilePath } from "./mediaInfo";
+import { durationRow, primaryMetadataRows, quickMediaSummary } from "./mediaInfo";
 import { ResizableInspector } from "./ResizableInspector";
 import { PreviewPlayer } from "./PreviewPlayer";
 import type { PreviewHandle } from "./PreviewPlayer";
 import { AttributeFields } from "./AttributeFields";
+import { EjectButton } from "./EjectButton";
 import { SkipSelection } from "./SkipSelection";
 
 function bytesLabel(bytes: number) {
@@ -23,6 +23,7 @@ function bytesLabel(bytes: number) {
 
 const emptyShot: VideoShot = {
     id: "",
+    filePath: "",
     sourceId: "",
     filename: "",
     relativePath: "",
@@ -42,7 +43,8 @@ const emptyShot: VideoShot = {
 
 export function ClipInspector({
     shot: selectedShot,
-    source,
+    onEject,
+    ejectBusy,
     width,
     onResize,
     skipped,
@@ -50,7 +52,8 @@ export function ClipInspector({
     onOrganizationUpdated,
 }: {
     shot?: VideoShot;
-    source?: ImportSource;
+    onEject: () => void;
+    ejectBusy: boolean;
     width: number;
     onResize: (width: number) => void;
     skipped: boolean;
@@ -70,7 +73,7 @@ export function ClipInspector({
     const [scrubbing, setScrubbing] = useState(false);
     const [copyStatus, setCopyStatus] = useState<"idle" | "copying" | "copied" | "failed">("idle");
     const preview = useRef<PreviewHandle>(null);
-    const unavailable = !shot.available || !source?.available;
+    const unavailable = !shot.available;
     const pausedForScan = !shot.editable;
     const summary = empty ? "" : quickMediaSummary(shot.metadata);
     const rawMetadata =
@@ -145,7 +148,7 @@ export function ClipInspector({
                     <div className="min-w-0">
                         <h2
                             className="min-h-5 truncate text-sm font-medium"
-                            title={empty ? undefined : sourceFilePath(source?.path, shot.relativePath)}
+                            title={empty ? undefined : shot.filePath ?? shot.relativePath}
                         >
                             {shot.filename}
                         </h2>
@@ -153,14 +156,7 @@ export function ClipInspector({
                             {summary}
                         </p>
                     </div>
-                    <div className="flex shrink-0 items-center gap-4">
-                        {viewingProfile(shot.metadata) && <button type="button" aria-label="Toggle viewing LUT" aria-pressed={lutEnabled}
-                            disabled={empty || unavailable || pausedForScan}
-                            title={lutEnabled ? "LUT on — view in Rec.709" : "LUT off — view original"}
-                            onClick={() => setLutEnabled((enabled) => !enabled)}
-                            className={"flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] font-medium transition duration-75 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40 " + (lutEnabled ? "border-white/15 bg-white/8 text-zinc-200 hover:border-white/25 hover:bg-white/15 hover:text-white" : "border-white/10 bg-black/30 text-zinc-500 hover:bg-white/8")}>
-                            <span aria-hidden="true" className={"size-1.5 rounded-full " + (lutEnabled ? "bg-green-400" : "bg-zinc-600")} />LUT
-                        </button>}
+                    <div className="flex shrink-0 items-center gap-2">
                         <button
                             type="button"
                             onClick={() => void setThumbnail()}
@@ -183,9 +179,10 @@ export function ClipInspector({
                                 <circle cx="8" cy="8" r="1.5" />
                                 <path d="m21 15-5-5L5 21" />
                             </svg>
-                            <span>{thumbnailBusy ? "Saving…" : "Thumbnail"}</span>
+                            <span>{thumbnailBusy ? "Saving…" : "Thumb"}</span>
                         </button>
                         <SkipSelection count={empty ? 0 : 1} skippedCount={skipped ? 1 : 0} disabled={empty || pausedForScan} onChange={onSkipChange} />
+                        <EjectButton count={empty ? 0 : 1} busy={ejectBusy} onClick={onEject} />
                     </div>
                 </header>
                 {thumbnailError && (
@@ -193,7 +190,14 @@ export function ClipInspector({
                         {thumbnailError}
                     </p>
                 )}
-                <div data-inspector-preview className={`shrink-0 overflow-hidden rounded-lg border ${!empty && unavailable ? "border-red-500/30 bg-red-500/8" : "border-white/8 bg-black"}`}>
+                <div data-inspector-preview className={`relative shrink-0 overflow-hidden rounded-lg border ${!empty && unavailable ? "border-red-500/30 bg-red-500/8" : "border-white/8 bg-black"}`}>
+                        {viewingProfile(shot.metadata) && <button type="button" aria-label="Toggle viewing LUT" aria-pressed={lutEnabled}
+                            disabled={empty || unavailable || pausedForScan}
+                            title={lutEnabled ? "LUT on — view in Rec.709" : "LUT off — view original"}
+                            onClick={() => setLutEnabled((enabled) => !enabled)}
+                            className={"absolute left-2 top-2 z-20 flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] font-medium transition duration-75 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40 " + (lutEnabled ? "border-white/15 bg-black/70 text-zinc-200 hover:border-white/25 hover:bg-white/15 hover:text-white" : "border-white/10 bg-black/70 text-zinc-500 hover:bg-white/8")}>
+                            <span aria-hidden="true" className={"size-1.5 rounded-full " + (lutEnabled ? "bg-green-400" : "bg-zinc-600")} />LUT
+                        </button>}
                     {empty ? (
                         <div className="aspect-video" aria-label="No clip selected" />
                     ) : unavailable || pausedForScan ? (
@@ -268,7 +272,7 @@ export function ClipInspector({
                                 { label: "Filename", value: shot.filename, detail: "" },
                                 {
                                     label: "File path",
-                                    value: details?.file.path ?? sourceFilePath(source?.path, shot.relativePath),
+                                    value: details?.file.path ?? shot.filePath ?? shot.relativePath,
                                     detail: "",
                                 },
                                 { label: "Size", value: bytesLabel(details?.file.bytes ?? shot.bytes), detail: "" },

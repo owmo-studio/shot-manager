@@ -16,6 +16,8 @@
     "check:cache": "node scripts/check-cache-files.cjs",
     "check:communication": "node scripts/check-communication.cjs",
     "check:organization": "node scripts/check-organization.cjs",
+    "check:workspace": "node scripts/check-workspace.cjs",
+    "check:eject": "node scripts/check-eject.cjs",
     "check:quit": "npm run build && node scripts/check-quit.cjs",
     "check:ingestion": "node scripts/check-ingestion.cjs",
     "check:proxies": "node scripts/check-proxies.cjs",
