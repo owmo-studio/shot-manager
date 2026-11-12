@@ -18,7 +18,6 @@ import { IngestFooter } from "./IngestFooter";
 import { ShotGrid } from "./ShotGrid";
 import { scrollShotIntoView } from "./scrollShotIntoView";
 import { SourceErrorDialog } from "./SourceErrorDialog";
-import { EjectDialog } from "./EjectDialog";
 import { DirectoryUnavailableDialog } from "./DirectoryUnavailableDialog";
 import "./styles.css";
 
@@ -147,10 +146,8 @@ function App() {
     const [workspaceError, setWorkspaceError] = useState<string | null>(null);
     const refreshFailed = useRef(false);
     const [communicationError, setCommunicationError] = useState(false);
-    const [ejectTargets, setEjectTargets] = useState<VideoShot[] | null>(null);
     const [ejectBusy, setEjectBusy] = useState(false);
     const ejectMutation = useRef(false);
-    const [ejectError, setEjectError] = useState<string | null>(null);
     const [unavailableDirectories, setUnavailableDirectories] = useState<DirectoryAvailability[]>([]);
     const notifiedUnavailable = useRef(new Set<string>());
     const [draggingFolders, setDraggingFolders] = useState(false);
@@ -205,27 +202,26 @@ function App() {
         finally { setAddingClips(false); workspaceMutation.current = false; }
     }
 
-    async function performEject(targets: VideoShot[], confirmed: boolean) {
+    async function requestEject(ids: string[]) {
         if (ejectMutation.current) return;
-        ejectMutation.current = true;
-        setEjectBusy(true); setEjectError(null);
-        try {
-            receiveShots(await window.desktop.ejectClips(targets.map(shot => shot.id), confirmed));
-            setEjectTargets(null);
-        } catch (error) {
-            if (error instanceof AppError && error.code === "EJECT_CONFIRMATION_REQUIRED") setEjectTargets(targets);
-            else if (confirmed) setEjectError(errorMessage(error, "Could not eject the selected clips."));
-            else setWorkspaceError(errorMessage(error, "Could not eject the selected clips."));
-        } finally { setEjectBusy(false); ejectMutation.current = false; }
-    }
-
-    function requestEject(ids: string[]) {
-        if (ejectBusy) return;
         const targets = allUniqueShots.filter(shot => ids.includes(shot.id));
         if (!targets.length) return;
-        if (targets.some(shot => shot.ingestState === "queued" || shot.ingestState === "processing")) {
-            setEjectError(null); setEjectTargets(targets);
-        } else void performEject(targets, false);
+        const cancel = targets.some(shot => shot.ingestState === "queued" || shot.ingestState === "processing");
+        ejectMutation.current = true;
+        setEjectBusy(true);
+        try {
+            const selected = targets.map(shot => shot.id);
+            try {
+                receiveShots(await (cancel ? window.desktop.cancelClips(selected) : window.desktop.ejectClips(selected)));
+            } catch (error) {
+                // A clip queued after the last renderer snapshot gets the safe first-stage action.
+                if (!cancel && error instanceof AppError && error.code === "EJECT_CONFIRMATION_REQUIRED")
+                    receiveShots(await window.desktop.cancelClips(selected));
+                else throw error;
+            }
+        } catch (error) {
+            setWorkspaceError(errorMessage(error, cancel ? "Could not cancel the selected commits." : "Could not eject the selected clips."));
+        } finally { setEjectBusy(false); ejectMutation.current = false; }
     }
 
     function dragEnter(event: DragEvent<HTMLElement>) {
@@ -425,16 +421,14 @@ function App() {
                         onSkipChange={(skipped) => changeSkip(selectedShots.map((shot) => shot.id), skipped)}
                     />}
             </main>
-            {ejectTargets && <EjectDialog shots={ejectTargets} busy={ejectBusy} error={ejectError}
-                onCancel={() => { if (!ejectBusy) setEjectTargets(null); }} onConfirm={() => void performEject(ejectTargets, true)} />}
-            {!ejectTargets && skipError && <SourceErrorDialog title="Skip could not be saved" message={skipError} onDismiss={() => setSkipError(null)} />}
-            {!ejectTargets && !skipError && workspaceError && <SourceErrorDialog title="Workspace error" message={workspaceError} onDismiss={() => setWorkspaceError(null)} />}
-            {!ejectTargets && !skipError && !workspaceError && unavailableDirectories.length > 0 && <DirectoryUnavailableDialog
+            {skipError && <SourceErrorDialog title="Skip could not be saved" message={skipError} onDismiss={() => setSkipError(null)} />}
+            {!skipError && workspaceError && <SourceErrorDialog title="Workspace error" message={workspaceError} onDismiss={() => setWorkspaceError(null)} />}
+            {!skipError && !workspaceError && unavailableDirectories.length > 0 && <DirectoryUnavailableDialog
                 directories={unavailableDirectories} onDismiss={() => setUnavailableDirectories([])}
                 onEject={ids => { setUnavailableDirectories([]); requestEject(ids); }} />}
             <footer className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-5 border-t border-white/8 px-5 py-3 text-xs text-zinc-500">
                 <ApplicationIndicator backend={status} communicationError={communicationError} />
-                <IngestFooter refreshTarget={libraryActions} shots={allUniqueShots} connected={status.state === 'connected'} onRefresh={async () => receiveShots(await window.desktop.getShots())} />
+                <IngestFooter selectedShotIds={selectedShots.map(shot => shot.id)} refreshTarget={libraryActions} shots={allUniqueShots} connected={status.state === 'connected'} onRefresh={async () => receiveShots(await window.desktop.getShots())} />
             </footer>
         </div>
     );

@@ -273,6 +273,10 @@ if (!process.versions.electron) {
             ipcMain.handle("fixture:cache", () => cache);
             ipcMain.handle("fixture:clear-cache", () => (cache = { bytes: 0, files: 0 }));
             const ejectedSelections = [];
+            ipcMain.handle("fixture:cancel", (_, ids) => {
+                collection={...collection,revision:collection.revision+1,shots:collection.shots.map(shot=>ids.includes(shot.id)&&['queued','processing'].includes(shot.ingestState)?{...shot,editable:true,ingestState:undefined}:shot)};
+                return collection;
+            });
             ipcMain.handle("fixture:eject", (_, ids, confirmed) => {
                 const targets=collection.shots.filter(shot=>ids.includes(shot.id));
                 if(targets.some(shot=>['queued','processing'].includes(shot.ingestState))&&!confirmed) throw new Error('Confirmation required');
@@ -291,6 +295,7 @@ if (!process.versions.electron) {
                 getBackendStatus:async()=>({state:'connected',health:{status:'ok'}}),getSources:()=>ipcRenderer.invoke('fixture:sources'),getShots:()=>ipcRenderer.invoke('fixture:shots'),
                 onShotsChanged:listener=>{const fn=(_,value)=>listener(value);ipcRenderer.on('shots:changed',fn);return()=>ipcRenderer.removeListener('shots:changed',fn)},
                 getShotThumbnail:async()=>null,getShotDetails:async()=>({file:{filename:'fixture',path:'/synthetic/fixture',bytes:100},embeddedMetadata:[],errors:[]}),
+                cancelClips:ids=>ipcRenderer.invoke('fixture:cancel',ids),
                 ejectClips:(ids,confirmed=false)=>ipcRenderer.invoke('fixture:eject',ids,confirmed)
             });`,
             );
@@ -782,7 +787,7 @@ if (!process.versions.electron) {
             assert.equal(await js(`document.querySelector('button[aria-label="Inspect Clip 1.mp4"]').disabled`), false);
             assert.equal(await js(`document.querySelectorAll('button[aria-label^="Skip Clip "]').length`), 0);
             assert.ok(
-                await js(`document.querySelector('footer').textContent.includes('4 clips to commit · 2 skipped')`),
+                await js(`document.querySelector('footer').textContent.includes('1 selected clip to commit · 1 skipped')`),
             );
 
             assert.equal(
@@ -1325,17 +1330,26 @@ if (!process.versions.electron) {
                     notes: "",
                     skipped: true,
                 });
-            // Queued cards remain selectable for Eject, while descriptive fields stay locked.
+            // First-stage Cancel leaves cards selected and editable, then offers Eject.
             const readyCards=structuredClone(collection.shots);
             await push(collection.shots.map(shot=>({...shot,editable:false,ingestState:shot.filename==='Clip 4.mp4'?'queued':'processing'})));
             await inspect(4); await inspect(5,{metaKey:true});
-            await click("Eject selected clips");
-            await wait(`!!document.querySelector('#eject-title')`);
-            await js(`Array.from(document.querySelectorAll('dialog button')).find(button=>button.textContent==='Cancel').click()`);
-            assert.equal(collection.shots.length,3,'Cancelling Eject preserves membership');
+            assert.equal(await js(`Array.from(document.querySelectorAll('[aria-pressed="true"].ingest-card-busy')).every(card=>getComputedStyle(card).boxShadow.includes('2px'))`),true,'Queued and active selection has a clear outline');
+            await click("Stop selected clips");
+            await wait(`!!document.querySelector('button[aria-label="Eject selected clips"]')`);
+            assert.equal(collection.shots.length,3,'Cancel preserves workspace membership');
+            assert.deepEqual(await selected(),[4,5],'Cancel preserves selection');
+            assert.ok(collection.shots.filter(shot=>['Clip 4.mp4','Clip 5.mp4'].includes(shot.filename)).every(shot=>shot.editable));
+            await js(`document.querySelector('button[aria-label="Stop Clip 6.mp4"]').click()`);
+            await wait(`!!document.querySelector('button[aria-label="Eject Clip 6.mp4"]')`);
+            assert.equal(collection.shots.length,3,'Card Cancel also preserves membership');
+            await push(collection.shots.map(shot=>shot.filename==='Clip 6.mp4'?{...shot,editable:false,ingestState:'queued'}:shot));
+            await inspect(6,{metaKey:true});
+            await click("Stop selected clip");
+            await wait(`!!document.querySelector('button[aria-label="Eject selected clips"]')`);
+            assert.equal(collection.shots.length,3,'Mixed selection Cancel never ejects already editable clips');
+            assert.deepEqual(await selected(),[4,5,6]);
             await js(`document.querySelector('button[aria-label="Eject Clip 6.mp4"]').click()`);
-            await wait(`!!document.querySelector('#eject-title')`);
-            await click("Confirm eject clips");
             await wait(`document.querySelectorAll('[data-shot-card]').length===2`);
             await push(readyCards);
             collection={...collection,directories:[{path:'/synthetic/B',clipIds:collection.shots.map(shot=>shot.id),available:false,outage:1}]};
@@ -1355,7 +1369,7 @@ if (!process.versions.electron) {
             await wait(`document.querySelectorAll('[data-shot-card]').length===0`);
             assert.equal(ejectedSelections.at(-1).length,3,'Eject affected clips removes exactly the directory members');
             console.log(
-                "PASS: four-arrow navigation, responsive Up/Down rows and partial rows, date/filter/sort boundaries, locked-clip skipping, multi-selection, input guards, editing/skip selections, bulk skip, background deselection, blocked Tab, Escape, per-card/bulk Eject, queued cancellation confirmation, directory outage warnings, and disabled processing.",
+                "PASS: four-arrow navigation, responsive Up/Down rows and partial rows, date/filter/sort boundaries, locked-clip skipping, multi-selection, input guards, editing/skip selections, bulk skip, background deselection, blocked Tab, Escape, per-card/bulk Eject, two-stage Cancel/Eject, directory outage warnings, and disabled processing.",
             );
             window.destroy();
             await rm(root, { recursive: true, force: true });

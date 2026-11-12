@@ -182,7 +182,7 @@ export function ClipInspector({
                             <span>{thumbnailBusy ? "Saving…" : "Thumb"}</span>
                         </button>
                         <SkipSelection count={empty ? 0 : 1} skippedCount={skipped ? 1 : 0} disabled={empty || pausedForScan} onChange={onSkipChange} />
-                        <EjectButton count={empty ? 0 : 1} busy={ejectBusy} onClick={onEject} />
+                        <EjectButton cancel={shot.ingestState === "queued" || shot.ingestState === "processing"} count={empty ? 0 : 1} busy={ejectBusy} onClick={onEject} />
                     </div>
                 </header>
                 {thumbnailError && (

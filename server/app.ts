@@ -53,6 +53,9 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     try { return await ingestion.eject(request.body.shotIds, request.body.cancelQueued) }
     catch (error) { throw Object.assign(error as Error, { statusCode: (error as { status?: number }).status ?? 409 }) }
   })
+  server.post<{ Body: { shotIds: string[] } }>('/api/workspace/cancel', {
+    schema: { body: { type: 'object', required: ['shotIds'], additionalProperties: false, properties: { shotIds: ids } } }
+  }, async request => ingestion.cancel(request.body.shotIds))
   // Only Electron main calls this after Cache clearing, using paths from the previous backend snapshot.
   const restorePath = { type: 'string', pattern: '^/', maxLength: 32768 }
   const restoreFiles = { type: 'array', maxItems: 10000, items: restorePath }

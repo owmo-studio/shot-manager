@@ -10,6 +10,7 @@ export function MultiClipInspector({ shots, onEject, ejectBusy, skippedCount, di
     onOrganizationUpdated: (collection: ShotCollection) => void;
 }) {
     const count = shots.length;
+    const cancelCount = shots.filter(shot => shot.ingestState === "queued" || shot.ingestState === "processing").length;
     return <ResizableInspector width={width} onResize={onResize}>
         <div className="multi-clip-inspector flex h-full min-h-0 flex-col">
         <header className="mb-4 flex items-start justify-between gap-3">
@@ -17,7 +18,7 @@ export function MultiClipInspector({ shots, onEject, ejectBusy, skippedCount, di
                 <p className="mt-1 text-xs text-zinc-500">Shared tags are filled · Partial tags show a count</p></div>
             <div className="flex shrink-0 items-center gap-2">
                 <SkipSelection count={count} skippedCount={skippedCount} disabled={disabled} onChange={onSkipChange} />
-                <EjectButton count={count} busy={ejectBusy} onClick={onEject} />
+                <EjectButton cancel={cancelCount > 0} count={cancelCount || count} busy={ejectBusy} onClick={onEject} />
             </div>
         </header>
         <ul aria-label="Selected clips" className="mb-4 max-h-40 overflow-y-auto rounded-lg border border-white/8 bg-black/10 py-1 text-xs text-zinc-400 divide-y divide-white/5">

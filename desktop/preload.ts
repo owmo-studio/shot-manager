@@ -45,6 +45,7 @@ const desktop: DesktopBridge = {
   chooseSource: () => invoke('sources:choose'),
   addDroppedSource: (file) => invoke('sources:drop', webUtils.getPathForFile(file)),
   getShots: () => invoke('shots:list'),
+  cancelClips: shotIds => invoke('workspace:cancel', shotIds),
   ejectClips: (shotIds, cancelQueued = false) => invoke('workspace:eject', shotIds, cancelQueued),
   onShotsChanged: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, collection: Parameters<typeof listener>[0]) => listener(collection)

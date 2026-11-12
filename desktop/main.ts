@@ -188,6 +188,14 @@ if (!app.requestSingleInstanceLock()) {
       if (!Array.isArray(value) || !value.length || value.length > 1000 || value.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id))) throw new Error('Invalid commit selection')
       return [...new Set(value)]
     }
+    handle('workspace:cancel', async (event, value: unknown) => {
+      requireMainWindow(event)
+      const shotIds = validateIngestIds(value)
+      await flushDrafts()
+      return organizationWrites.run(() => backendRequest('/api/workspace/cancel', {
+        method: 'POST', body: JSON.stringify({ shotIds })
+      }))
+    })
     handle('workspace:eject', async (event, value: unknown, cancelQueued: unknown) => {
       requireMainWindow(event)
       const shotIds = validateIngestIds(value)

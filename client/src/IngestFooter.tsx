@@ -171,11 +171,13 @@ function ReviewDialog({
 
 export function IngestFooter({
     shots,
+    selectedShotIds,
     connected,
     onRefresh,
     refreshTarget,
 }: {
     shots: VideoShot[];
+    selectedShotIds: string[];
     connected: boolean;
     onRefresh: () => Promise<void>;
     refreshTarget: HTMLDivElement | null;
@@ -216,8 +218,10 @@ export function IngestFooter({
         };
     }, [connected]);
 
-    const skipped = shots.filter((shot) => shot.organization?.skipped).length;
-    const candidates = shots.filter(
+    const selected = selectedShotIds.length > 0;
+    const scope = selected ? shots.filter(shot => selectedShotIds.includes(shot.id)) : shots;
+    const skipped = scope.filter((shot) => shot.organization?.skipped).length;
+    const candidates = scope.filter(
         (shot) => !shot.organization?.skipped && !["synced", "queued", "processing"].includes(shot.ingestState ?? ""),
     );
     const blocked = candidates.filter(
@@ -253,7 +257,10 @@ export function IngestFooter({
             const next = await window.desktop.getIngestStatus().catch(() => null);
             if (next) {
                 receiveStatus(next);
-                if (next.active) setReview(null);
+                // Existing transfers do not establish whether this appended submission succeeded.
+                const collection = await window.desktop.getShots().catch(() => null);
+                if (collection && ids.every(id => collection.shots.some(shot => shot.id === id &&
+                    ["queued", "processing", "synced"].includes(shot.ingestState ?? "")))) setReview(null);
             }
         } finally {
             setBusy(false);
@@ -381,12 +388,10 @@ export function IngestFooter({
                 />
             </div>
             <div className="col-start-3 row-start-1 flex min-w-0 flex-wrap items-center justify-end gap-x-4 gap-y-2">
-                {!status.active && (
-                    <span role="status">
-                        {candidates.length} {candidates.length === 1 ? "clip" : "clips"} to commit · {skipped} skipped
-                        {blocked ? ` · ${blocked} not ready` : ""}
-                    </span>
-                )}
+                <span role="status">
+                    {candidates.length} {selected ? "selected " : ""}{candidates.length === 1 ? "clip" : "clips"} to commit · {skipped} skipped
+                    {blocked ? ` · ${blocked} not ready` : ""}
+                </span>
                 <div className="flex shrink-0 items-center gap-3">
                     <button
                         onClick={() => void openReview()}
@@ -394,7 +399,6 @@ export function IngestFooter({
                             !connected ||
                             busy ||
                             refreshing ||
-                            status.active ||
                             !status.libraryPath ||
                             status.libraryScan?.state === "checking" ||
                             !candidates.length ||
@@ -405,7 +409,9 @@ export function IngestFooter({
                                 ? "Set a Library location in Configuration"
                                 : blocked
                                   ? "Each clip needs an available source and a ready thumbnail"
-                                  : undefined
+                                  : selected && !candidates.length
+                                    ? "No selected clips need committing"
+                                    : selected ? "Commit eligible selected clips" : "Commit all eligible clips"
                         }
                         className={primaryButton}
                     >

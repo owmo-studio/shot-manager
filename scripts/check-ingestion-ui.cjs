@@ -273,6 +273,28 @@ if (!process.versions.electron) {
                 "Clips did not become eligible",
             );
             assert.equal(await js(`!!document.querySelector('ul[aria-label="Import sources"]') || Array.from(document.querySelectorAll('aside h2')).some(item=>['Sources','Devices'].includes(item.textContent))`), false, 'Source list and Devices heading are removed');
+            const cardIds = await js(`Array.from(document.querySelectorAll('button[aria-label^="Inspect "]')).map(button=>button.id)`);
+            const selectCard = (index, additive = false) => js(`document.getElementById(${JSON.stringify(cardIds[index])}).dispatchEvent(new MouseEvent('click',{bubbles:true,metaKey:${additive}}))`);
+            const commitDisabled = () => js(`Array.from(document.querySelectorAll('footer button')).find(button=>button.textContent==='Commit').disabled`);
+            await selectCard(0);
+            await until(() => js(`document.querySelector('footer').textContent.includes('1 selected clip to commit')`), 'Footer identifies selected Commit scope');
+            await click('Commit');
+            await until(() => js(`document.querySelectorAll('dialog [data-review-included]').length===1`), 'Only selected clip enters review');
+            await click('Cancel');
+            await js(`document.querySelector('input[aria-label="Skip selected clips"]').click()`);
+            await until(commitDisabled, 'Skipped-only selection disables Commit without falling back');
+            await selectCard(1, true);
+            await until(() => js(`document.querySelector('footer').textContent.includes('1 selected clip to commit')`), 'Mixed selection excludes skipped clip');
+            await click('Commit');
+            await until(() => js(`document.querySelectorAll('dialog [data-review-included]').length===1`), 'Skipped selected clip excluded from review');
+            await click('Cancel');
+            await js(`document.querySelector('input[aria-label="Skip selected clips"]').click()`);
+            await until(() => js(`document.querySelector('footer').textContent.includes('2 selected clips to commit')`), 'Unskipping restores selected eligibility');
+            await click('Commit');
+            await until(() => js(`document.querySelectorAll('dialog [data-review-included]').length===2`), 'Bulk selection reviews eligible selected clips');
+            await click('Cancel');
+            await selectCard(0); await selectCard(0);
+            await until(() => js(`document.querySelector('footer').textContent.includes('2 clips to commit')&&!document.querySelector('footer').textContent.includes('selected clips to commit')`), 'No selection restores all-workspace Commit scope');
             const idleReads = ingestReads;
             await new Promise((resolve) => setTimeout(resolve, 1200));
             assert.equal(ingestReads, idleReads, "Idle footer does not poll ingestion status");
@@ -320,6 +342,12 @@ if (!process.versions.electron) {
             let ingested = await js(
                 `window.desktop.getShots().then(collection=>collection.shots.find(shot=>shot.ingestState==='synced'))`,
             );
+            await js(`document.querySelector('[data-shot-status="synced"]').click()`);
+            await until(commitDisabled, 'Synced-only selection cannot Commit unrelated eligible clips');
+            assert.ok(await js(`document.querySelector('footer').textContent.includes('0 selected clips to commit')`));
+            await js(`document.querySelector('[data-shot-status="synced"]').click()`);
+            const retained = await js(`window.desktop.cancelClips([${JSON.stringify(ingested.id)}])`);
+            assert.ok(retained.shots.some(shot=>shot.id===ingested.id&&shot.ingestState==='synced'), 'Cancel IPC leaves completed clips and receipts in the workspace');
             await window.loadFile(join(__dirname, "../out/renderer/index.html"));
             await until(
                 () => js(`!!document.querySelector('[data-shot-status="synced"]')`),
@@ -481,6 +509,8 @@ if (!process.versions.electron) {
                     ),
                 "Existing clip without receipt was displayed as New",
             );
+            await js(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
+            await until(() => js(`!document.querySelector('[data-shot-card] > button[aria-pressed="true"]')`), 'Clear selection before all-workspace review');
             await click("Commit");
             await until(
                 () => js(`document.querySelectorAll('dialog button[aria-label^="Remove "]').length===2`),
@@ -555,7 +585,7 @@ if (!process.versions.electron) {
             backend.emit("message", { type: "shots:changed", change: { revision: shotsOverride.revision, vocabularyRevision: shotsOverride.revision } });
             await until(() => js(`!!document.querySelector('[data-proxy-location="cache"]')`), "Local proxy indicator missing");
             assert.equal(await js(`document.querySelector('[data-proxy-location="cache"]').classList.contains('bg-yellow-400')`), true, "Local proxy is yellow");
-            assert.equal(await js(`document.querySelector('[data-shot-status="processing"] [data-proxy-state]')`), null, "Missing proxy has no placeholder");
+            assert.equal(await js(`document.querySelector('[data-shot-status="processing"] [data-proxy-state]').classList.contains('border-white/65')`), true, "Unknown proxy displays an empty white circle");
             const currentStatus = await js("window.desktop.getIngestStatus()");
             statusOverride = {
                 revision: currentStatus.revision + 1000,
@@ -582,6 +612,17 @@ if (!process.versions.electron) {
                 48,
                 "Footer shows combined proxy and transfer progress",
             );
+            const originalQueuedShots = shotsOverride.shots;
+            shotsOverride = { ...shotsOverride, revision: shotsOverride.revision + 1, shots: [...originalQueuedShots, {
+                ...cardCollection.shots[0], id: 'f'.repeat(64), filename: 'Append candidate.mp4',
+                editable: true, available: true, hasThumbnail: true, thumbnailStatus: 'ready', ingestState: undefined,
+                organization: { ...cardCollection.shots[0].organization, skipped: false },
+            }] };
+            backend.emit("message", { type: "shots:changed", change: { revision: shotsOverride.revision, vocabularyRevision: shotsOverride.revision } });
+            await until(() => js(`Array.from(document.querySelectorAll('footer button')).some(button=>button.textContent==='Commit'&&!button.disabled)`), 'Commit stays enabled for new candidates during an active transfer');
+            shotsOverride = { ...shotsOverride, revision: shotsOverride.revision + 1, shots: originalQueuedShots };
+            backend.emit("message", { type: "shots:changed", change: { revision: shotsOverride.revision, vocabularyRevision: shotsOverride.revision } });
+            await until(() => js(`Array.from(document.querySelectorAll('footer button')).some(button=>button.textContent==='Commit'&&button.disabled)`), 'Commit disables when only queued clips remain');
             const activeReads = ingestReads;
             backend.emit("message", {
                 type: "ingestion:changed",

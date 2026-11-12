@@ -72,14 +72,21 @@ function gate(signal) {
         await until(() => byName()['d.mp4']?.thumbnailStatus === 'ready', 'discovery during Commit');
         const d = byName()['d.mp4'];
         assert.equal(d.editable, true, 'New unsubmitted clips remain editable');
+        await fs.writeFile(join(library, `${d.id}.proxy.mov`), 'existing synthetic Library proxy');
+        const append = await queue.preview([d.id]); await queue.submit(append.token, [d.id]);
+        assert.equal((await queue.status()).current.id, a.id, 'Append does not reset the active transfer');
+        await queue.cancel([a.id]);
+        assert.ok(byName()['a.mp4']?.editable, 'Cancel active transfer unlocks and retains the clip');
+        assert.equal(byName()['a.mp4'].organization.notes, 'Retained draft');
+        await queue.eject([a.id]);
+        await until(() => byName()['d.mp4']?.ingestState === 'synced', 'ready appended clip bypasses encoding dependency');
         await queue.eject([d.id]);
-        await queue.eject([a.id], true);
         assert.equal(scanner.snapshot().shots.some(shot => shot.id === a.id), false);
         assert.equal(proxies.status().paused, false, 'Eject does not pause the background worker globally');
         assert.equal(scanner.snapshot().shots.find(shot => shot.id === c.id).proxyState, 'encoding', 'Other encoding continues');
         holds.get('c.mp4').release(); holdName = '';
         await until(async () => !(await queue.status()).active, 'remaining Commit completes');
-        assert.equal((await queue.status()).completed, 1);
+        assert.equal((await queue.status()).completed, 2);
         assert.deepEqual((await queue.status()).errors, []);
         assert.ok(await fs.stat(join(library, `${c.id}.metadata.json`)), 'Unrelated Library work completes');
         assert.equal(await fs.stat(join(library, `${a.id}.metadata.json`)).catch(() => null), null);
@@ -118,9 +125,11 @@ function gate(signal) {
         scanner.markIngested = async (...args) => { publicationHeld = true; await publication; return mark(...args); };
         const race = await queue.preview([a.id]); await queue.submit(race.token, [a.id]);
         await until(() => publicationHeld, 'publication boundary');
-        let ejected = false; const ejecting = queue.eject([a.id], true).then(() => { ejected = true; });
-        await sleep(30); assert.equal(ejected, false, 'Eject waits for completion bookkeeping');
+        let ejected = false; const ejecting = queue.cancel([a.id]).then(() => { ejected = true; });
+        await sleep(30); assert.equal(ejected, false, 'Cancel waits for completion bookkeeping');
         releasePublication(); await ejecting;
+        assert.equal(byName()['a.mp4']?.ingestState, 'synced', 'Cancellation retains success when publication won the race');
+        await queue.eject([a.id]);
         assert.ok(await scanner.organization.ingestion(a.fingerprint));
         assert.ok(await fs.stat(join(library, `${a.id}.metadata.json`)));
         assert.equal(scanner.snapshot().shots.some(shot => shot.id === a.id), false);
@@ -179,9 +188,10 @@ function gate(signal) {
         } finally { releaseLate?.(); await thumbnailQueue.close(); await thumbnails.close(); }
         const server = createServer('fixture-token');
         try {
-            const route = '/api/workspace/eject';
+            for (const route of ['/api/workspace/eject', '/api/workspace/cancel']) {
             assert.equal((await server.inject({ method: 'POST', url: route, payload: { shotIds: [a.id] } })).statusCode, 401);
             assert.equal((await server.inject({ method: 'POST', url: route, headers: { authorization: 'Bearer fixture-token' }, payload: { shotIds: ['../../arbitrary-file'] } })).statusCode, 400);
+            }
         } finally { await server.close(); }
         console.log('PASS: queued/active Eject confirmation and isolated cancellation, discovery during Commit, independent proxy work, synced asset/cache/draft preservation, directory outage/recovery, publication races, exact workspace restoration, and authenticated identifier validation.');
     } finally {

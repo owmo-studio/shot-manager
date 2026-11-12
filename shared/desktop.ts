@@ -98,6 +98,7 @@ export interface DesktopAPI {
   chooseSource: () => Promise<ImportSource | null>
   addDroppedSource: (file: File) => Promise<ImportSource>
   getShots: () => Promise<ShotCollection>
+  cancelClips: (shotIds: string[]) => Promise<ShotCollection>
   ejectClips: (shotIds: string[], cancelQueued?: boolean) => Promise<ShotCollection>
   onShotsChanged: (listener: (change: ShotChange) => void) => () => void
   getShotThumbnail: (id: string) => Promise<string | null>

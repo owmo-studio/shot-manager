@@ -58,6 +58,12 @@ body {
   filter: grayscale(80%);
 }
 
+/* Active work needs gentle contrast while preserving the thumbnail’s color. */
+[data-shot-preview][data-shot-working="true"] {
+  opacity: 1;
+  filter: brightness(0.8);
+}
+
 .ingest-card-busy [data-shot-filename] {
   color: #a1a1aa;
 }
@@ -98,6 +104,11 @@ body {
 
 .ingest-card-queued {
   box-shadow: none;
+}
+
+/* Busy card styles override the utility ring, so restore a clear selected outline. */
+.ingest-card-busy[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px rgb(228 228 231 / 95%);
 }
 
 /* Keep editing selection visible in the card's status color. */
@@ -216,4 +227,8 @@ textarea,
 .ingest-progress::-webkit-progress-value {
   border-radius: 999px;
   background: linear-gradient(90deg, #10b981, #34d399);
+}
+
+.shot-card-action:enabled:hover svg {
+  fill: currentColor;
 }

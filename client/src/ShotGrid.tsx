@@ -1,4 +1,4 @@
-import { EjectIcon } from "./EjectButton";
+import { StopIcon, EjectIcon } from "./EjectButton";
 import type { MouseEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import type { ShotCollection, VideoShot } from "../../shared/shots";
@@ -23,6 +23,8 @@ function ShotCard({
     const [thumbnail, setThumbnail] = useState<string | null>(null);
     const [failedImage, setFailedImage] = useState(false);
     const card = useRef<HTMLButtonElement>(null);
+    const cancelCommit = shot.ingestState === "queued" || shot.ingestState === "processing";
+    const ActionIcon = cancelCommit ? StopIcon : EjectIcon;
     const unavailable = !shot.available;
     const inactive = !unavailable && !shot.editable;
     const cardStyle = unavailable
@@ -147,16 +149,16 @@ function ShotCard({
             >
                 <span
                     data-shot-thumbnail
-                    className={`relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg border transition-opacity duration-150 ${unavailable ? "border-red-500/30 bg-red-500/5" : skipped ? "border-white/5 bg-black" : "border-white/8 bg-white/4"}`}
+                    className={`relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg ring-1 ring-inset transition-opacity duration-150 ${unavailable ? "ring-red-500/30 bg-red-500/5" : skipped ? "ring-white/5 bg-black" : "ring-white/8 bg-white/4"}`}
                 >
-                    {(proxyEncoding || shot.proxyState === "queued" || proxyLocal || proxyLibrary) && (
+                    {!skipped && (
                         <span
                             data-proxy-state={shot.proxyState}
                             data-proxy-location={shot.proxyLocation}
                             role="img"
                             aria-label={proxyLabel}
                             title={proxyLabel}
-                            className={`absolute left-2 top-2 z-10 size-2.5 rounded-full ${proxyLibrary ? "bg-emerald-400" : proxyLocal ? "bg-yellow-400" : "border border-white/65"}`}
+                            className={`absolute left-1.5 top-1.5 z-10 size-2.5 rounded-full ${proxyLibrary ? "bg-emerald-400" : proxyLocal ? "bg-yellow-400" : "border border-white/65"}`}
                         />
                     )}
                     {(transferring || proxyEncoding) && (
@@ -168,16 +170,17 @@ function ShotCard({
                             title={transferring ? activity : proxyLabel}
                             className="pointer-events-none absolute inset-0 z-10 grid place-items-center"
                         >
-                            <span className={`grid size-12 place-items-center rounded-full ${transferring ? "bg-black/65" : ""}`}>
+                            <span className="grid size-12 place-items-center rounded-full">
                                 <span
                                     aria-hidden="true"
-                                    className={`size-8 rounded-full border-[3px] motion-safe:animate-spin ${transferring ? "border-white/25 border-t-white" : "border-yellow-300/25 border-t-yellow-300"}`}
+                                    className={`size-8 rounded-full border-[6px] motion-safe:animate-spin ${transferring ? "border-emerald-300/25 border-t-emerald-300" : "border-yellow-300/25 border-t-yellow-300"}`}
                                 />
                             </span>
                         </span>
                     )}
                     <span
                         data-shot-preview
+                        data-shot-working={!skipped && (transferring || proxyEncoding) ? "true" : undefined}
                         aria-hidden="true"
                         className={`absolute inset-0 ${skipped ? "opacity-15" : ""}`}
                     >
@@ -248,9 +251,9 @@ function ShotCard({
                 )}
             </button>
             <button type="button" onClick={event => { event.stopPropagation(); onEject(); }} disabled={ejectBusy}
-                aria-label={`Eject ${shot.filename}`} title="Eject from workspace"
-                className="absolute top-2 right-2 z-20 grid size-7 place-items-center rounded-md bg-black/70 text-zinc-300 opacity-0 transition group-hover/shot:opacity-100 hover:text-white focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
-                <EjectIcon />
+                aria-label={`${cancelCommit ? "Stop" : "Eject"} ${shot.filename}`} title={cancelCommit ? "Stop commit; keep in workspace" : "Eject from workspace"}
+                className="shot-card-action absolute top-2 right-2 z-20 grid size-7 place-items-center rounded-md bg-black/70 text-zinc-300 opacity-0 transition group-hover/shot:opacity-100 hover:text-white focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
+                <ActionIcon />
             </button>
         </div>
     );
