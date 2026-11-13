@@ -4,10 +4,11 @@ import { open, realpath, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { DiscoveryRequest } from "../shared/shots";
 import type { IngestionReceipt, IngestState, ProxyState } from "../shared/ingestion";
-import { ingestAttributes } from "../shared/ingestion";
+import { ingestionSignature } from './processingState';
+export { ingestionSignature } from './processingState';
 import type { ClipAttributes, OrganizationAction, TagVocabulary } from "../shared/organization";
 import { organizationKey } from "../shared/organization";
-import type { ShotChange, ShotCollection, ShotDetails, DiscoveryScan, VideoShot } from "../shared/shots";
+import type { ShotChange, ShotCollection, ShotDetails, DiscoveryScan, VideoShot, VideoMetadata } from "../shared/shots";
 import type { WorkspaceRestore } from "../shared/shots";
 import type { DiscoveredShot } from "./discovery";
 import { discoverShots } from "./discovery";
@@ -149,6 +150,72 @@ export class ShotScanner {
         this.publish();
     }
 
+    commitLock(id: string) { return this.ingestLocks.get(id); }
+
+    lockLibraryCommit(ids: string[]) {
+        if (this.clearingCache || ids.some(id => this.ingestLocks.has(id) || this.ejecting.has(id) || this.updatingThumbnails.has(id))) throw new Error('Selected clips are locked.');
+        ids.forEach(id => this.ingestLocks.set(id, 'queued'));
+        this.publish();
+    }
+
+    canEditLibrary(ids: string[]) {
+        return !this.closed && !this.clearingCache && ids.every(id => !this.ingestLocks.has(id) && !this.ejecting.has(id) && !this.updatingThumbnails.has(id));
+    }
+
+    cachedThumbnail(id: string, metadata: VideoMetadata) { return this.thumbnailQueue?.customByFingerprint(id, metadata) ?? Promise.resolve(null); }
+
+    async replaceCachedThumbnails<T>(entries: { id: string; metadata: VideoMetadata; bytes: Buffer }[], save: (valid: () => boolean) => Promise<T>, current: () => boolean = () => true) {
+        const ids = entries.map(entry => entry.id);
+        if (!this.thumbnailQueue || !this.canEditLibrary(ids)) throw new Error('Selected clips are locked or thumbnail Cache is unavailable.');
+        const clips = new Map(ids.map(id => [id, this.clips.get(id)]));
+        ids.forEach(id => this.updatingThumbnails.add(id));
+        const valid = () => !this.closed && !this.clearingCache && current() && ids.every(id => !this.ingestLocks.has(id) && !this.ejecting.has(id) && this.clips.get(id) === clips.get(id));
+        let batch: Awaited<ReturnType<ThumbnailQueue['stageRevertImages']>> | undefined;
+        try {
+            batch = await this.thumbnailQueue.stageRevertImages(entries);
+            await batch.commit(valid);
+            const result = await save(valid);
+            for (const entry of entries) {
+                const clip = this.clips.get(entry.id);
+                if (!clip) continue;
+                Object.assign(clip.result.shot, { hasThumbnail: true, hasCustomThumbnail: true, thumbnailStatus: 'ready',
+                    thumbnailDigest: createHash('sha256').update(entry.bytes).digest('hex'), thumbnailRevision: (clip.result.shot.thumbnailRevision ?? 0) + 1 });
+                this.prepared.add(entry.id);
+            }
+            const completed = batch; batch = undefined; await completed.finish();
+            this.publish(); return result;
+        } catch (error) { await batch?.rollback(); throw error; }
+        finally {
+            ids.forEach(id => this.updatingThumbnails.delete(id));
+            for (const id of ids) {
+                const clip = this.clips.get(id);
+                if (clip) { if (clip.result.shot.thumbnailStatus === 'pending') clip.result.shot.thumbnailStatus = undefined; this.queueThumbnail(clip); }
+            }
+        }
+    }
+
+    async reloadOrganizations() {
+        const clips = [...this.clips.values()].filter(clip => clip.result.shot.fingerprint);
+        const drafts = await this.organization.draftsFor(clips.map(clip => clip.result.shot.fingerprint!));
+        let changed = false;
+        for (const clip of clips) {
+            if (this.clips.get(clip.result.shot.id) !== clip || this.ingestLocks.has(clip.result.shot.id)) continue;
+            const record = drafts[organizationKey(clip.result.shot.fingerprint!)];
+            if (record && (JSON.stringify(record.data) !== JSON.stringify(clip.result.shot.organization) || JSON.stringify(record.ingestion) !== JSON.stringify(clip.result.shot.ingestion))) {
+                clip.result.shot.organization = record.data; clip.result.shot.ingestion = record.ingestion; changed = true;
+            }
+        }
+        if (changed) this.publish();
+    }
+
+    retireCommitted(id: string) {
+        this.ejectedAt.set(id, this.scanToken);
+        this.dropClip(id);
+        const used = new Set([...this.clips.values()].map(clip => dirname(clip.result.original)));
+        for (const path of this.directoryStates.keys()) if (!used.has(path)) this.directoryStates.delete(path);
+        this.publish();
+    }
+
     processingIngest(id: string) {
         this.ingestLocks.set(id, "processing");
         this.publish();
@@ -271,6 +338,7 @@ export class ShotScanner {
         this.clearingCache = true;
         try {
             await this.thumbnailQueue?.clearCache();
+            await this.organization.clearThumbnailDrafts();
             return await this.cacheSummary();
         } finally {
             for (const { result: { shot } } of this.clips.values()) {
@@ -815,45 +883,15 @@ export class ShotScanner {
     }
 
     async setThumbnail(id: string, dataUrl: string) {
-        if (this.clearingCache) throw Object.assign(new Error("Cache clearing is in progress."), { statusCode: 409 });
-        if (this.updatingThumbnails.has(id))
-            throw Object.assign(new Error("Thumbnail update is already in progress."), { statusCode: 409 });
-        this.updatingThumbnails.add(id);
-        try {
-            if (this.ingestLocks.has(id) || this.ejecting.has(id)) throw new Error("Clip is queued for a Library commit or being ejected.");
-            const asset = await this.videoPath(id);
-            if (!this.thumbnailQueue) throw new Error("Thumbnail cache is unavailable.");
-            const valid = async () => {
-                try {
-                    const current = await this.videoPath(id);
-                    return (
-                        !this.ingestLocks.has(id) && !this.ejecting.has(id) &&
-                        current.clip === asset.clip &&
-                        current.path === asset.path
-                    );
-                } catch {
-                    return false;
-                }
-            };
-            await this.thumbnailQueue.setCustomImage(
-                asset.path,
-                asset.clip.previewIdentity,
-                dataUrl,
-                valid,
-                asset.result.shot.metadata,
-            );
-            if (!(await valid())) throw new Error("Source changed while updating the thumbnail.");
-            asset.result.shot.thumbnailDigest = createHash("sha256")
-                .update(Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64"))
-                .digest("hex");
-            asset.result.shot.hasCustomThumbnail = true;
-            asset.result.shot.hasThumbnail = true;
-            asset.result.shot.thumbnailStatus = "ready";
-            asset.result.shot.thumbnailRevision = (asset.result.shot.thumbnailRevision ?? 0) + 1;
-            this.publish();
-        } finally {
-            this.updatingThumbnails.delete(id);
-        }
+        if (!dataUrl.startsWith('data:image/jpeg;base64,')) throw new Error('Invalid thumbnail.');
+        if (!this.canEditLibrary([id])) throw new Error('Clip is queued for a Library commit or being ejected.');
+        const asset = await this.videoPath(id);
+        const bytes = Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64');
+        await this.replaceCachedThumbnails([{ id, metadata: asset.result.shot.metadata, bytes }], async valid => {
+            if (!await this.fileMatches(asset.result) || !valid()) throw new Error('Source changed while updating the thumbnail.');
+            const digest = createHash('sha256').update(bytes).digest('hex');
+            await this.organization.setThumbnailDraft(asset.result.shot.fingerprint!, { digest, revision: Date.now() }, valid);
+        });
     }
 
     async close() {
@@ -872,13 +910,4 @@ export class ShotScanner {
             .prune()
             .catch((error) => console.warn("Draft retention cleanup failed; saved drafts preserved.", error));
     }
-}
-
-export function ingestionSignature(
-    attributes: import("../shared/organization").ClipAttributes,
-    thumbnailDigest: string,
-) {
-    return createHash("sha256")
-        .update(JSON.stringify([ingestAttributes(attributes), thumbnailDigest]))
-        .digest("hex");
 }

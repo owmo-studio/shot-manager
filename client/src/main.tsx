@@ -1,3 +1,5 @@
+import { ClipViewProvider } from "./ClipViewContext";
+import type { LibraryCollection } from "../../shared/library";
 import { hasPendingCommit } from "./clipState";
 import { AppError, errorMessage } from '../../shared/errors';
 import type { DragEvent } from "react";
@@ -26,25 +28,37 @@ import "./styles.css";
 function App() {
     const [status, setStatus] = useState<BackendStatus>({ state: "starting", message: "Starting backend…" });
     const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
-    const [selectedDevices, setSelectedDevices] = useState<string[]>([]);
+    const [tab, setTab] = useState<'import' | 'library'>('import');
+    const [filters, setFilters] = useState<Record<'import' | 'library', string[]>>({ import: [], library: [] });
+    const selectedDevices = filters[tab];
+    const setSelectedDevices = (change: string[] | ((previous: string[]) => string[])) => setFilters(current => ({
+        ...current, [tab]: typeof change === 'function' ? change(current[tab]) : change,
+    }));
     const newestFirst = true;
     const [libraryActions, setLibraryActions] = useState<HTMLDivElement | null>(null);
     const [inspectorWidth, setInspectorWidth] = useState(MIN_INSPECTOR_WIDTH);
-    const [shotCollection, setShotCollection] = useState<ShotCollection>({ revision: 0, shots: [], scans: [] });
+    const [importCollection, setShotCollection] = useState<ShotCollection>({ revision: 0, shots: [], scans: [] });
+    const [libraryCollection, setLibraryCollection] = useState<LibraryCollection>({ revision: 0, shots: [], scans: [], libraryPath: null, refreshing: false, warnings: [] });
+    const latestLibraryRevision = useRef(-1);
+    const shotCollection = tab === 'import' ? importCollection : libraryCollection;
     const latestShotRevision = useRef(-1);
     const deviceCounts = new Map<string, number>();
     for (const shot of shotCollection.shots) {
-        const device = deviceLabel(shot.metadata.device) ?? "Video";
+        const device = deviceLabel(shot.metadata.device, true) ?? "Unknown";
         deviceCounts.set(device, (deviceCounts.get(device) ?? 0) + 1);
     }
     const devices = [...deviceCounts].sort(([first], [second]) => first.localeCompare(second));
     const deviceKeys = JSON.stringify(devices.map(([name]) => name));
     const activeDevices = selectedDevices.filter((name) => deviceCounts.has(name));
-    const visibleCollection = activeDevices.length ? {
-        ...shotCollection,
-        shots: shotCollection.shots.filter((shot) => activeDevices.includes(deviceLabel(shot.metadata.device) ?? "Video")),
-    } : shotCollection;
-    const selection = useShotSelection(shotCollection.shots, visibleCollection.shots);
+    const filtered = (collection: ShotCollection, devices: string[]) => devices.length ? {
+        ...collection, shots: collection.shots.filter(shot => devices.includes(deviceLabel(shot.metadata.device, true) ?? "Unknown")),
+    } : collection;
+    const importVisible = filtered(importCollection, filters.import);
+    const libraryVisible = filtered(libraryCollection, filters.library);
+    const visibleCollection = tab === 'import' ? importVisible : libraryVisible;
+    const importSelection = useShotSelection(importCollection.shots, importVisible.shots);
+    const librarySelection = useShotSelection(libraryCollection.shots, libraryVisible.shots);
+    const selection = tab === 'import' ? importSelection : librarySelection;
     const selectedIds = new Set(selection.editingIds);
     const selectedShots = visibleCollection.shots.filter((shot) => selectedIds.has(shot.id));
     const inspectedShot = selectedShots.length === 1 ? selectedShots[0] : undefined;
@@ -139,7 +153,7 @@ function App() {
         const available = new Set<string>(JSON.parse(deviceKeys));
         setSelectedDevices((current) => current.some((name) => !available.has(name))
             ? current.filter((name) => available.has(name)) : current);
-    }, [deviceKeys]);
+    }, [deviceKeys, tab]);
 
     const [addingClips, setAddingClips] = useState(false);
     const [workspaceError, setWorkspaceError] = useState<string | null>(null);
@@ -156,7 +170,7 @@ function App() {
     const dragDepth = useRef(0);
     const workspaceMutation = useRef(false);
     const workspaceStatus = applicationStatus(status, communicationError);
-    const canAddClips = workspaceLoaded && !addingClips && !ejectBusy && status.state === "connected"
+    const canAddClips = tab === "import" && workspaceLoaded && !addingClips && !ejectBusy && status.state === "connected"
         && !!status.application && workspaceStatus.level !== "error";
 
     function receiveShots(collection: ShotCollection) {
@@ -165,6 +179,26 @@ function App() {
         setShotCollection(collection);
     }
 
+    function receiveLibrary(collection: ShotCollection) {
+        if (collection.revision < latestLibraryRevision.current) return;
+        latestLibraryRevision.current = collection.revision;
+        setLibraryCollection(collection as LibraryCollection);
+    }
+    const receiveView = tab === 'library' ? receiveLibrary : receiveShots;
+
+    useEffect(() => {
+        if (tab !== 'library' || status.state !== 'connected' || !window.desktop.getLibrary) return;
+        let disposed = false;
+        const receive = (collection: ShotCollection) => { if (!disposed) receiveLibrary(collection); };
+        const updates = new CollectionUpdates(() => window.desktop.getLibrary(), receive, () => latestLibraryRevision.current);
+        const unsubscribe = window.desktop.onLibraryChanged(change => updates.notify(change.revision));
+        const refresh = () => void window.desktop.getLibrary().then(receive).then(() => window.desktop.refreshCatalogue()).then(receive)
+            .catch(error => { if (!disposed) setWorkspaceError(errorMessage(error, 'Could not refresh the Library.')); });
+        window.addEventListener('configuration-changed', refresh);
+        refresh();
+        return () => { disposed = true; updates.dispose(); unsubscribe(); window.removeEventListener('configuration-changed', refresh); };
+    }, [tab, status.state]);
+
     useEffect(() => {
         const updates = new CollectionUpdates(() => window.desktop.getShots(), receiveShots, () => latestShotRevision.current);
         const unsubscribe = window.desktop.onShotsChanged(change => updates.notify(change.revision));
@@ -172,7 +206,7 @@ function App() {
     }, []);
 
     useEffect(() => {
-        const missing = (shotCollection.directories ?? []).filter(directory => !directory.available && directory.clipIds.length);
+        const missing = (importCollection.directories ?? []).filter(directory => !directory.available && directory.clipIds.length);
         const currentKeys = new Set(missing.map(directory => `${directory.path}:${directory.outage}`));
         for (const key of notifiedUnavailable.current) if (!currentKeys.has(key)) notifiedUnavailable.current.delete(key);
         const additions = missing.filter(directory => !notifiedUnavailable.current.has(`${directory.path}:${directory.outage}`));
@@ -181,7 +215,7 @@ function App() {
             ...current.flatMap(directory => missing.find(item => item.path === directory.path && item.outage === directory.outage) ?? []),
             ...additions,
         ]);
-    }, [shotCollection.directories]);
+    }, [importCollection.directories]);
 
     async function addClips(droppedFiles?: File[]) {
         if (workspaceMutation.current) return;
@@ -323,23 +357,18 @@ function App() {
     }, []);
 
     return (
-        <div className="flex h-screen flex-col bg-[#111318] text-sm text-zinc-200">
+        <ClipViewProvider mode={tab}><div className="flex h-screen flex-col bg-[#111318] text-sm text-zinc-200">
             <SaveStatusBanner />
             <header className="grid grid-cols-[1fr_auto_1fr] items-center gap-6 border-b border-white/8 px-6 py-4">
                 <h1 className="font-semibold tracking-tight">
                     OWMO <span className="font-normal text-zinc-400">Shot Manager</span>
                 </h1>
                 <nav aria-label="Workspace" className="flex gap-1 rounded-lg bg-white/4 p-1">
-                    <span aria-current="page" className="rounded-md bg-white/10 px-5 py-1.5">
-                        Import
-                    </span>
-                    <button
-                        disabled
-                        title="Library — coming next"
-                        className="px-5 py-1.5 text-zinc-600"
-                    >
-                        Library
-                    </button>
+                    {(['import', 'library'] as const).map(view => <button key={view} type="button"
+                        aria-current={tab === view ? 'page' : undefined} onClick={() => setTab(view)}
+                        className={`rounded-md px-5 py-1.5 ${tab === view ? 'bg-white/10' : 'text-zinc-400 hover:text-zinc-200'}`}>
+                        {view === 'import' ? 'Import' : 'Library'}
+                    </button>)}
                 </nav>
                 <Configuration libraryActionsRef={setLibraryActions} />
             </header>
@@ -394,13 +423,21 @@ function App() {
                     onDrop={dropClips}
                     className={`relative flex min-w-0 flex-1 items-center justify-center overflow-y-auto text-center transition ${draggingClips ? "bg-blue-400/5 outline-2 -outline-offset-4 outline-dashed outline-blue-400/50" : ""}`}
                 >
-                    {draggingClips ? (
+                    {tab === 'library' ? (
+                        <div className="w-full self-start" aria-busy={libraryCollection.refreshing}>
+                            {libraryCollection.refreshing && <p role="status" className="sr-only">Refreshing Library…</p>}
+                            {libraryCollection.error && <p role="status" className="px-5 pt-4 text-left text-xs text-red-300">{libraryCollection.error}</p>}
+                            {libraryCollection.warnings.length > 0 && <p role="status" title={libraryCollection.warnings.join('\n')} className="px-5 pt-4 text-left text-xs text-amber-300">{libraryCollection.warnings.length} metadata files could not be refreshed.</p>}
+                            <ShotGrid key="library-grid" collection={visibleCollection} newestFirst={newestFirst}
+                                onEject={() => undefined} ejectBusy={false} selectedShotIds={selection.editingIds} onSelect={selectShot} />
+                        </div>
+                    ) : draggingClips ? (
                         <p className="pointer-events-none text-sm text-blue-300">
                             {canAddClips ? "Drop videos, folders, or a card root to add clips" : "Adding clips is unavailable"}
                         </p>
-                    ) : shotCollection.shots.length || shotCollection.scans.length ? (
+                    ) : shotCollection.shots.length || shotCollection.scans.some(scan => scan.state === 'queued' || scan.state === 'scanning' || scan.error || scan.warnings.length) ? (
                         <ShotGrid
-                            collection={visibleCollection}
+                            key="import-grid" collection={visibleCollection}
                             newestFirst={newestFirst}
                             onEject={id => requestEject([id])}
                             ejectBusy={ejectBusy}
@@ -422,16 +459,16 @@ function App() {
                         </div>
                     )}
                 </section>
-                    {selectedShots.length > 1 ? <MultiClipInspector
-                        onOrganizationUpdated={receiveShots}
+                    {selectedShots.length > 1 ? <MultiClipInspector key={tab}
+                        onOrganizationUpdated={receiveView}
                         onEject={() => requestEject(selectedShots.map(shot => shot.id))} ejectBusy={ejectBusy}
                         shots={orderedShots(selectedShots, newestFirst)} skippedCount={selectedSkippedCount} disabled={selectedLocked}
                         width={inspectorWidth} onResize={setInspectorWidth}
                         onSkipChange={(skipped) => changeSkip(selectedShots.map((shot) => shot.id), skipped)}
                     /> : <ClipInspector
-                        onOrganizationUpdated={receiveShots}
+                        onOrganizationUpdated={receiveView}
                         onEject={() => requestEject(selectedShots.map(shot => shot.id))} ejectBusy={ejectBusy}
-                        key={inspectedShot?.id ?? "empty"}
+                        key={`${tab}:${inspectedShot?.id ?? "empty"}`}
                         shot={inspectedShot}
                         width={inspectorWidth}
                         onResize={setInspectorWidth}
@@ -443,14 +480,14 @@ function App() {
                 onConfirm={() => void confirmClipAction()} />}
             {!ejectTargets && skipError && <ErrorDialog title="Skip could not be saved" message={skipError} onDismiss={() => setSkipError(null)} />}
             {!ejectTargets && !skipError && workspaceError && <ErrorDialog title="Workspace error" message={workspaceError} onDismiss={() => setWorkspaceError(null)} />}
-            {!ejectTargets && !skipError && !workspaceError && unavailableDirectories.length > 0 && <DirectoryUnavailableDialog
+            {!ejectTargets && !skipError && !workspaceError && tab === 'import' && unavailableDirectories.length > 0 && <DirectoryUnavailableDialog
                 directories={unavailableDirectories} onDismiss={() => setUnavailableDirectories([])}
                 onEject={ids => { setUnavailableDirectories([]); requestEject(ids); }} />}
             <footer className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-5 border-t border-white/8 px-5 py-3 text-xs text-zinc-500">
                 <ApplicationIndicator backend={status} communicationError={communicationError} />
-                <CommitControls selectedShotIds={selectedShots.map(shot => shot.id)} refreshTarget={libraryActions} shots={shotCollection.shots} connected={status.state === 'connected'} onRefresh={async () => receiveShots(await window.desktop.getShots())} />
+                <CommitControls key={tab} selectedShotIds={selectedShots.map(shot => shot.id)} refreshTarget={libraryActions} shots={shotCollection.shots} catalogueRefreshing={tab === 'library' && libraryCollection.refreshing} connected={status.state === 'connected'} onRefresh={async () => receiveView(await (tab === 'library' ? window.desktop.getLibrary() : window.desktop.getShots()))} />
             </footer>
-        </div>
+        </div></ClipViewProvider>
     );
 }
 

@@ -1,9 +1,11 @@
+import { useClipView } from "./ClipViewContext";
 import { secondaryButton, dangerButton } from "./buttonStyles";
 import { errorMessage } from '../../shared/errors';
 import { useEffect, useRef, useState } from 'react';
 import type { ShotCollection, VideoShot } from '../../shared/shots';
 
 export function ClearOrganizationButton({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: (collection: ShotCollection) => void }) {
+    const { api, mode } = useClipView();
     const [targets, setTargets] = useState<VideoShot[] | null>(null);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -24,7 +26,7 @@ export function ClearOrganizationButton({ shots, onUpdated }: { shots: VideoShot
         setBusy(true); setError(null);
         try {
             const ids = targets.map(shot => shot.id);
-            const result = await window.desktop.updateOrganization(ids, { field: 'all', operation: 'clear', value: '' });
+            const result = await api.updateOrganization(ids, { field: 'all', operation: 'clear', value: '' });
             onUpdated(result.collection);
             window.dispatchEvent(new CustomEvent('organization-cleared', { detail: ids }));
             setTargets(null);
@@ -43,7 +45,7 @@ export function ClearOrganizationButton({ shots, onUpdated }: { shots: VideoShot
             <p id="clear-organization-description" className="mt-3 text-sm leading-6 text-zinc-400">
                 Clear all assigned attributes for {targets.length} selected {targets.length === 1 ? 'clip' : 'clips'}.
             </p>
-            <p className="mt-2 text-xs text-zinc-500">Skip is kept.</p>
+            {mode === "import" && <p className="mt-2 text-xs text-zinc-500">Skip is kept.</p>}
             {error && <p role="alert" className="mt-3 text-xs text-red-300">{error}</p>}
             <div className="mt-6 flex justify-end gap-3">
                 <button autoFocus type="button" disabled={busy} onClick={() => setTargets(null)} className={secondaryButton}>Cancel</button>

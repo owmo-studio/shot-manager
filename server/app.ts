@@ -5,6 +5,8 @@ import { inspectLibrary } from './library';
 import { ProxyQueue } from './proxies';
 import { rsyncFile } from './rsync';
 import { IngestQueue } from './ingestion';
+import { LibraryCatalogue } from './catalogue';
+import { dirname, join } from 'node:path';
 import Fastify from 'fastify'
 import type { AppConfiguration, BackendHealth } from '../shared/desktop'
 import type { IngestStatus } from '../shared/ingestion';
@@ -17,7 +19,7 @@ import { loadViewingLut } from './viewing'
 import { validateOptionRemovals, validateOrganizationAction } from '../shared/organization'
 import type { OrganizationAction, TagVocabulary } from '../shared/organization'
 
-export function createServer(token: string, onShotsChanged?: (change: ShotChange) => void, thumbnailCacheDirectory?: string, fingerprintDirectory?: string, organizationFile?: string, configurationFile?: string, onIngestChanged?: (status: IngestStatus) => void) {
+export function createServer(token: string, onShotsChanged?: (change: ShotChange) => void, thumbnailCacheDirectory?: string, fingerprintDirectory?: string, organizationFile?: string, configurationFile?: string, onIngestChanged?: (status: IngestStatus) => void, onLibraryChanged?: (change: ShotChange) => void) {
   const server = Fastify({ logger: true })
   const configuration = async (): Promise<AppConfiguration> => {
     const saved = configurationFile ? await readConfiguration(configurationFile) : { version: 1 as const, libraryPath: null }
@@ -37,15 +39,76 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
       available: directory.available && directory.clipIds.every(id => available.get(id)),
     }))
   }, () => proxies.status().error)
-  const ingestion = new IngestQueue(workspace.scanner, async () => (await configuration()).libraryPath, async (path, roots) => {
+  const inspectConfigured = async (path: string, roots: string[] = []) => {
     const configured = await configuration()
     if (!configured.libraryMount) throw new Error('Choose the Library location again in Configuration to confirm its volume.')
     const location = await inspectLibrary(path, roots)
     if (configured.libraryPath !== path || configured.libraryMount !== location.mount) throw new Error('The configured Library volume is not mounted at its expected location. Choose the Library again if it has changed.')
     return location
-  }, rsyncFile, proxies)
-  ingestion.onChange = onIngestChanged
+  }
+  const ingestion = new IngestQueue(workspace.scanner, async () => (await configuration()).libraryPath, inspectConfigured, rsyncFile, proxies)
+  const catalogue = new LibraryCatalogue(workspace.scanner, async () => (await configuration()).libraryPath, async () => {
+    const path = (await configuration()).libraryPath
+    if (!path) throw new Error('Library Not Set')
+    return inspectConfigured(path)
+  }, ingestion, organizationFile ? join(dirname(organizationFile), 'catalogue.json') : undefined,
+  organizationFile ? join(dirname(organizationFile), 'library-thumbnails') : undefined, assertWritable)
+  let libraryRevision = 0
+  catalogue.onChange = () => onLibraryChanged?.({ revision: ++libraryRevision, vocabularyRevision: libraryRevision })
+  workspace.scanner.organization.onChange = () => { catalogue.changed(); void workspace.scanner.reloadOrganizations().catch(error => server.log.warn(error)) }
+  let catalogueQueueState = ''
+  ingestion.onChange = status => {
+    onIngestChanged?.(status)
+    // Import byte/proxy progress does not change catalogue rows. Notify only for
+    // Commit membership/lock transitions; descriptive edits have their own notice.
+    const next = JSON.stringify([status.active, status.stopping, status.current?.id, status.total, status.completed, status.waiting, status.tasks?.transfersRemaining])
+    if (next !== catalogueQueueState) {
+      catalogueQueueState = next; catalogue.changed()
+      void workspace.scanner.reloadOrganizations().catch(error => server.log.warn(error))
+    }
+  }
+  ingestion.onPublished = async (metadata, location, names) => {
+    await catalogue.published(metadata, location, names)
+    workspace.scanner.retireCommitted(metadata.id)
+  }
   const ids = { type: 'array', minItems: 1, maxItems: 1000, uniqueItems: true, items: { type: 'string', pattern: '^[a-f0-9]{64}$' } }
+  const clipIdsBody = { body: { type: 'object', required: ['shotIds'], additionalProperties: false, properties: { shotIds: ids } } }
+  const assetParams = { params: { type: 'object', required: ['id'], properties: { id: { type: 'string', pattern: '^[a-f0-9]{64}$' } } } }
+  server.get('/api/library', () => catalogue.snapshot())
+  server.post('/api/library/refresh', () => catalogue.refresh())
+  server.get('/api/library/vocabulary', () => catalogue.vocabulary())
+  server.post<{ Body: { shotIds: string[] } }>('/api/library/review', { schema: clipIdsBody }, request => catalogue.preview(request.body.shotIds))
+  server.post<{ Body: { token: string; shotIds: string[] } }>('/api/library/commit', {
+    schema: { body: { type: 'object', required: ['token', 'shotIds'], additionalProperties: false, properties: { shotIds: ids, token: { type: 'string', maxLength: 64 } } } }
+  }, request => catalogue.submit(request.body.token, request.body.shotIds))
+  server.post<{ Body: { shotIds: string[] } }>('/api/library/revert', { schema: clipIdsBody }, request => catalogue.revert(request.body.shotIds))
+  server.patch<{ Body: { shotIds: string[]; action: OrganizationAction } }>('/api/library/organization', {
+    schema: { body: { type: 'object', required: ['shotIds', 'action'], additionalProperties: false, properties: { shotIds: ids,
+      action: { type: 'object', required: ['field', 'operation', 'value'], additionalProperties: false, properties: {
+        field: { type: 'string', enum: ['identity', 'project', 'scene', 'tags', 'notes', 'all'] }, operation: { type: 'string', enum: ['add', 'remove', 'set', 'clear'] }, value: { type: 'string', maxLength: 10000 }
+      } } } } }
+  }, request => catalogue.update(request.body.shotIds, validateOrganizationAction(request.body.action)))
+  server.get<{ Params: { id: string } }>('/api/library/:id/thumbnail', { schema: assetParams }, async request => ({ dataUrl: await catalogue.thumbnail(request.params.id) }))
+  server.put<{ Params: { id: string }; Body: { dataUrl: string } }>('/api/library/:id/thumbnail', {
+    bodyLimit: 3000100,
+    schema: { ...assetParams, body: { type: 'object', required: ['dataUrl'], additionalProperties: false, properties: {
+      dataUrl: { type: 'string', maxLength: 3000000, pattern: '^data:image/jpeg;base64,' }
+    } } }
+  }, async (request, reply) => { await catalogue.setThumbnail(request.params.id, request.body.dataUrl); return reply.code(204).send() })
+  server.delete('/api/thumbnail-drafts', async (_, reply) => {
+    workspace.scanner.assertNoIngestion()
+    await workspace.scanner.organization.clearThumbnailDrafts()
+    return reply.code(204).send()
+  })
+  server.get<{ Params: { id: string } }>('/api/library/:id/details', { schema: assetParams }, request => catalogue.details(request.params.id))
+  server.get<{ Params: { id: string } }>('/api/library/:id/lut', { schema: assetParams }, async request => {
+    const profile = viewingProfile((await catalogue.details(request.params.id)).metadata)
+    return profile ? loadViewingLut(profile) : null
+  })
+  server.get<{ Params: { id: string } }>('/api/library/:id/media/original', { schema: assetParams }, async (request, reply) => {
+    const asset = await catalogue.openVideo(request.params.id)
+    return sendVideo(request, reply, asset.file, asset.path)
+  })
   server.post<{ Body: { shotIds: string[] } }>('/api/workspace/eject', {
     schema: { body: { type: 'object', required: ['shotIds'], additionalProperties: false,
       properties: { shotIds: ids } } }
@@ -205,7 +268,7 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
   })
   server.addHook('onClose', async () => {
     const activeClipIds = new Set(workspace.scanner.snapshot().shots.map(shot => shot.id))
-    await ingestion.close(); await proxies.close(); await workspace.close()
+    await ingestion.close(); await proxies.close(); await catalogue.close(); await workspace.close()
     if (cacheRoot) {
       try {
         await assertWritable?.()

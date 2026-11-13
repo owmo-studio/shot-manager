@@ -1,3 +1,4 @@
+import { useClipView } from "./ClipViewContext";
 import { hasPendingCommit } from "./clipState";
 import { errorMessage } from '../../shared/errors';
 import { useEffect, useRef, useState } from "react";
@@ -58,6 +59,7 @@ export function ClipInspector({
     onSkipChange: (skipped: boolean) => void;
     onOrganizationUpdated: (collection: ShotCollection) => void;
 }) {
+    const { api, mode } = useClipView();
     const empty = !selectedShot;
     const shot = selectedShot ?? emptyShot;
     const skipped = !!shot.organization?.skipped;
@@ -86,7 +88,7 @@ export function ClipInspector({
         setThumbnailError(null);
         try {
             if (!preview.current) throw new Error("Wait for a preview frame.");
-            await window.desktop.setShotThumbnail(shot.id, preview.current.captureThumbnail());
+            await api.setShotThumbnail(shot.id, preview.current.captureThumbnail());
         } catch (error) {
             setThumbnailError(errorMessage(error, "Could not update the thumbnail."));
         } finally {
@@ -127,7 +129,7 @@ export function ClipInspector({
         setDetails(null);
         setDetailsError(null);
         if (empty || locked) return;
-        window.desktop
+        api
             .getShotDetails(shot.id)
             .then((data) => {
                 if (!disposed) setDetails(data);
@@ -180,8 +182,10 @@ export function ClipInspector({
                             </svg>
                             <span>{thumbnailBusy ? "Saving…" : "Thumb"}</span>
                         </button>
-                        <EjectButton cancel={hasPendingCommit(shot)} count={empty ? 0 : 1} busy={ejectBusy} onClick={onEject} />
-                        <SkipSelection count={empty ? 0 : 1} skippedCount={skipped ? 1 : 0} disabled={empty || locked} onChange={onSkipChange} />
+                        {mode === 'import' && <>
+                            <EjectButton cancel={hasPendingCommit(shot)} count={empty ? 0 : 1} busy={ejectBusy} onClick={onEject} />
+                            <SkipSelection count={empty ? 0 : 1} skippedCount={skipped ? 1 : 0} disabled={empty || locked} onChange={onSkipChange} />
+                        </>}
                     </div>
                 </header>
                 {thumbnailError && (

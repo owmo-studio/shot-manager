@@ -1,3 +1,4 @@
+import { useClipView } from "./ClipViewContext";
 import { useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { Ref } from 'react'
 import type { VideoShot } from '../../shared/shots'
@@ -11,6 +12,7 @@ export interface PreviewHandle { captureThumbnail: () => string }
 export function PreviewPlayer({ shot, lutEnabled, ref, onReady, onScrubbing }: {
   shot: VideoShot; lutEnabled: boolean; ref: Ref<PreviewHandle>; onReady: (ready: boolean) => void; onScrubbing: (scrubbing: boolean) => void
 }) {
+  const { api, mediaURL } = useClipView();
   const video = useRef<HTMLVideoElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
   const container = useRef<HTMLDivElement>(null)
@@ -53,7 +55,7 @@ export function PreviewPlayer({ shot, lutEnabled, ref, onReady, onScrubbing }: {
     setLut(undefined)
     setLutError(null)
     if (!profile) { setLut(null); return }
-    window.desktop.getShotLut(shot.id).then((table) => {
+    api.getShotLut(shot.id).then((table) => {
       if (disposed) return
       if (!table || table.profile !== profile) throw new Error('Missing LUT')
       setLut(table)
@@ -127,7 +129,7 @@ export function PreviewPlayer({ shot, lutEnabled, ref, onReady, onScrubbing }: {
   const unsupportedColor = !profile && shot.metadata.color.transfer !== 'bt709'
   return <div ref={container} className="preview-player bg-black">
     <div className="preview-image relative aspect-video overflow-hidden">
-      <video ref={video} crossOrigin="anonymous" src={'shot-media://local/shots/' + shot.id + '/original'}
+      <video ref={video} crossOrigin="anonymous" src={mediaURL(shot.id)}
         className={'absolute inset-0 size-full object-contain ' + (gpuError ? '' : 'opacity-0')}
         controls={gpuError} controlsList="nodownload noplaybackrate noremoteplayback"
         disablePictureInPicture disableRemotePlayback playsInline preload="auto" aria-label={'Preview ' + shot.filename}

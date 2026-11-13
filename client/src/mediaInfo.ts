@@ -4,9 +4,12 @@ export function sourceFilePath(root: string | undefined, relativePath: string): 
     return root ? root.replace(/\/+$/, "") + "/" + relativePath : relativePath;
 }
 
-export function deviceLabel(device: VideoMetadata["device"]): string | null {
+export function deviceLabel(device: VideoMetadata["device"], includeManufacturer = false): string | null {
     const models: Record<string, string> = { "ILME-FX30": "FX30", "ZV-E10M2": "ZV-E10 II" };
-    return device.model ? models[device.model] ?? device.model : null;
+    if (!device.model) return null;
+    const model = models[device.model] ?? device.model;
+    const manufacturer = models[device.model] || device.manufacturer?.toLowerCase() === 'sony' ? 'Sony' : device.manufacturer;
+    return includeManufacturer && manufacturer ? `${manufacturer} ${model}` : model;
 }
 
 export function quickMediaSummary(metadata: VideoMetadata): string {

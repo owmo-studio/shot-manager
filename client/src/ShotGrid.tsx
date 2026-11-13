@@ -1,3 +1,4 @@
+import { useClipView } from "./ClipViewContext";
 import { hasPendingCommit } from "./clipState";
 import { StopIcon, EjectIcon } from "./EjectButton";
 import type { MouseEvent } from "react";
@@ -19,7 +20,8 @@ function ShotCard({
     selected: boolean;
     onSelect: (event: MouseEvent<HTMLButtonElement>) => void;
 }) {
-    const [thumbnail, setThumbnail] = useState<string | null>(null);
+    const { api, mode } = useClipView();
+    const [thumbnail, setThumbnail] = useState<{ url: string; revision?: number } | null>(null);
     const [failedImage, setFailedImage] = useState(false);
     const card = useRef<HTMLButtonElement>(null);
     const cancelCommit = hasPendingCommit(shot);
@@ -79,15 +81,11 @@ function ShotCard({
                     : "Editable";
 
     useEffect(() => {
-        setThumbnail(null);
-        setFailedImage(false);
-    }, [shot.thumbnailRevision]);
-
-    useEffect(() => {
-        // Discovery queues generation; visibility only controls loading cached image data.
+        // Keep the displayed image while a refreshed revision loads. Clearing it first
+        // makes the cached Library view flash a second time on tab entry.
         if (
-            unavailable ||
-            thumbnail ||
+            (unavailable && mode === "import") ||
+            (thumbnail && thumbnail.revision === shot.thumbnailRevision) ||
             shot.thumbnailStatus === "pending" ||
             shot.thumbnailStatus === "failed" ||
             !card.current
@@ -98,11 +96,11 @@ function ShotCard({
             (entries) => {
                 if (!entries.some((entry) => entry.isIntersecting)) return;
                 observer.disconnect();
-                window.desktop
+                api
                     .getShotThumbnail(shot.id)
                     .then((data) => {
                         if (!disposed && data) {
-                            setThumbnail(data);
+                            setThumbnail({ url: data, revision: shot.thumbnailRevision });
                             setFailedImage(false);
                         }
                     })
@@ -187,7 +185,7 @@ function ShotCard({
                         {thumbnail && !failedImage ? (
                             <img
                                 data-shot-image
-                                src={thumbnail}
+                                src={thumbnail.url}
                                 alt=""
                                 onError={thumbnailFailed}
                                 className="size-full bg-black object-contain"
@@ -250,11 +248,11 @@ function ShotCard({
                     <span className="mt-1 block text-xs text-amber-300">Metadata incomplete</span>
                 )}
             </button>
-            <button type="button" onClick={event => { event.stopPropagation(); onEject(); }} disabled={ejectBusy}
+            {mode === "import" && <button type="button" onClick={event => { event.stopPropagation(); onEject(); }} disabled={ejectBusy}
                 aria-label={`${cancelCommit ? "Stop" : "Eject"} ${shot.filename}`} title={cancelCommit ? "Stop commit; keep in workspace" : "Eject from workspace"}
                 className="shot-card-action absolute top-2 right-2 z-20 grid size-7 place-items-center rounded-md bg-black/70 text-zinc-300 opacity-0 transition group-hover/shot:opacity-100 hover:text-white focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
                 <ActionIcon />
-            </button>
+            </button>}
         </div>
     );
 }

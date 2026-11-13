@@ -21,8 +21,10 @@ interface Entry {
 }
 interface LibrarySnapshot extends LibraryListing { location: LibraryLocation }
 interface Review { token: string; location: LibraryLocation; entries: Entry[]; created: number }
+export interface MetadataCommitJob { id: string; filename: string; execute: (signal: AbortSignal) => Promise<void> }
 
 export class IngestQueue {
+    get workRevision() { return this.workGeneration; }
     private review?: Review;
     private working = false;
     private closing = false;
@@ -35,6 +37,8 @@ export class IngestQueue {
     private submission = 0;
     private transferKeys = new Map<string, string>();
     private pending: { entry: Entry; location: LibraryLocation }[] = [];
+    private metadataPending: MetadataCommitJob[] = [];
+    onPublished?: (metadata: LibraryMetadata, location: LibraryLocation, names: string[]) => Promise<void>;
     private wakeWorker?: () => void;
     private tasks = new Map<string, { kind: 'proxy' | 'transfer'; percent: number }>();
     private progressTimer?: ReturnType<typeof setTimeout>;
@@ -313,6 +317,7 @@ export class IngestQueue {
             this.proxies?.prioritize(this.queuedIds);
             this.proxies?.retry(this.queuedIds);
             this.pending.push(...entries.filter(entry => !this.cancelledIds.has(entry.capture.shot.id)).map(entry => ({ entry, location: review.location })));
+            this.state.acceptedReviews = [...(this.state.acceptedReviews ?? []), token].slice(-128);
             if (!this.run) this.run = this.process(signal);
             this.wakeWorker?.();
             locked = []; // Worker owns the locks now.
@@ -354,16 +359,18 @@ export class IngestQueue {
         try {
             while (!signal.aborted) {
                 this.pending = this.pending.filter(item => !this.cancelledIds.has(item.entry.capture.shot.id));
-                if (!this.pending.length && !this.preparing) break;
+                this.metadataPending = this.metadataPending.filter(job => !this.cancelledIds.has(job.id));
+                if (!this.pending.length && !this.metadataPending.length && !this.preparing) break;
                 const available = new Set(this.scanner.snapshot().shots.filter(shot => shot.available).map(shot => shot.id));
                 const index = this.proxies ? this.pending.findIndex(({ entry }) => this.proxies!.readyFor(entry.capture.shot.id) || !available.has(entry.capture.shot.id)) : this.pending.length ? 0 : -1;
-                if (index < 0) {
+                if (index < 0 && !this.metadataPending.length) {
                     this.state.current = undefined; this.state.waiting = this.pending.length; this.publish();
                     await this.waitForWork(signal);
                     continue;
                 }
-                const { entry, location } = this.pending.splice(index, 1)[0];
-                const { shot } = entry.capture;
+                const metadataJob = this.metadataPending.shift();
+                const item = metadataJob ? undefined : this.pending.splice(index, 1)[0];
+                const shot = metadataJob ?? item!.entry.capture.shot;
                 const controller = new AbortController();
                 let finish!: () => void;
                 const done = new Promise<void>(resolve => { finish = resolve; });
@@ -375,7 +382,8 @@ export class IngestQueue {
                 this.scanner.processingIngest(shot.id);
                 this.publish();
                 try {
-                    await this.execute(entry, location, clipSignal);
+                    if (metadataJob) await metadataJob.execute(clipSignal);
+                    else await this.execute(item!.entry, item!.location, clipSignal);
                     this.state.current!.percent = 100;
                     this.state.completed = (this.state.completed ?? 0) + 1;
                     this.publish();
@@ -393,12 +401,35 @@ export class IngestQueue {
             this.scanner.unlockIngest(this.queuedIds);
             this.queuedIds = [];
             this.pending = [];
+            this.metadataPending = [];
             this.run = undefined;
             this.state.active = false;
             if (!signal.aborted) this.state.stopping = false;
             this.state.current = undefined; this.state.waiting = 0;
             this.publish();
         }
+    }
+
+    enqueueMetadata(jobs: MetadataCommitJob[], reviewToken?: string) {
+        this.beginOperation();
+        try {
+            if (!jobs.length || jobs.some(job => this.queuedIds.includes(job.id))) throw new Error('Selected clips are already queued.');
+            this.scanner.lockLibraryCommit(jobs.map(job => job.id));
+            if (!this.state.active) {
+                this.controller = new AbortController(); this.cancelledIds.clear(); this.transferKeys.clear();
+                this.state = { ...this.state, position: 0, completed: 0, waiting: 0, total: 0, current: undefined };
+            }
+            this.state.active = true; this.state.total += jobs.length; this.submission++;
+            for (const job of jobs) {
+                this.cancelledIds.delete(job.id); this.queuedIds.push(job.id);
+                this.transferKeys.set(job.id, `transfer:${this.submission}:${job.id}`);
+            }
+            this.metadataPending.push(...jobs); this.publish();
+            if (reviewToken) this.state.acceptedReviews = [...(this.state.acceptedReviews ?? []), reviewToken].slice(-128);
+            if (!this.run) this.run = this.process(this.controller!.signal);
+            this.wakeWorker?.();
+            return structuredClone(this.state);
+        } finally { this.working = false; }
     }
 
     async cancel(ids: string[]) {
@@ -408,6 +439,7 @@ export class IngestQueue {
         const active = this.activeTransfer && selected.includes(this.activeTransfer.id) ? this.activeTransfer : undefined;
         selected.forEach(id => this.cancelledIds.add(id));
         this.pending = this.pending.filter(item => !selected.includes(item.entry.capture.shot.id));
+        this.metadataPending = this.metadataPending.filter(job => !selected.includes(job.id));
         this.queuedIds = this.queuedIds.filter(id => !selected.includes(id));
         active?.controller.abort();
         this.scanner.unlockIngest(selected.filter(id => id !== active?.id));
@@ -498,9 +530,10 @@ export class IngestQueue {
             signal.throwIfAborted();
             await rename(temporaryJSON, metadataPath);
             // Publication is the completion boundary. A concurrent Stop must preserve this success.
-            await this.scanner.markIngested(shot.id, { libraryPath: location.path, signature, ingestedAt });
+            await this.scanner.markIngested(shot.id, { libraryPath: location.path, signature, thumbnailDigest: shot.thumbnailDigest, ingestedAt });
             if (this.libraryRefresh?.path === location.path) this.libraryRefresh.published.set(shot.id, entry.names);
             await this.proxies?.published(shot.id, proxy, location.path);
+            await this.onPublished?.(metadata, location, entry.names);
         } finally {
             await unlink(temporaryJSON).catch(() => undefined);
             await rm(staging, { recursive: true, force: true });

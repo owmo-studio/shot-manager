@@ -6,10 +6,14 @@ import type { ClipAttributes, OptionRemovalPlan, OrganizationAction, ShotOrganiz
 import { VIDEO_SAMPLE_SCHEME } from '../shared/shots';
 import type { IngestionReceipt } from '../shared/ingestion';
 import type { VideoFingerprint } from '../shared/shots';
+import { ingestAttributes } from '../shared/ingestion';
+import type { LibraryMetadata } from '../shared/library';
+import { ingestionSignature } from './processingState';
 
 const draftKeyPattern = new RegExp(`^${VIDEO_SAMPLE_SCHEME}:[a-f0-9]{64}$`);
 
-interface DraftRecord { ingestion?: IngestionReceipt; data: ShotOrganization; lastScannedAt: number; lastEditedAt: number; previousProjects?: string[]; clip?: { name: string; path: string } }
+export interface ThumbnailDraft { digest: string; revision: number }
+interface DraftRecord { thumbnailDraft?: ThumbnailDraft; ingestion?: IngestionReceipt; libraryBaseline?: ClipAttributes; pendingAttributes?: boolean; data: ShotOrganization; lastScannedAt: number; lastEditedAt: number; previousProjects?: string[]; clip?: { name: string; path: string } }
 interface OrganizationState { version: 1 | 2 | 3 | 4 | 5 | 6 | 7; vocabulary: TagVocabulary; drafts: Record<string, DraftRecord> }
 
 function migrateKey(value: object, oldKey: string, newKey: string) {
@@ -21,6 +25,7 @@ function migrateKey(value: object, oldKey: string, newKey: string) {
 }
 
 export class OrganizationStore {
+    onChange?: () => void;
     private state?: OrganizationState;
     private pending: Promise<unknown> = Promise.resolve();
     private scanTouches = new Map<string, { scannedAt: number; clip?: { name: string; path: string } }>();
@@ -51,6 +56,10 @@ export class OrganizationStore {
                 }
                 for (const [key, record] of Object.entries(state.drafts)) {
                     if (!draftKeyPattern.test(key) || !record || !Number.isFinite(record.lastScannedAt) || !Number.isFinite(record.lastEditedAt)) throw new Error('Invalid draft');
+                    if (record.pendingAttributes !== undefined && typeof record.pendingAttributes !== 'boolean') throw new Error('Invalid pending attributes');
+                    if (record.libraryBaseline !== undefined) validateClipAttributes(record.libraryBaseline);
+                    if (record.thumbnailDraft !== undefined && (!record.thumbnailDraft || !/^[a-f0-9]{64}$/.test(record.thumbnailDraft.digest) || !Number.isFinite(record.thumbnailDraft.revision))) throw new Error('Invalid thumbnail draft');
+                    if (record.ingestion?.thumbnailDigest !== undefined && !/^[a-f0-9]{64}$/.test(record.ingestion.thumbnailDigest)) throw new Error('Invalid thumbnail digest');
                     if (record.ingestion !== undefined && (!record.ingestion || typeof record.ingestion.libraryPath !== 'string' || !isAbsolute(record.ingestion.libraryPath) || record.ingestion.libraryPath.includes('\0') ||
                         !/^[a-f0-9]{64}$/.test(record.ingestion.signature) || typeof record.ingestion.ingestedAt !== 'string' || !Number.isFinite(Date.parse(record.ingestion.ingestedAt)))) throw new Error('Invalid processing record');
                     const data = record.data;
@@ -127,6 +136,7 @@ export class OrganizationStore {
         this.scanTouches.clear();
         const key = JSON.stringify([next.vocabulary.identity, next.vocabulary.project]);
         if (key !== this.vocabularyKey) { this.vocabularyKey = key; this.optionsRevision++; }
+        this.onChange?.();
     }
 
     private options(state: OrganizationState): TagVocabulary {
@@ -153,6 +163,9 @@ export class OrganizationStore {
             const record = next.drafts[organizationKey(fingerprint)];
             if (!record) throw new Error('Local draft no longer exists.');
             record.ingestion = structuredClone(receipt);
+            record.pendingAttributes = false;
+            record.libraryBaseline = ingestAttributes(record.data);
+            delete record.thumbnailDraft;
             record.lastEditedAt = this.now();
             await this.save(next);
         });
@@ -203,6 +216,7 @@ export class OrganizationStore {
                         : record.data[action.field].filter(tag => tag !== action.value);
                 }
                 record.lastEditedAt = this.now();
+                if (action.field !== 'skip') record.pendingAttributes = !record.libraryBaseline || JSON.stringify(ingestAttributes(record.data)) !== JSON.stringify(record.libraryBaseline);
             }
             if (action.field !== 'notes' && action.field !== 'scene' && action.field !== 'all' && action.field !== 'skip' && action.operation === 'add') {
                 next.vocabulary[action.field] = [...new Set([...next.vocabulary[action.field], action.value])].sort();
@@ -222,6 +236,9 @@ export class OrganizationStore {
                 const record = next.drafts[key];
                 if (!record) throw new Error('Local attributes are unavailable. Refresh the source to retry.');
                 record.data = { ...validateClipAttributes(entry.attributes), skipped: record.data.skipped };
+                record.pendingAttributes = false;
+                record.libraryBaseline = ingestAttributes(entry.attributes);
+                delete record.thumbnailDraft;
                 delete record.previousProjects;
                 record.lastEditedAt = this.now();
                 this.collectOptions(next.vocabulary, record.data);
@@ -237,6 +254,80 @@ export class OrganizationStore {
             const next = await this.nextState();
             next.vocabulary = emptyVocabulary();
             await this.save(next);
+        });
+    }
+
+    draftsFor(fingerprints: VideoFingerprint[]) {
+        return this.serialize(async () => {
+            const state = await this.load();
+            return Object.fromEntries(fingerprints.map(fingerprint => {
+                const key = organizationKey(fingerprint);
+                return [key, state.drafts[key] ? structuredClone(state.drafts[key]) : undefined];
+            }));
+        });
+    }
+
+    matchesDrafts(expected: Record<string, ShotOrganization>, thumbnails?: Record<string, ThumbnailDraft | undefined>) {
+        return Object.entries(expected).every(([key, data]) => JSON.stringify(this.state?.drafts[key]?.data) === JSON.stringify(data)) &&
+            (!thumbnails || Object.entries(thumbnails).every(([key, draft]) => JSON.stringify(this.state?.drafts[key]?.thumbnailDraft) === JSON.stringify(draft)));
+    }
+
+    setThumbnailDraft(fingerprint: VideoFingerprint, draft: ThumbnailDraft | undefined, validate: () => boolean) {
+        return this.serialize(async () => {
+            const next = await this.nextState();
+            const record = next.drafts[organizationKey(fingerprint)];
+            if (!record) throw new Error('Local draft is unavailable. Refresh the Library.');
+            record.thumbnailDraft = draft;
+            record.lastEditedAt = this.now();
+            await this.save(next, validate);
+        });
+    }
+
+    clearThumbnailDrafts() {
+        return this.serialize(async () => {
+            const next = await this.nextState();
+            for (const record of Object.values(next.drafts)) delete record.thumbnailDraft;
+            await this.save(next);
+        });
+    }
+
+    prepareLibraryCache(entries: LibraryMetadata[]) {
+        return this.serialize(async () => {
+            const next = await this.nextState();
+            for (const metadata of entries) {
+                const key = organizationKey(metadata.fingerprint);
+                const data = { ...ingestAttributes(metadata), skipped: false };
+                const record = next.drafts[key] ?? { data, libraryBaseline: ingestAttributes(metadata), pendingAttributes: false,
+                    lastEditedAt: 0, lastScannedAt: 0, clip: { name: metadata.originalFilename, path: '' } };
+                record.lastScannedAt = this.now();
+                next.drafts[key] = record;
+                this.collectOptions(next.vocabulary, record.data);
+            }
+            if (entries.length) await this.save(next);
+        });
+    }
+
+    syncLibrary(entries: LibraryMetadata[], validate: () => boolean = () => true, libraryPath?: string) {
+        return this.serialize(async () => {
+            const next = await this.nextState();
+            for (const metadata of entries) {
+                const key = organizationKey(metadata.fingerprint);
+                const previous = next.drafts[key];
+                // Older drafts have no explicit dirty bit: retain edited values conservatively.
+                const pending = previous && (previous.pendingAttributes ?? previous.lastEditedAt > 0);
+                const record = previous ?? { data: emptyOrganization(), lastScannedAt: 0, lastEditedAt: 0 };
+                if (!pending) record.data = { ...ingestAttributes(metadata), skipped: record.data.skipped };
+                record.pendingAttributes = JSON.stringify(ingestAttributes(record.data)) !== JSON.stringify(ingestAttributes(metadata));
+                record.libraryBaseline = ingestAttributes(metadata);
+                if (!pending && libraryPath && record.ingestion?.libraryPath === libraryPath && record.ingestion.thumbnailDigest) {
+                    record.ingestion.signature = ingestionSignature(metadata, record.ingestion.thumbnailDigest);
+                }
+                record.lastScannedAt = this.now();
+                record.clip ??= { name: metadata.originalFilename, path: '' };
+                next.drafts[key] = record;
+                this.collectOptions(next.vocabulary, record.data);
+            }
+            await this.save(next, validate);
         });
     }
 
@@ -276,6 +367,7 @@ export class OrganizationStore {
                 record.data.tags = record.data.tags.filter(value => !removals.tags.includes(value));
                 if (record.previousProjects) record.previousProjects = record.previousProjects.filter(value => !removals.project.includes(value));
                 record.lastEditedAt = this.now();
+                record.pendingAttributes = !record.libraryBaseline || JSON.stringify(ingestAttributes(record.data)) !== JSON.stringify(record.libraryBaseline);
             }
             await this.save(next, validate);
             return { vocabulary: this.options(next), drafts: Object.fromEntries(Object.entries(next.drafts).map(([key, record]) => [key, structuredClone(record.data)])) };

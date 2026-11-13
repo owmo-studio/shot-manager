@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
-import { link, lstat, mkdir, readdir, realpath, rename, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, open, readdir, realpath, rename, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import { constants } from 'node:fs';
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { readSmallFile } from "./discovery";
@@ -200,6 +201,7 @@ export class ThumbnailQueue {
         try {
             await this.assertWritable?.();
             await mkdir(this.cacheDirectory, { recursive: true, mode: 0o700 });
+            if (await realpath(this.cacheDirectory) !== this.cacheDirectory) throw new Error('Thumbnail Cache must be a regular folder.');
             for (const entry of entries) {
                 if (!/^[a-f0-9]{64}$/.test(entry.id) || entry.bytes.length > maximumImageBytes || !isJpeg(entry.bytes)) throw new Error('Invalid Revert thumbnail.');
                 const profile = viewingProfile(entry.metadata);
@@ -240,6 +242,25 @@ export class ThumbnailQueue {
             },
             finish: cleanup,
         };
+    }
+
+    async customByFingerprint(id: string, metadata: VideoMetadata): Promise<Buffer | null> {
+        if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid thumbnail identifier.');
+        const profile = viewingProfile(metadata);
+        const transform = profile ? (await loadViewingLut(profile)).fingerprint : 'passthrough';
+        const name = createHash('sha256').update(customPreviewKey(transform, id)).digest('hex');
+        let file;
+        try {
+            if (await realpath(this.cacheDirectory) !== this.cacheDirectory) throw new Error('Thumbnail Cache must be a regular folder.');
+            file = await open(join(this.cacheDirectory, `${name}.jpg`), constants.O_RDONLY | constants.O_NOFOLLOW);
+            const info = await file.stat();
+            if (!info.isFile() || info.size > maximumImageBytes) throw new Error('Invalid cached thumbnail.');
+            const bytes = await file.readFile();
+            if (!isJpeg(bytes)) throw new Error('Invalid cached thumbnail.');
+            if (info.nlink === 1) { await this.assertWritable?.(); const used = new Date(); await file.utimes(used, used).catch(() => undefined); }
+            return bytes;
+        } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+        finally { await file?.close(); }
     }
 
     enqueue(inputs: string[], sourceIdentity: string, signal: AbortSignal, validate: () => Promise<boolean>, completed: (image: string | null) => void, metadata?: VideoMetadata) {

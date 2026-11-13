@@ -5,7 +5,7 @@ import type { Dirent } from 'node:fs';
 import { lstat, open, opendir, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { validateClipAttributes } from '../shared/organization';
-import { libraryAssetName, parseLibraryAssetName } from '../shared/library';
+import { libraryAssetName, parseLibraryAssetName, validateLibraryMetadata } from '../shared/library';
 
 export { libraryAssetName } from '../shared/library';
 
@@ -97,7 +97,7 @@ export async function libraryFileIdentity(path: string): Promise<string | null> 
 }
 
 // Selected Revert assets only; never read source videos or enumerate Library contents.
-async function readRevertAsset(location: LibraryLocation, id: string, role: 'metadata' | 'thumb', extension: string, limit: number) {
+export async function readLibraryAsset(location: LibraryLocation, id: string, role: 'metadata' | 'thumb', extension: string, limit: number) {
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid clip ID.');
     const label = role === 'thumb' ? 'thumbnail' : 'metadata';
     const path = join(location.path, libraryAssetName(id, role, extension));
@@ -123,7 +123,7 @@ async function readRevertAsset(location: LibraryLocation, id: string, role: 'met
 }
 
 export async function readLibraryAttributes(location: LibraryLocation, id: string) {
-    const { bytes } = await readRevertAsset(location, id, 'metadata', 'json', 1024 * 1024);
+    const { bytes } = await readLibraryAsset(location, id, 'metadata', 'json', 1024 * 1024);
     let data: Record<string, unknown>;
     try { data = JSON.parse(bytes.toString('utf8')); }
     catch { throw new Error('Library metadata contains invalid JSON. Local changes have been preserved.'); }
@@ -135,9 +135,17 @@ export async function readLibraryRevertAssets(location: LibraryLocation, id: str
     const metadataPath = join(location.path, libraryAssetName(id, 'metadata', 'json'));
     const metadataIdentity = await libraryFileIdentity(metadataPath);
     const attributes = await readLibraryAttributes(location, id);
-    const thumbnail = await readRevertAsset(location, id, 'thumb', 'jpg', 2 * 1024 * 1024);
+    const thumbnail = await readLibraryAsset(location, id, 'thumb', 'jpg', 2 * 1024 * 1024);
     if (thumbnail.bytes.length < 4 || thumbnail.bytes[0] !== 0xff || thumbnail.bytes[1] !== 0xd8 ||
         thumbnail.bytes.at(-2) !== 0xff || thumbnail.bytes.at(-1) !== 0xd9) throw new Error(`Library thumbnail is invalid for clip ${id}.`);
     if (await libraryFileIdentity(metadataPath) !== metadataIdentity) throw new Error('Library metadata changed while reading. Try Revert again.');
     return { attributes, thumbnail: thumbnail.bytes };
+}
+
+export async function readLibraryMetadata(location: LibraryLocation, id: string) {
+    const asset = await readLibraryAsset(location, id, 'metadata', 'json', 1024 * 1024);
+    let data: unknown;
+    try { data = JSON.parse(asset.bytes.toString('utf8')); }
+    catch { throw new Error(`Library metadata contains invalid JSON for ${id}.`); }
+    return { metadata: validateLibraryMetadata(data, id), identity: asset.identity };
 }

@@ -418,6 +418,8 @@ async function until(test, description) {
         await fs.writeFile(configuration, JSON.stringify({ version: 1, libraryPath: library, libraryMount: (await inspectLibrary(library)).mount }));
         server = createServer('test-token', undefined, join(root, 'api-thumbs'), join(root, 'api-fps'), join(root, 'api-drafts.json'), configuration);
         assert.equal((await server.inject({ method: 'GET', url: '/api/ingestion' })).statusCode, 401);
+        assert.equal((await server.inject({ method: 'GET', url: '/api/library' })).statusCode, 401);
+        assert.equal((await server.inject({ method: 'POST', url: '/api/library/review', headers: { authorization: 'Bearer test-token' }, payload: { shotIds: ['../../arbitrary'] } })).statusCode, 400, 'Library review accepts IDs, never paths');
         assert.equal((await server.inject({ method: 'POST', url: '/api/organization/revert', payload: { shotIds: [a.id] } })).statusCode, 401);
         assert.equal((await server.inject({ method: 'POST', url: '/api/organization/revert', headers: { authorization: 'Bearer test-token' }, payload: { shotIds: ['../../arbitrary'] } })).statusCode, 400, 'Revert accepts clip IDs, never paths');
         assert.equal((await server.inject({ method: 'POST', url: '/api/ingestion/review', headers: { authorization: 'Bearer test-token' }, payload: { shotIds: [a.id], path: source } })).statusCode, 409);

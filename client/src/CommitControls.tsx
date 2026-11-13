@@ -1,3 +1,4 @@
+import { useClipView } from "./ClipViewContext";
 import { secondaryButton as button, primaryButton, dangerButton as destructiveButton } from "./buttonStyles";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
@@ -15,13 +16,16 @@ export function CommitControls({
     connected,
     onRefresh,
     refreshTarget,
+    catalogueRefreshing = false,
 }: {
     shots: VideoShot[];
     selectedShotIds: string[];
     connected: boolean;
     onRefresh: () => Promise<void>;
     refreshTarget: HTMLDivElement | null;
+    catalogueRefreshing?: boolean;
 }) {
+    const { api, mode } = useClipView();
     const [status, setStatus] = useState<IngestStatus>({
         revision: 0,
         active: false,
@@ -40,15 +44,15 @@ export function CommitControls({
         setStatus((current) => (next.revision >= current.revision ? next : current));
     }
     useEffect(() => {
-        if (!connected || !window.desktop.getIngestStatus) return;
+        if (!connected || !api.getIngestStatus) return;
         let disposed = false;
         const receive = (next: IngestStatus) => {
             if (!disposed) receiveStatus(next);
         };
         // Subscribe before the initial read; revisions prevent a late read or mutation
         // response from replacing a newer notification. No idle or active polling.
-        const unsubscribe = window.desktop.onIngestChanged(receive);
-        void window.desktop
+        const unsubscribe = api.onIngestChanged(receive);
+        void api
             .getIngestStatus()
             .then(receive)
             .catch(() => undefined);
@@ -63,10 +67,10 @@ export function CommitControls({
     const scope = selected ? shots.filter(shot => selectedIds.has(shot.id)) : shots;
     const skipped = scope.filter((shot) => shot.organization?.skipped).length;
     const candidates = scope.filter(
-        (shot) => !shot.organization?.skipped && shot.ingestState !== "synced" && !hasPendingCommit(shot),
+        (shot) => mode === "library" ? shot.ingestState === "changes-pending" : !shot.organization?.skipped && shot.ingestState !== "synced" && !hasPendingCommit(shot),
     );
     const blocked = candidates.filter(
-        (shot) => !shot.available || !shot.editable || !shot.hasThumbnail || shot.thumbnailStatus !== "ready",
+        (shot) => !shot.editable || mode === "import" && (!shot.available || !shot.hasThumbnail || shot.thumbnailStatus !== "ready"),
     ).length;
 
     async function openReview() {
@@ -75,7 +79,7 @@ export function CommitControls({
         setError(null);
         setErrorTitle("Commit error");
         try {
-            setReview(await window.desktop.reviewIngest(candidates.map((shot) => shot.id)));
+            setReview(await api.reviewIngest(candidates.map((shot) => shot.id)));
         } catch (reason) {
             setError(errorMessage(reason, "Could not prepare the commit."));
         } finally {
@@ -89,17 +93,20 @@ export function CommitControls({
         setError(null);
         setErrorTitle("Commit error");
         try {
-            receiveStatus(await window.desktop.startIngest(review.token, ids));
+            receiveStatus(await api.startIngest(review.token, ids));
             setReview(null);
             await onRefresh();
         } catch (reason) {
             setError(errorMessage(reason, "Could not queue clips for committing."));
             // A lost mutation response must not make the UI assume nothing was queued.
-            const next = await window.desktop.getIngestStatus().catch(() => null);
+            const next = await api.getIngestStatus().catch(() => null);
             if (next) {
                 receiveStatus(next);
+                if (next.acceptedReviews?.includes(review.token)) {
+                    setReview(null); setError(null); await onRefresh(); return;
+                }
                 // Existing transfers do not establish whether this appended submission succeeded.
-                const collection = await window.desktop.getShots().catch(() => null);
+                const collection = await api.getShots().catch(() => null);
                 if (collection && ids.every(id => collection.shots.some(shot => shot.id === id &&
                     (hasPendingCommit(shot) || shot.ingestState === "synced")))) setReview(null);
             }
@@ -112,7 +119,7 @@ export function CommitControls({
         setBusy(true);
         setErrorTitle("Stop error");
         try {
-            receiveStatus(await window.desktop.stopAllWork());
+            receiveStatus(await api.stopAllWork());
             setStopConfirm(false);
             await onRefresh();
         } catch (reason) {
@@ -128,8 +135,9 @@ export function CommitControls({
         setError(null);
         setErrorTitle("Refresh error");
         try {
-            const next = await window.desktop.refreshLibrary();
+            const next = await api.refreshLibrary();
             receiveStatus(next);
+            if (mode === "library") await api.refreshCatalogue();
             await onRefresh();
             if (next.libraryScan?.state === "unavailable") {
                 setErrorTitle("Library unavailable");
@@ -145,7 +153,7 @@ export function CommitControls({
         }
     }
 
-    const checkingLibrary = status.libraryScan?.state === "checking";
+    const checkingLibrary = status.libraryScan?.state === "checking" || catalogueRefreshing;
     const failure = status.errors[0];
     const hasWork = status.active || !!status.work?.busy;
     const tasks = status.tasks ?? { completed: 0, total: 0, percent: 0, proxiesRemaining: 0, transfersRemaining: 0 };
@@ -215,7 +223,7 @@ export function CommitControls({
             </div>}
             <div className="col-start-3 row-start-1 flex min-w-0 flex-wrap items-center justify-end gap-x-4 gap-y-2">
                 <span role="status">
-                    {candidates.length} {selected ? "selected " : ""}{candidates.length === 1 ? "clip" : "clips"} to commit · {skipped} skipped
+                    {candidates.length} {selected ? "selected " : ""}{candidates.length === 1 ? "clip" : "clips"} to commit{mode === "import" ? ` · ${skipped} skipped` : ""}
                     {blocked ? ` · ${blocked} not ready` : ""}
                 </span>
                 <div className="flex shrink-0 items-center gap-3">
@@ -226,7 +234,7 @@ export function CommitControls({
                             busy ||
                             refreshing ||
                             !status.libraryPath ||
-                            status.libraryScan?.state === "checking" ||
+                            checkingLibrary ||
                             !candidates.length ||
                             blocked > 0
                         }
@@ -280,7 +288,7 @@ export function CommitControls({
                     title="Commit failed"
                     message={`${failure.filename}: ${failure.message}`}
                     onDismiss={() => {
-                        void window.desktop
+                        void api
                             .dismissIngestError(failure.eventId)
                             .then(() =>
                                 setStatus((current) => ({

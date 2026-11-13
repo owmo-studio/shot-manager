@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { CacheSelection } from '../../shared/desktop';
 
 const cacheKinds = [
-    { key: 'metadata', label: 'Metadata', detail: 'Attributes, saved options, Commit receipts' },
+    { key: 'catalogue', label: 'Library catalogue', detail: 'The local view of Library metadata; pending edits are kept' },
+    { key: 'metadata', label: 'Metadata', detail: 'Attributes, thumbnail choices, saved options, Commit receipts' },
     { key: 'thumbnails', label: 'Thumbnails', detail: 'Generated and assigned thumbnails' },
     { key: 'fingerprints', label: 'Fingerprints', detail: 'Source lookup records' },
     { key: 'proxies', label: 'Proxies', detail: 'Local encoded proxies' },
@@ -16,7 +17,7 @@ export function ClearCacheButton({ disabled, onBusyChange, onReset }: {
     onReset: () => void;
 }) {
     const [open, setOpen] = useState(false);
-    const [keep, setKeep] = useState<Record<keyof CacheSelection, boolean>>({ metadata: false, thumbnails: false, fingerprints: false, proxies: false });
+    const [keep, setKeep] = useState<Record<keyof CacheSelection, boolean>>({ catalogue: false, metadata: false, thumbnails: false, fingerprints: false, proxies: false });
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const dialog = useRef<HTMLDialogElement>(null);
@@ -39,6 +40,7 @@ export function ClearCacheButton({ disabled, onBusyChange, onReset }: {
         setBusy(true); setError(null);
         try {
             await window.desktop.clearLocalData({
+                catalogue: !keep.catalogue,
                 metadata: !keep.metadata, thumbnails: !keep.thumbnails,
                 fingerprints: !keep.fingerprints, proxies: !keep.proxies,
             });
@@ -51,7 +53,7 @@ export function ClearCacheButton({ disabled, onBusyChange, onReset }: {
 
     return <>
         <button type="button" disabled={disabled} onClick={() => {
-            setKeep({ metadata: false, thumbnails: false, fingerprints: false, proxies: false });
+            setKeep({ catalogue: false, metadata: false, thumbnails: false, fingerprints: false, proxies: false });
             setError(null); setOpen(true); onBusyChange(true);
         }} className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300 transition enabled:hover:bg-red-500/20 enabled:hover:text-red-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400 disabled:opacity-40">Clear Cache</button>
         {open && <dialog ref={dialog} role="alertdialog" aria-labelledby="clear-cache-title" aria-describedby="clear-cache-description"

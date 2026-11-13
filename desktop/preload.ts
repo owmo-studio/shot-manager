@@ -7,6 +7,22 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<IPCResult<T>> {
 }
 
 const desktop: DesktopBridge = {
+  getLibrary: () => invoke('library:list'),
+  refreshCatalogue: () => invoke('library:refresh'),
+  onLibraryChanged: listener => {
+    const handler = (_event: Electron.IpcRendererEvent, change: Parameters<typeof listener>[0]) => listener(change)
+    ipcRenderer.on('library:changed', handler)
+    return () => ipcRenderer.removeListener('library:changed', handler)
+  },
+  getLibraryVocabulary: () => invoke('library:vocabulary'),
+  updateLibraryOrganization: (ids, action) => invoke('library:update', ids, action),
+  revertLibraryOrganization: ids => invoke('library:revert', ids),
+  reviewLibraryCommit: ids => invoke('library:review', ids),
+  startLibraryCommit: (token, ids) => invoke('library:commit', token, ids),
+  getLibraryThumbnail: id => invoke('library:thumbnail', id),
+  setLibraryThumbnail: (id, dataUrl) => invoke('library:set-thumbnail', id, dataUrl),
+  getLibraryDetails: id => invoke('library:details', id),
+  getLibraryLut: id => invoke('library:lut', id),
   getIngestStatus: () => invoke('ingestion:status'),
   refreshLibrary: () => invoke('ingestion:refresh-library'),
   onIngestChanged: listener => {

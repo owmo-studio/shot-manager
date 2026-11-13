@@ -3,6 +3,7 @@ import type { DiscoveryRequest, ShotChange, ShotCollection, ShotDetails } from '
 import type { ViewingLut } from './viewing'
 import type { OptionRemovalPlan, OrganizationAction, TagVocabulary } from './organization'
 import type { IPCResult } from './errors'
+import type { LibraryCollection } from './library'
 
 export interface BackendHealth {
   status: 'ok'
@@ -31,7 +32,7 @@ export interface AppConfiguration {
 // Opaque capability for a directory selected by the native picker; not yet saved.
 export interface LocationChoice { token: string; path: string }
 export interface LocationChanges { library?: string | null }
-export interface CacheSelection { metadata: boolean; thumbnails: boolean; fingerprints: boolean; proxies: boolean }
+export interface CacheSelection { metadata: boolean; thumbnails: boolean; fingerprints: boolean; proxies: boolean; catalogue?: boolean }
 
 export interface CacheSummary {
   bytes: number
@@ -39,6 +40,7 @@ export interface CacheSummary {
 }
 
 export interface CacheInventory {
+  catalogue?: CacheSummary
   metadata: CacheSummary
   thumbnails: CacheSummary
   fingerprints: CacheSummary
@@ -57,6 +59,18 @@ export interface LocalDataSummary extends CacheSummary {
 }
 
 export interface DesktopAPI {
+  getLibrary: () => Promise<LibraryCollection>
+  refreshCatalogue: () => Promise<LibraryCollection>
+  onLibraryChanged: (listener: (change: ShotChange) => void) => () => void
+  getLibraryVocabulary: () => Promise<TagVocabulary>
+  updateLibraryOrganization: DesktopAPI['updateOrganization']
+  revertLibraryOrganization: DesktopAPI['revertOrganization']
+  reviewLibraryCommit: DesktopAPI['reviewIngest']
+  startLibraryCommit: DesktopAPI['startIngest']
+  getLibraryThumbnail: DesktopAPI['getShotThumbnail']
+  setLibraryThumbnail: DesktopAPI['setShotThumbnail']
+  getLibraryDetails: DesktopAPI['getShotDetails']
+  getLibraryLut: DesktopAPI['getShotLut']
   getIngestStatus: () => Promise<IngestStatus>
   refreshLibrary: () => Promise<IngestStatus>
   onIngestChanged: (listener: (status: IngestStatus) => void) => () => void

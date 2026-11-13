@@ -37,7 +37,7 @@ if (!process.versions.electron) {
         }
         const env = { ...process.env, OWMO_INGEST_UI_ROOT: root };
         delete env.ELECTRON_RUN_AS_NODE;
-        const result = spawnSync(require("electron"), [__filename], { env, stdio: "inherit", timeout: 60000 });
+        const result = spawnSync(require("electron"), [__filename], { env, stdio: "inherit", timeout: 90000 });
         if (result.error) console.error(result.error);
         if (result.status !== 0 || !fs.existsSync(join(root, "validated"))) process.exitCode = 1;
     } finally {
@@ -58,9 +58,14 @@ if (!process.versions.electron) {
         rendererLoads = 0,
         browsedPath;
     const originalFetch = global.fetch;
+    let holdLibraryThumbnail = false, libraryThumbnailHeld = false, releaseLibraryThumbnail;
     global.fetch = async (url, options) => {
         if (String(url).endsWith("/api/ingestion") && (!options?.method || options.method === "GET")) ingestReads++;
         const result = await originalFetch(url, options);
+        if (holdLibraryThumbnail && /\/api\/library\/[a-f0-9]{64}\/thumbnail$/.test(String(url))) {
+            holdLibraryThumbnail = false; libraryThumbnailHeld = true;
+            await new Promise(resolve => { releaseLibraryThumbnail = resolve; });
+        }
         if (shotsOverride && String(url).endsWith("/api/shots"))
             return new Response(JSON.stringify(shotsOverride), {
                 status: 200,
@@ -333,13 +338,74 @@ if (!process.versions.electron) {
                 (await window.webContents.capturePage()).toPNG(),
             );
             await click("Commit");
-            await until(
-                () =>
-                    js(
-                        `!document.querySelector('dialog[open]') && !!document.querySelector('[data-shot-status="synced"]')`,
-                    ),
-                "Ingestion did not complete",
-            );
+            await until(async () => !(await js('window.desktop.getIngestStatus()')).active &&
+                (await js('window.desktop.getShots()')).shots.length === 1, 'Successful Commit removes its Import card');
+            const publishedId = fs.readdirSync(join(root, 'library')).find(name => name.endsWith('.metadata.json')).split('.')[0];
+            const beforeLibraryEdit = Object.fromEntries(['source.mp4', 'thumb.jpg', 'proxy.mov'].map(role => [role, fs.readFileSync(join(root, 'library', `${publishedId}.${role}`))]));
+            await js(`document.querySelector('[aria-label^="Filter clips by device:"]').click()`);
+            await click('Library');
+            await until(() => js(`document.querySelectorAll('[data-shot-card]').length===1 && !document.querySelector('[data-shot-status="synced"]')`), 'Library shows the committed clip with neutral styling');
+            assert.equal(await js(`document.querySelector('[aria-label^="Filter clips by device:"]').getAttribute('aria-pressed')`),'false','Library starts with its own filters');
+            await js(`document.querySelector('[aria-label^="Filter clips by device:"]').click()`);
+            await js(`document.getElementById('shot-${publishedId}').click()`);
+            await until(()=>js(`!!document.querySelector('video') && document.querySelector('[aria-label="Notes"]')?.value===''`),'Library inspector and playback');
+            assert.equal(await js(`document.querySelector('video').getAttribute('src')`),`shot-media://local/library/${publishedId}/original`);
+            await new Promise(resolve=>setTimeout(resolve,150));
+            await fs.promises.writeFile('/tmp/owmo-library-view.png',(await window.webContents.capturePage()).toPNG());
+            await until(()=>js(`!!document.querySelector('[data-shot-image]')`),'Library thumbnail is visible before refresh');
+            await js(`window.libraryImageBeforeRefresh=document.querySelector('[data-shot-image]'); window.libraryGridTop=document.querySelector('[data-shot-card]').getBoundingClientRect().top;`);
+            holdLibraryThumbnail = true;
+            await js('window.desktop.refreshCatalogue()');
+            await until(()=>libraryThumbnailHeld,'Refreshed thumbnail request is held');
+            assert.equal(await js(`document.querySelector('[data-shot-image]')===window.libraryImageBeforeRefresh`),true,'Refresh keeps the existing image visible while its replacement loads');
+            assert.equal(await js(`document.querySelector('[data-shot-card]').getBoundingClientRect().top===window.libraryGridTop`),true,'Refreshing does not shift the grid');
+            releaseLibraryThumbnail();
+            await until(()=>js(`!!document.querySelector('[aria-label="Set current frame as thumbnail"]:not(:disabled)') && document.querySelector('video').readyState>=2`),'Library Thumb button becomes ready');
+            const committedLibraryThumb=fs.readFileSync(join(root,'library',`${publishedId}.thumb.jpg`));
+            const committedLibraryJSON=fs.readFileSync(join(root,'library',`${publishedId}.metadata.json`));
+            await click('Thumb');
+            await until(()=>js(`document.getElementById('shot-${publishedId}').getAttribute('data-shot-status')==='changes-pending'`),'Library Thumb makes the card yellow');
+            const pendingLibraryThumb=await js(`window.desktop.getLibraryThumbnail('${publishedId}')`);
+            assert.notEqual(pendingLibraryThumb,'data:image/jpeg;base64,'+committedLibraryThumb.toString('base64'));
+            assert.deepEqual(fs.readFileSync(join(root,'library',`${publishedId}.thumb.jpg`)),committedLibraryThumb,'Thumb stays local until Commit');
+            assert.deepEqual(fs.readFileSync(join(root,'library',`${publishedId}.metadata.json`)),committedLibraryJSON);
+            await click('Commit');await until(()=>js(`document.querySelector('dialog[open]')?.textContent.includes('Metadata and thumbnails')`),'Thumbnail Commit review identifies its assets');
+            assert.equal(await js(`document.querySelectorAll('dialog details p').length`),2,'Review includes thumbnail and metadata only');
+            await click('Cancel');await click('Revert');await js(`document.querySelector('[aria-label="Confirm revert clip attributes"]').click()`);
+            await until(()=>js(`!document.querySelector('dialog[open]') && !document.querySelector('[data-shot-status="changes-pending"]')`),'Revert clears the thumbnail draft');
+            assert.equal(await js(`window.desktop.getLibraryThumbnail('${publishedId}')`),'data:image/jpeg;base64,'+committedLibraryThumb.toString('base64'));
+            await until(()=>js(`!!document.querySelector('[aria-label="Set current frame as thumbnail"]:not(:disabled)')`),'Thumb is ready again after Revert');
+            await click('Thumb');await until(()=>js(`!!document.querySelector('[data-shot-status="changes-pending"]')`),'Second thumbnail edit');
+            const acceptedThumbnail=await js(`window.desktop.getLibraryThumbnail('${publishedId}')`);
+            await click('Commit');await until(()=>js(`document.querySelector('dialog[open]')?.textContent.includes('Ready to Commit?')`),'Thumbnail Commit confirmation');await click('Commit');
+            await until(async()=>!(await js('window.desktop.getIngestStatus()')).active && fs.readFileSync(join(root,'library',`${publishedId}.thumb.jpg`)).equals(Buffer.from(acceptedThumbnail.split(',')[1],'base64')),'Library thumbnail transfer finishes');
+            for(const role of ['source.mp4','proxy.mov']) assert.deepEqual(fs.readFileSync(join(root,'library',`${publishedId}.${role}`)),beforeLibraryEdit[role],'Thumbnail Commit preserves source and proxy');
+            // Restore the fixture thumbnail for the remaining metadata-only regression checks.
+            await js(`(async()=>{await window.desktop.setLibraryThumbnail('${publishedId}',${JSON.stringify('data:image/jpeg;base64,'+committedLibraryThumb.toString('base64'))}); const r=await window.desktop.reviewLibraryCommit(['${publishedId}']); await window.desktop.startLibraryCommit(r.token,['${publishedId}']);})()`);
+            await until(async()=>!(await js('window.desktop.getIngestStatus()')).active,'Restore fixture thumbnail');
+            assert.equal(await js(`!!document.querySelector('[aria-label="Skip selected clips"]') || !!document.querySelector('[aria-label^="Eject "]')`),false,'Library omits Skip and Eject');
+            await js(`window.desktop.updateLibraryOrganization(['${publishedId}'],{field:'notes',operation:'set',value:'Library draft'})`);
+            await until(()=>js(`document.querySelector('[data-shot-status="changes-pending"]') && document.querySelector('[aria-label="Notes"]').value==='Library draft'`),'Library edits show yellow');
+            await click('Revert');await js(`document.querySelector('[aria-label="Confirm revert clip attributes"]').click()`);
+            await until(()=>js(`!document.querySelector('dialog[open]') && !document.querySelector('[data-shot-status="changes-pending"]') && document.querySelector('[aria-label="Notes"]').value===''`),'Library Revert restores committed metadata');
+            await js(`window.desktop.updateLibraryOrganization(['${publishedId}'],{field:'notes',operation:'set',value:'Library committed edit'})`);
+            await until(()=>js(`!!document.querySelector('[data-shot-status="changes-pending"]')`),'Library update ready');
+            await click('Commit');await until(()=>js(`document.querySelector('dialog[open]')?.textContent.includes('Ready to Commit?')`),'Library Commit review');
+            assert.equal(await js(`document.querySelectorAll('dialog details p').length`),1,'Library review only writes metadata');
+            await click('Commit');
+            await until(async()=>!(await js('window.desktop.getIngestStatus()')).active && fs.readFileSync(join(root,'library',`${publishedId}.metadata.json`),'utf8').includes('Library committed edit'),'Library metadata Commit');
+            for(const [role,bytes] of Object.entries(beforeLibraryEdit)) assert.deepEqual(fs.readFileSync(join(root,'library',`${publishedId}.${role}`)),bytes,'Metadata Commit preserves media assets');
+            // Restore empty Notes for the remaining Import regression checks.
+            await js(`(async()=>{ await window.desktop.updateLibraryOrganization(['${publishedId}'],{field:'notes',operation:'set',value:''}); const r=await window.desktop.reviewLibraryCommit(['${publishedId}']); await window.desktop.startLibraryCommit(r.token,['${publishedId}']); })()`);
+            await until(async()=>!(await js('window.desktop.getIngestStatus()')).active,'Library reset Commit');
+            await click('Import');
+            assert.equal(await js(`document.querySelector('[aria-label^="Filter clips by device:"]').getAttribute('aria-pressed')`),'true','Import retains its filters');
+            await js(`document.querySelector('[aria-label="Show all clips"]').click()`);
+            await click('Library');
+            assert.equal(await js(`document.querySelector('[aria-label^="Filter clips by device:"]').getAttribute('aria-pressed')`),'true','Library filters survive Import filter changes');
+            await click('Import');
+            await js('window.desktop.chooseClips()');
+            await until(()=>js(`!!document.querySelector('[data-shot-status="synced"]')`),'Re-adding a committed clip shows green in Import');
             assert.equal(
                 fs.readdirSync(join(root, "library")).filter((name) => name.endsWith(".metadata.json")).length,
                 1,
@@ -410,6 +476,9 @@ if (!process.versions.electron) {
             await js(
                 `(async () => { const review = await window.desktop.reviewIngest([${JSON.stringify(ingested.id)}]); return window.desktop.startIngest(review.token,[${JSON.stringify(ingested.id)}]); })()`,
             );
+            await until(async()=>!(await js('window.desktop.getIngestStatus()')).active &&
+                !(await js('window.desktop.getShots()')).shots.some(shot=>shot.id===ingested.id),'Fresh Commit removes its card');
+            await js('window.desktop.chooseClips()');
             await until(
                 () => js(`!!document.querySelector('[data-shot-status="synced"]')`),
                 "Fresh re-ingestion failed",
@@ -827,10 +896,11 @@ if (!process.versions.electron) {
             await fs.promises.writeFile(join(root, "validated"), "passed");
             clearTimeout(timer);
             console.log(
-                "PASS: managed Cache and Browse Cache, staged Library Save/Cancel/Escape, selective Clear Cache with media preservation, real Electron review, X exclusion, ingestion, persisted sync badge, renderer reload, deleted-Library refresh/New review, replacement review, proxy readiness and compact centered sync summary at wide/narrow sizes, notifications without polling, stale-update protection, and unified toolbar Refresh–Stop control.",
+                "PASS: Library Thumb capture, pending preview, Commit/Revert, source/proxy preservation, Library browsing/playback, independent tab filters, shared metadata Commit/Revert, automatic Import retirement, green rediscovery, managed Cache and Browse Cache, staged Library Save/Cancel/Escape, selective Clear Cache with media preservation, real Electron review, X exclusion, ingestion, persisted sync badge, renderer reload, deleted-Library refresh/New review, replacement review, proxy readiness and compact centered sync summary at wide/narrow sizes, notifications without polling, stale-update protection, and unified toolbar Refresh–Stop control.",
             );
             app.quit();
         } catch (error) {
+            releaseLibraryThumbnail?.();
             console.error(error);
             clearTimeout(timer);
             backend?.kill();

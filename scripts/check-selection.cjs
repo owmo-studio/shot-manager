@@ -352,11 +352,11 @@ if (!process.versions.electron) {
             );
             assert.equal(await js(`document.querySelector('[aria-label="Show all clips"]').hasAttribute('aria-pressed')`),false,'All is a neutral reset action');
             assert.equal(await js(`!!document.querySelector('aside [aria-label="Add clips"]')`),false,'Sidebar has no Add button');
-            await click("Filter clips by device: ZV-E10 II");
+            await click("Filter clips by device: Sony ZV-E10 II");
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===3`);
             assert.equal(await js(`document.querySelector('[aria-label="Show all clips"]').hasAttribute('aria-pressed')`),false,'All stays neutral with a device selected');
             assert.equal(await js(`!!document.querySelector('[aria-label="Inspect Clip 1.mp4"]')`),false,"Filtering uses per-clip metadata, independent of discovery folder");
-            await click("Filter clips by device: FX30");
+            await click("Filter clips by device: Sony FX30");
             assert.equal(await js(`document.querySelector('[aria-label="Show all clips"]').hasAttribute('aria-pressed')`),false,'All stays neutral with multiple device filters');
             await click("Show all clips");
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
@@ -594,6 +594,7 @@ if (!process.versions.electron) {
             await wait(`!document.querySelector('dialog[open]')`);
             assert.equal(resetCalls, 1);
             assert.deepEqual(lastClearSelection, {
+                catalogue: true,
                 metadata: true,
                 thumbnails: true,
                 fingerprints: true,
@@ -800,7 +801,7 @@ if (!process.versions.electron) {
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "][aria-pressed="true"]').length===0`);
             assert.deepEqual(await skipped(), [1]);
             await inspect(1);
-            await click("Filter clips by device: ZV-E10 II");
+            await click("Filter clips by device: Sony ZV-E10 II");
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===3`);
             assert.deepEqual(await selected(), []);
             assert.equal(
@@ -816,7 +817,7 @@ if (!process.versions.electron) {
             await arrow("Right");
             assert.deepEqual(await selected(), [4]);
             await js(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
-            await click("Filter clips by device: ZV-E10 II");
+            await click("Filter clips by device: Sony ZV-E10 II");
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
             assert.deepEqual(await skipped(), [1]);
             await push(

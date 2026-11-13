@@ -1,3 +1,4 @@
+import { useClipView } from "./ClipViewContext";
 import { secondaryButton, dangerButton } from "./buttonStyles";
 import { useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../../shared/errors';
@@ -8,6 +9,7 @@ export function RevertOrganizationButton({ shots, onReverted }: {
     shots: VideoShot[];
     onReverted: (result: { collection: ShotCollection; vocabulary: TagVocabulary }) => void;
 }) {
+    const { api, mode } = useClipView();
     const candidates = shots.filter(shot => shot.ingestState === 'changes-pending');
     const [targets, setTargets] = useState<VideoShot[] | null>(null);
     const [busy, setBusy] = useState(false);
@@ -25,7 +27,7 @@ export function RevertOrganizationButton({ shots, onReverted }: {
         if (!targets || busy) return;
         setBusy(true); setError(null);
         try {
-            const result = await window.desktop.revertOrganization(targets.map(shot => shot.id));
+            const result = await api.revertOrganization(targets.map(shot => shot.id));
             onReverted(result);
             setTargets(null);
         } catch (reason) {
@@ -44,7 +46,7 @@ export function RevertOrganizationButton({ shots, onReverted }: {
             <p id="revert-organization-description" className="mt-3 text-sm leading-6 text-zinc-400">
                 Replace local attributes and thumbnails with Library values for {targets.length} {targets.length === 1 ? 'clip' : 'clips'}.
             </p>
-            <p className="mt-2 text-xs text-zinc-500">Skip is kept.</p>
+            {mode === "import" && <p className="mt-2 text-xs text-zinc-500">Skip is kept.</p>}
             {error && <p role="alert" className="mt-3 text-xs text-red-300">{error}</p>}
             <div className="mt-6 flex justify-end gap-3">
                 <button autoFocus type="button" disabled={busy} onClick={() => setTargets(null)} className={secondaryButton}>Cancel</button>

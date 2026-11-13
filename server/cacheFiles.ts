@@ -3,15 +3,18 @@ import { join, resolve } from 'node:path';
 import { inspectLibrary, within } from './library';
 import { scratchFolder } from './proxies';
 import { VIDEO_SAMPLE_SCHEME } from '../shared/shots';
+import { validateLibraryMetadata } from '../shared/library';
 import type { CacheInventory, CacheSummary } from '../shared/desktop';
 
-export interface CacheSelection { metadata: boolean; thumbnails: boolean; fingerprints: boolean; proxies: boolean }
+export type { CacheSelection } from '../shared/desktop';
+import type { CacheSelection } from '../shared/desktop';
 export const managedCacheDirectory = scratchFolder;
 
 export function cacheFiles(root: string) {
     return {
         root,
         metadata: join(root, 'metadata.json'),
+        catalogue: join(root, 'catalogue.json'),
         thumbnails: join(root, 'thumbnails'),
         fingerprints: join(root, 'fingerprints'),
         proxies: join(root, 'proxies'),
@@ -19,6 +22,7 @@ export function cacheFiles(root: string) {
 }
 
 const categoryPatterns = {
+    catalogue: /^catalogue\.json(?:\.[a-f0-9-]{36}\.tmp)?$/,
     metadata: /^metadata\.json(?:\.[a-f0-9-]{36}\.tmp)?$/,
     thumbnails: /^[a-f0-9]{64}(?:\.jpg|\.[a-f0-9-]{36}\.tmp)$/,
     fingerprints: /^[a-f0-9]{64}\.json(?:\.[a-f0-9-]{36}\.tmp)?$/,
@@ -40,18 +44,20 @@ async function categoryFiles(directory: string, pattern: RegExp) {
 
 async function categoryEntries(root: string, category: CacheCategory) {
     const paths = cacheFiles(root);
-    const files = await categoryFiles(category === 'metadata' ? root : paths[category], categoryPatterns[category]);
+    const files = await categoryFiles(category === 'metadata' || category === 'catalogue' ? root : paths[category], categoryPatterns[category]);
+    if (category === 'thumbnails') files.push(...await categoryFiles(join(root, 'library-thumbnails'), categoryPatterns.thumbnails));
     if (category === 'proxies') files.push(...await categoryFiles(root, categoryPatterns.proxies));
     return files;
 }
 
 export async function cacheInventory(root: string): Promise<CacheInventory> {
     const inventory: CacheInventory = {
+        catalogue: { files: 0, bytes: 0 },
         metadata: { files: 0, bytes: 0 }, thumbnails: { files: 0, bytes: 0 },
         fingerprints: { files: 0, bytes: 0 }, proxies: { files: 0, bytes: 0 }, total: { files: 0, bytes: 0 },
     };
     for (const category of Object.keys(categoryPatterns) as CacheCategory[]) {
-        const summary: CacheSummary = inventory[category];
+        const summary: CacheSummary = inventory[category]!;
         for (const path of await categoryEntries(root, category)) {
             try {
                 const info = await lstat(path);
@@ -82,12 +88,20 @@ export async function pruneManagedCache(root: string, days = 90, now = Date.now(
     if (!Number.isFinite(days) || days <= 0) throw new Error('Cache retention must be a positive number of days.');
     const cutoff = now - days * 86400000;
     const result = { removed: 0, failed: 0 };
-    for (const category of ['metadata', 'thumbnails', 'fingerprints', 'proxies'] as const) {
+    for (const category of ['catalogue', 'metadata', 'thumbnails', 'fingerprints', 'proxies'] as const) {
         for (const path of await categoryEntries(root, category)) {
             try {
                 const info = await lstat(path);
                 if (!info.isFile() || info.isSymbolicLink() || info.mtimeMs > cutoff) continue;
                 if (category === 'metadata' && path.endsWith('metadata.json')) continue;
+                if (category === 'catalogue' && path.endsWith('catalogue.json')) {
+                    try {
+                        if (info.size > 64 * 1024 * 1024) continue;
+                        const data = JSON.parse(await readFile(path, 'utf8'));
+                        if (!data || !Array.isArray(data.entries) || !(data.path === null || typeof data.path === 'string' && data.path.startsWith('/'))) continue;
+                        for (const entry of data.entries) validateLibraryMetadata(entry.metadata, entry.metadata?.id);
+                    } catch { continue; }
+                }
                 if (category === 'proxies' && activeClipIds.has(path.split('/').at(-1)!.slice(0, 64))) continue;
                 if (category === 'fingerprints' && path.endsWith('.json') && !await validFingerprintRecord(path, info.size)) continue;
                 await unlink(path); result.removed++;
@@ -142,7 +156,14 @@ export async function clearSelectedCache(root: string, selection: CacheSelection
         await collectFile(paths.metadata, /^metadata\.json$/);
         await clearDirectory(root, /^metadata\.json\.[a-f0-9-]{36}\.tmp$/);
     }
-    if (selection.thumbnails) await clearDirectory(paths.thumbnails, /^[a-f0-9]{64}(?:\.jpg|\.[a-f0-9-]{36}\.tmp)$/);
+    if (selection.catalogue) {
+        await collectFile(paths.catalogue, /^catalogue\.json$/);
+        await clearDirectory(root, /^catalogue\.json\.[a-f0-9-]{36}\.tmp$/);
+    }
+    if (selection.thumbnails) {
+        await clearDirectory(paths.thumbnails, categoryPatterns.thumbnails);
+        await clearDirectory(join(root, 'library-thumbnails'), categoryPatterns.thumbnails);
+    }
     if (selection.fingerprints) await clearDirectory(paths.fingerprints, /^[a-f0-9]{64}\.json(?:\.[a-f0-9-]{36}\.tmp)?$/);
     if (selection.proxies) {
         await clearDirectory(paths.proxies, /^[a-f0-9]{64}\.proxy\.mov$|^[a-f0-9]{64}\.proxy\.[a-f0-9-]{36}\.partial$/);

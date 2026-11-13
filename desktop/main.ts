@@ -111,8 +111,8 @@ async function startBackend(): Promise<void> {
       return
     }
     if (typeof message === 'object' && message !== null && 'type' in message &&
-        message.type === 'shots:changed' && 'change' in message) {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('shots:changed', message.change)
+        (message.type === 'shots:changed' || message.type === 'library:changed') && 'change' in message) {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(message.type, message.change)
       return
     }
     if (typeof message === 'object' && message !== null && 'type' in message &&
@@ -205,6 +205,40 @@ if (!app.requestSingleInstanceLock()) {
       }))
     })
     handle('ingestion:status', event => { requireMainWindow(event); return backendRequest('/api/ingestion') })
+    handle('library:list', event => { requireMainWindow(event); return backendRequest('/api/library') })
+    handle('library:vocabulary', event => { requireMainWindow(event); return backendRequest('/api/library/vocabulary') })
+    handle('library:refresh', async event => { requireMainWindow(event); await flushDrafts(); return backendRequest('/api/library/refresh', { method: 'POST' }) })
+    for (const action of ['review', 'revert'] as const) handle(`library:${action}`, async (event, value: unknown) => {
+      requireMainWindow(event); const shotIds = validateIngestIds(value); await flushDrafts()
+      return organizationWrites.run(() => backendRequest(`/api/library/${action}`, { method: 'POST', body: JSON.stringify({ shotIds }) }))
+    })
+    handle('library:commit', async (event, reviewToken: unknown, value: unknown) => {
+      requireMainWindow(event); const shotIds = validateIngestIds(value)
+      if (typeof reviewToken !== 'string' || reviewToken.length > 64) throw new Error('Invalid Library review')
+      await flushDrafts()
+      return backendRequest('/api/library/commit', { method: 'POST', body: JSON.stringify({ token: reviewToken, shotIds }) })
+    })
+    handle('library:update', (event, value: unknown, action: OrganizationAction) => {
+      requireMainWindow(event); const shotIds = validateIngestIds(value); const normalized = validateOrganizationAction(action)
+      if (normalized.field === 'skip') throw new Error('Skip is only available in Import')
+      const operation = () => backendRequest('/api/library/organization', { method: 'PATCH', body: JSON.stringify({ shotIds, action: normalized }) })
+      if (normalized.field === 'notes' || normalized.field === 'scene') return textWrites.schedule(`library:${normalized.field}:${shotIds.sort().join(',')}`, operation)
+      void textWrites.flush().catch(() => undefined)
+      return draftWrites.run(operation)
+    })
+    for (const asset of ['thumbnail', 'details', 'lut'] as const) handle(`library:${asset}`, async (event, id: unknown) => {
+      requireMainWindow(event)
+      if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid Library clip ID')
+      const result = await backendRequest<{ dataUrl: string | null }>(`/api/library/${id}/${asset}`)
+      return asset === 'thumbnail' ? result.dataUrl : result
+    })
+    handle('library:set-thumbnail', async (event, id: unknown, dataUrl: unknown) => {
+      requireMainWindow(event)
+      if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid Library clip ID')
+      if (typeof dataUrl !== 'string' || dataUrl.length > 3000000 || !dataUrl.startsWith('data:image/jpeg;base64,')) throw new Error('Invalid thumbnail')
+      await flushDrafts()
+      return organizationWrites.run(() => backendRequest(`/api/library/${id}/thumbnail`, { method: 'PUT', body: JSON.stringify({ dataUrl }) }))
+    })
     handle('ingestion:refresh-library', event => { requireMainWindow(event); return backendRequest('/api/work/refresh', { method: 'POST' }) })
     handle('ingestion:review', async (event, value: unknown) => {
       requireMainWindow(event)
@@ -261,7 +295,8 @@ if (!app.requestSingleInstanceLock()) {
       requireMainWindow(event)
       if (!value || typeof value !== 'object' || Array.isArray(value) ||
         ['metadata', 'thumbnails', 'fingerprints', 'proxies'].some(key => typeof (value as Record<string, unknown>)[key] !== 'boolean') ||
-        Object.keys(value).some(key => !['metadata', 'thumbnails', 'fingerprints', 'proxies'].includes(key)) ||
+        ((value as Record<string, unknown>).catalogue !== undefined && typeof (value as Record<string, unknown>).catalogue !== 'boolean') ||
+        Object.keys(value).some(key => !['metadata', 'thumbnails', 'fingerprints', 'proxies', 'catalogue'].includes(key)) ||
         !Object.values(value).some(Boolean)) throw new Error('Choose Cache files to clear.')
       await flushDrafts()
       return organizationWrites.run(async () => {
@@ -272,6 +307,7 @@ if (!app.requestSingleInstanceLock()) {
         const status = await backendRequest<{ active: boolean }>('/api/ingestion')
         if (status.active) throw new Error('Wait for the sync queue to finish before clearing Cache.')
         await backendRequest('/api/work/stop', { method: 'POST' })
+        if ((value as CacheSelection).thumbnails) await backendRequest('/api/thumbnail-drafts', { method: 'DELETE' })
         const restore = await backendRequest<WorkspaceRestore>('/api/workspace/restore-plan')
         let clearError: unknown
         try {
@@ -404,14 +440,14 @@ if (!app.requestSingleInstanceLock()) {
     })
     protocol.handle('shot-media', async (request) => {
       const url = new URL(request.url)
-      const match = /^\/shots\/([a-f0-9]{64})\/original$/.exec(url.pathname)
+      const match = /^\/(shots|library)\/([a-f0-9]{64})\/original$/.exec(url.pathname)
       if (url.hostname !== 'local' || url.search || !match || !['GET', 'HEAD'].includes(request.method)) return new Response(null, { status: 404 })
       if (quitting || !backendURL) return new Response(null, { status: 503 })
       const headers = new Headers({ Authorization: `Bearer ${token}` })
       const range = request.headers.get('range')
       if (range) headers.set('Range', range)
       try {
-        const response = await fetch(`${backendURL}/api/shots/${match[1]}/media/original`, {
+        const response = await fetch(`${backendURL}/api/${match[1]}/${match[2]}/media/original`, {
           method: request.method, headers, signal: AbortSignal.any([request.signal, mediaShutdown.signal])
         })
         const responseHeaders = new Headers(response.headers)

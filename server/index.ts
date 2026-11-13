@@ -7,6 +7,8 @@ const server = createServer(token, (change) => {
   process.parentPort?.postMessage({ type: 'shots:changed', change })
 }, process.env.SHOT_MANAGER_THUMBNAIL_CACHE, process.env.SHOT_MANAGER_FINGERPRINT_DIRECTORY, process.env.SHOT_MANAGER_ORGANIZATION_FILE, process.env.SHOT_MANAGER_CONFIGURATION_FILE, status => {
   process.parentPort?.postMessage({ type: 'ingestion:changed', status })
+}, change => {
+  process.parentPort?.postMessage({ type: 'library:changed', change })
 })
 let stopping = false
 

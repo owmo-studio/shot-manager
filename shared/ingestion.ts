@@ -4,6 +4,7 @@ export interface IngestionReceipt {
     libraryPath: string;
     signature: string;
     ingestedAt: string;
+    thumbnailDigest?: string;
 }
 
 export type IngestState = 'synced' | 'changes-pending' | 'queued' | 'processing' | 'unverified';
@@ -12,6 +13,8 @@ export interface IngestReview {
     token: string;
     libraryPath: string;
     proxyPreparation?: boolean;
+    metadataOnly?: boolean;
+    libraryEdits?: boolean;
     clips: { id: string; filename: string; bytes: number; mode: 'new' | 'replace'; proxyReady: boolean; files: { from: string; to: string }[] }[];
 }
 
@@ -29,6 +32,7 @@ export interface IngestStatus {
     work?: { paused: boolean; busy: boolean; encoding: boolean; queued: number; scratchPath: string | null; error?: string };
     current?: { id: string; filename: string; percent: number; phase: 'transferring' | 'metadata' };
     errors: { id: string; filename: string; message: string; eventId: string }[];
+    acceptedReviews?: string[];
 }
 
 // Stable descriptive state: Skip and selection deliberately do not contribute.

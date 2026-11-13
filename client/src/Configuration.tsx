@@ -348,7 +348,7 @@ export function Configuration({ libraryActionsRef }: { libraryActionsRef?: Ref<H
                         <h3 id="cache-summary-title" className="text-xs font-medium text-zinc-400">Cache Summary</h3>
                         <p aria-label="Cache summary" className="mt-2 text-xs leading-5 text-zinc-300">
                             {cacheSummaryError ?? (cacheInventory
-                                ? `Metadata: ${cacheRecords === null ? "—" : cacheRecords} clips (${sizeLabel(cacheInventory.metadata.bytes)}) · Thumbnails: ${cacheInventory.thumbnails.files} (${sizeLabel(cacheInventory.thumbnails.bytes)}) · Fingerprints: ${cacheInventory.fingerprints.files} (${sizeLabel(cacheInventory.fingerprints.bytes)}) · Proxies: ${cacheInventory.proxies.files} (${sizeLabel(cacheInventory.proxies.bytes)}) · Total: ${sizeLabel(cacheInventory.total.bytes)}`
+                                ? `Catalogue: ${sizeLabel(cacheInventory.catalogue?.bytes ?? 0)} · Metadata: ${cacheRecords === null ? "—" : cacheRecords} clips (${sizeLabel(cacheInventory.metadata.bytes)}) · Thumbnails: ${cacheInventory.thumbnails.files} (${sizeLabel(cacheInventory.thumbnails.bytes)}) · Fingerprints: ${cacheInventory.fingerprints.files} (${sizeLabel(cacheInventory.fingerprints.bytes)}) · Proxies: ${cacheInventory.proxies.files} (${sizeLabel(cacheInventory.proxies.bytes)}) · Total: ${sizeLabel(cacheInventory.total.bytes)}`
                                 : "Loading…")}
                         </p>
                         <p className="mt-1 text-[11px] leading-5 text-zinc-500">Unused clip data expires after 90 days when the app closes. Saved Identity/Project options stay until Clear Cache.</p>

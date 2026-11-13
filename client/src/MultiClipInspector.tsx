@@ -1,3 +1,4 @@
+import { useClipView } from "./ClipViewContext";
 import { hasPendingCommit } from "./clipState";
 import { AttributeFields } from "./AttributeFields";
 import { EjectButton } from "./EjectButton";
@@ -10,6 +11,7 @@ export function MultiClipInspector({ shots, onEject, ejectBusy, skippedCount, di
     onSkipChange: (skipped: boolean) => void;
     onOrganizationUpdated: (collection: ShotCollection) => void;
 }) {
+    const { mode } = useClipView();
     const count = shots.length;
     const cancelCount = shots.filter(shot => hasPendingCommit(shot)).length;
     return <ResizableInspector width={width} onResize={onResize}>
@@ -17,10 +19,10 @@ export function MultiClipInspector({ shots, onEject, ejectBusy, skippedCount, di
         <header className="mb-4 flex items-start justify-between gap-3">
             <div><h2 className="text-sm font-medium">{count} Selected Clips</h2>
                 <p className="mt-1 text-xs text-zinc-500">Shared values · Counts mark differences</p></div>
-            <div className="flex shrink-0 items-center gap-2">
+            {mode === "import" && <div className="flex shrink-0 items-center gap-2">
                 <EjectButton cancel={cancelCount > 0} count={cancelCount || count} busy={ejectBusy} onClick={onEject} />
                 <SkipSelection count={count} skippedCount={skippedCount} disabled={disabled} onChange={onSkipChange} />
-            </div>
+            </div>}
         </header>
         <ul aria-label="Selected clips" className="mb-4 max-h-40 overflow-y-auto rounded-lg border border-white/8 bg-black/10 py-1 text-xs text-zinc-400 divide-y divide-white/5">
             {shots.map((shot) => <li key={shot.id} title={shot.filePath ?? shot.relativePath} className="truncate px-3 py-1.5">{shot.filename}</li>)}

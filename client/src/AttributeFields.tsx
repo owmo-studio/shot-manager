@@ -1,3 +1,4 @@
+import { useClipView } from "./ClipViewContext";
 import { errorMessage } from '../../shared/errors';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ShotCollection, VideoShot } from '../../shared/shots';
@@ -142,6 +143,7 @@ export function AttributeFields({ shots = [], onUpdated }: { shots?: VideoShot[]
 }
 
 function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: (collection: ShotCollection) => void }) {
+    const { api, mode } = useClipView();
     const [vocabulary, setVocabulary] = useState<TagVocabulary>(emptyVocabulary);
     const [pending, setPending] = useState(0);
     const [failure, setFailure] = useState<string | null>(null);
@@ -155,10 +157,17 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
     const textGeneration = useRef(0);
     const pendingText = useRef(0);
     const disabled = !shots.length || shots.some(shot => !shot.editable || !shot.fingerprint || !shot.organization);
+    const savedText = JSON.stringify(shots.map(shot => [shot.organization?.scene ?? '', shot.organization?.notes ?? '']));
+    useEffect(() => {
+        if (pendingText.current || failure || document.activeElement?.matches('[aria-label="Scene"], [aria-label="Notes"]')) return;
+        const values: [string, string][] = JSON.parse(savedText);
+        setScene(values.every(value => value[0] === values[0]?.[0]) ? values[0]?.[0] ?? '' : '');
+        setNotes(values.every(value => value[1] === values[0]?.[1]) ? values[0]?.[1] ?? '' : '');
+    }, [savedText, pending, failure]);
 
     async function refreshRetriedText() {
         const generation = textGeneration.current;
-        const collection = await window.desktop.getShots();
+        const collection = await api.getShots();
         onUpdated(collection);
         if (!mounted.current || generation !== textGeneration.current || pendingText.current) return;
         const drafts = shots.map(shot => collection.shots.find(current => current.id === shot.id)?.organization);
@@ -173,7 +182,7 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
         let disposed = false;
         const reload = () => {
             const request = ++generation;
-            window.desktop.getTagVocabulary().then(value => { if (!disposed && request === generation) setVocabulary(value); }).catch(() => undefined);
+            api.getTagVocabulary().then(value => { if (!disposed && request === generation) setVocabulary(value); }).catch(() => undefined);
         };
         const cleared = (event: Event) => {
             const ids = (event as CustomEvent<string[]>).detail;
@@ -183,7 +192,7 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
         const retried = () => { setFailure(null); reload(); void refreshRetriedText().catch(() => undefined); };
         reload();
         let vocabularyRevision = -1;
-        const unsubscribe = window.desktop.onShotsChanged(change => {
+        const unsubscribe = api.onShotsChanged(change => {
             if (change.vocabularyRevision === vocabularyRevision) return;
             vocabularyRevision = change.vocabularyRevision;
             reload();
@@ -194,7 +203,7 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
         return () => {
             disposed = true; mounted.current = false;
             unsubscribe();
-            void window.desktop.flushOrganizationText().catch(() => undefined);
+            void api.flushOrganizationText().catch(() => undefined);
             window.removeEventListener('organization-options-changed', reload);
             window.removeEventListener('organization-cleared', cleared);
             window.removeEventListener('organization-saves-retried', retried);
@@ -208,7 +217,7 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
         setPending(count => count + 1);
         setFailure(null);
         try {
-            const result = await window.desktop.updateOrganization(shots.map(shot => shot.id), action);
+            const result = await api.updateOrganization(shots.map(shot => shot.id), action);
             onUpdated(result.collection);
             if (mounted.current) setVocabulary(result.vocabulary);
         } catch (error) {
@@ -228,7 +237,7 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
                     aria-describedby={sceneHintId} aria-invalid={!!sceneError}
                     title="A short sentence. Letters, numbers, spaces, apostrophes, commas, periods, and hyphens."
                     placeholder={mixedScene ? 'Mixed scenes — typing replaces selected values' : shots.length ? 'Describe the shot…' : ''}
-                    onBlur={() => { setScene(normalizeScene(scene)); setSceneError(null); void window.desktop.flushOrganizationText().catch(() => undefined); }}
+                    onBlur={() => { setScene(normalizeScene(scene)); setSceneError(null); void api.flushOrganizationText().catch(() => undefined); }}
                     onChange={event => {
                         const value = event.target.value.normalize('NFC').replace(/[‘’]/g, "'").replace(/[–—]/g, '-');
                         try {
@@ -244,7 +253,7 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
             </label>
             <label data-attribute-field="notes" className="block text-xs text-zinc-400"><span className="attribute-label">Notes</span>
                 <textarea aria-label="Notes" rows={6} maxLength={10000} value={notes}
-                    onBlur={() => { void window.desktop.flushOrganizationText().catch(() => undefined); }}
+                    onBlur={() => { void api.flushOrganizationText().catch(() => undefined); }}
                     placeholder={mixedNotes ? 'Mixed notes — typing replaces selected values' : shots.length ? 'Optional notes' : ''}
                     onChange={event => { setNotes(event.target.value); void submit({ field: 'notes', operation: 'set', value: event.target.value }); }}
                     className="mt-1.5 block w-full resize-none rounded-lg border border-white/10 bg-black/10 px-3 py-2 text-xs text-zinc-200 outline-none focus:border-blue-400/50 placeholder:text-zinc-600" />
@@ -255,9 +264,9 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
         {failure && <div role="alert" className="text-xs text-red-300">
             {failure}<button type="button" aria-label="Retry organization save" onClick={async () => {
                 try {
-                    await window.desktop.retryOrganizationSaves();
+                    await api.retryOrganizationSaves();
                     await refreshRetriedText();
-                    setVocabulary(await window.desktop.getTagVocabulary());
+                    setVocabulary(await api.getTagVocabulary());
                     setFailure(null);
                 } catch { /* Both the inspector and app-level banner keep the failure visible. */ }
             }} className="ml-2 underline hover:text-red-100">Retry</button>

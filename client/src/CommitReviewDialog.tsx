@@ -31,11 +31,12 @@ export function CommitReviewDialog({
     const readyProxyIds = new Set(shots.filter(shot => shot.proxyState === "ready").map(shot => shot.id));
     const clips = review.clips.filter((clip) => includedIds.has(clip.id));
     const replacements = clips.filter((clip) => clip.mode === "replace").length;
+    const thumbnailEdits = clips.some(clip => clip.files.some(file => file.to.endsWith('.thumb.jpg')));
     return (
         <ModalDialog titleId="ingest-dialog-title" title="Ready to Commit?" busy={busy} onCancel={onCancel}>
             <p className="mt-3 text-sm text-zinc-400">
                 {clips.length} {clips.length === 1 ? "clip" : "clips"} ·{" "}
-                {bytes(clips.reduce((sum, clip) => sum + clip.bytes, 0))}
+                {review.libraryEdits ? thumbnailEdits ? 'Metadata and thumbnails' : 'Metadata only' : bytes(clips.reduce((sum, clip) => sum + clip.bytes, 0))}
                 {review.proxyPreparation && (
                     <span className="ml-1 text-xs text-zinc-500">excl. proxies</span>
                 )}
