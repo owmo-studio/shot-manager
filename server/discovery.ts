@@ -7,6 +7,7 @@ import type { EmbeddedMetadata, VideoShot } from "../shared/shots";
 import { findSonyLayout } from "./sony";
 import { readEmbeddedContainer } from "./embedded";
 import { normalizeVideoMetadata, sonyMetadata } from "./videoMetadata";
+import { videoFileVersion } from "./fingerprints";
 
 const execute = promisify(execFile);
 const videoExtensions = new Set([".mp4", ".mov", ".mxf", ".m4v", ".mts", ".m2ts", ".avi", ".mkv", ".webm"]);
@@ -107,14 +108,14 @@ export async function discoverShots(source: DiscoveryRequest, signal: AbortSigna
             if (mediaInfo) embeddedMetadata.push({ label: "Container and stream metadata", format: "json", text: JSON.stringify(mediaInfo, null, 2) });
             signal.throwIfAborted();
             const current = await stat(original);
-            if (current.size !== info.size || current.mtimeMs !== info.mtimeMs || current.ino !== info.ino || current.dev !== info.dev) {
+            if (videoFileVersion(current) !== videoFileVersion(info)) {
                 warn('File changed during scanning: ' + relative(source.path, original) + '. This file was skipped.');
                 continue;
             }
             const relativePath = relative(source.path, original);
             await found({
                 original, mediaInfo, embeddedMetadata,
-                fileIdentity: [info.dev, info.ino, info.birthtimeMs, info.size, info.mtimeMs].join(":"),
+                fileIdentity: videoFileVersion(info),
                 shot: {
                     id: "", // Internal candidate; scanner assigns the fingerprint before publication.
                     filePath: original, filename: original.split("/").pop()!, relativePath, bytes: info.size,

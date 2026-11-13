@@ -11,7 +11,7 @@ import type { ShotChange, ShotCollection, ShotDetails, DiscoveryScan, VideoShot 
 import type { WorkspaceRestore } from "../shared/shots";
 import type { DiscoveredShot } from "./discovery";
 import { discoverShots } from "./discovery";
-import { VideoFingerprintStore } from "./fingerprints";
+import { VideoFingerprintStore, videoFileVersion } from "./fingerprints";
 import type { LibraryPresence } from "./library";
 import { OrganizationStore } from "./organization";
 import { ThumbnailQueue } from "./thumbnails";
@@ -676,7 +676,7 @@ export class ShotScanner {
         try {
             if (await realpath(result.original) !== result.original) return false;
             const info = await stat(result.original);
-            return info.isFile() && [info.dev, info.ino, info.birthtimeMs, info.size, info.mtimeMs].join(":") === result.fileIdentity;
+            return info.isFile() && videoFileVersion(info) === result.fileIdentity;
         } catch { return false; }
     }
 
@@ -741,7 +741,7 @@ export class ShotScanner {
             const info = await file.stat();
             if (
                 !info.isFile() ||
-                [info.dev, info.ino, info.birthtimeMs, info.size, info.mtimeMs].join(":") !==
+                videoFileVersion(info) !==
                     asset.result.fileIdentity ||
                 this.clips.get(id) !== asset.clip ||
                 !asset.result.shot.available

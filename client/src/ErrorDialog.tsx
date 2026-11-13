@@ -1,7 +1,7 @@
 import { secondaryButton } from "./buttonStyles";
 import { useEffect, useRef } from "react";
 
-export function SourceErrorDialog({ message, onDismiss, title = "Workspace error" }: {
+export function ErrorDialog({ message, onDismiss, title = "Workspace error" }: {
     title?: string;
     message: string;
     onDismiss: () => void;

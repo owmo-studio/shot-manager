@@ -1,3 +1,4 @@
+import { hasPendingCommit } from "./clipState";
 import { AppError, errorMessage } from '../../shared/errors';
 import type { DragEvent } from "react";
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
@@ -10,14 +11,14 @@ import { SaveStatusBanner } from "./SaveStatusBanner";
 import { initializeDesktop } from "./desktop";
 import { CollectionUpdates } from "./collectionUpdates";
 import { MultiClipInspector } from "./MultiClipInspector";
-import { clipIdentity, uniqueShots, orderedShots, useShotSelection } from "./shotSelection";
+import { orderedShots, useShotSelection } from "./shotSelection";
 import { deviceLabel } from "./mediaInfo";
 import { MIN_INSPECTOR_WIDTH } from "./ResizableInspector";
 import { ApplicationIndicator, applicationStatus } from "./ApplicationIndicator";
-import { IngestFooter } from "./IngestFooter";
+import { CommitControls } from "./CommitControls";
 import { ShotGrid } from "./ShotGrid";
 import { scrollShotIntoView } from "./scrollShotIntoView";
-import { SourceErrorDialog } from "./SourceErrorDialog";
+import { ErrorDialog } from "./ErrorDialog";
 import { ClipActionDialog } from "./ClipActionDialog";
 import { DirectoryUnavailableDialog } from "./DirectoryUnavailableDialog";
 import "./styles.css";
@@ -31,10 +32,8 @@ function App() {
     const [inspectorWidth, setInspectorWidth] = useState(MIN_INSPECTOR_WIDTH);
     const [shotCollection, setShotCollection] = useState<ShotCollection>({ revision: 0, shots: [], scans: [] });
     const latestShotRevision = useRef(-1);
-    const allUniqueShots = uniqueShots(shotCollection.shots);
-    const workspaceCollection = { ...shotCollection, shots: allUniqueShots };
     const deviceCounts = new Map<string, number>();
-    for (const shot of workspaceCollection.shots) {
+    for (const shot of shotCollection.shots) {
         const device = deviceLabel(shot.metadata.device) ?? "Video";
         deviceCounts.set(device, (deviceCounts.get(device) ?? 0) + 1);
     }
@@ -42,19 +41,18 @@ function App() {
     const deviceKeys = JSON.stringify(devices.map(([name]) => name));
     const activeDevices = selectedDevices.filter((name) => deviceCounts.has(name));
     const visibleCollection = activeDevices.length ? {
-        ...workspaceCollection,
-        shots: workspaceCollection.shots.filter((shot) => activeDevices.includes(deviceLabel(shot.metadata.device) ?? "Video")),
-    } : workspaceCollection;
+        ...shotCollection,
+        shots: shotCollection.shots.filter((shot) => activeDevices.includes(deviceLabel(shot.metadata.device) ?? "Video")),
+    } : shotCollection;
     const selection = useShotSelection(shotCollection.shots, visibleCollection.shots);
-    const selectedShots = visibleCollection.shots.filter((shot) => selection.editingIds.includes(shot.id));
+    const selectedIds = new Set(selection.editingIds);
+    const selectedShots = visibleCollection.shots.filter((shot) => selectedIds.has(shot.id));
     const inspectedShot = selectedShots.length === 1 ? selectedShots[0] : undefined;
     const displayedShots = orderedShots(visibleCollection.shots, newestFirst);
     const selectableShots = displayedShots
         .filter((shot) => shot.editable);
     const selectedLocked = selectedShots.some((shot) => !shot.editable);
-    const skippedKeys = new Set(shotCollection.shots.filter(shot => selection.skippedIds.includes(shot.id)).map(clipIdentity));
-    const skippedShotIds = shotCollection.shots.filter(shot => skippedKeys.has(clipIdentity(shot))).map(shot => shot.id);
-    const selectedSkippedCount = selectedShots.filter(shot => skippedKeys.has(clipIdentity(shot))).length;
+    const selectedSkippedCount = selectedShots.filter(shot => shot.organization?.skipped).length;
     const navigationKey = JSON.stringify({ orderedIds: displayedShots.map((shot) => shot.id), selectableIds: selectableShots.map((shot) => shot.id) });
     const keyboardNavigation = useRef(false);
     const skipPending = useRef(new Set<string>());
@@ -154,7 +152,7 @@ function App() {
     const ejectMutation = useRef(false);
     const [unavailableDirectories, setUnavailableDirectories] = useState<DirectoryAvailability[]>([]);
     const notifiedUnavailable = useRef(new Set<string>());
-    const [draggingFolders, setDraggingFolders] = useState(false);
+    const [draggingClips, setDraggingClips] = useState(false);
     const dragDepth = useRef(0);
     const workspaceMutation = useRef(false);
     const workspaceStatus = applicationStatus(status, communicationError);
@@ -208,8 +206,9 @@ function App() {
 
     function requestEject(ids: string[]) {
         if (ejectMutation.current) return;
-        const targets = allUniqueShots.filter(shot => ids.includes(shot.id));
-        const queued = targets.filter(shot => shot.ingestState === "queued" || shot.ingestState === "processing");
+        const selected = new Set(ids);
+        const targets = shotCollection.shots.filter(shot => selected.has(shot.id));
+        const queued = targets.filter(shot => hasPendingCommit(shot));
         if (!targets.length) return;
         setEjectError(null);
         setEjectAction(queued.length ? "stop" : "eject");
@@ -230,7 +229,7 @@ function App() {
             if (ejectAction === "eject" && error instanceof AppError && error.code === "CLIP_COMMIT_ACTIVE") {
                 const collection = await window.desktop.getShots().catch(() => null);
                 const queued = collection?.shots.filter(shot => ejectTargets.some(target => target.id === shot.id) &&
-                    (shot.ingestState === "queued" || shot.ingestState === "processing"));
+                    (hasPendingCommit(shot)));
                 if (collection && queued?.length) {
                     receiveShots(collection); setEjectAction("stop"); setEjectTargets(queued);
                 } else setEjectError("Clips changed. Cancel and review the action again.");
@@ -242,19 +241,19 @@ function App() {
         event.preventDefault();
         if (!event.dataTransfer.types.includes("Files")) return;
         dragDepth.current += 1;
-        setDraggingFolders(true);
+        setDraggingClips(true);
     }
 
     function dragLeave(event: DragEvent<HTMLElement>) {
         event.preventDefault();
         dragDepth.current = Math.max(0, dragDepth.current - 1);
-        if (!dragDepth.current) setDraggingFolders(false);
+        if (!dragDepth.current) setDraggingClips(false);
     }
 
-    function dropSources(event: DragEvent<HTMLElement>) {
+    function dropClips(event: DragEvent<HTMLElement>) {
         event.preventDefault();
         dragDepth.current = 0;
-        setDraggingFolders(false);
+        setDraggingClips(false);
         const files = Array.from(event.dataTransfer.files);
         if (files.length) void addClips(files);
     }
@@ -353,7 +352,7 @@ function App() {
                                     onClick={() => setSelectedDevices([])}
                                     className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition duration-75 hover:bg-white/4 focus-visible:outline-2 focus-visible:outline-blue-400">
                                     <span className="min-w-0 truncate text-[13px] text-zinc-200">All</span>
-                                    <span aria-label="Total clips" className="shrink-0 text-xs text-zinc-500">{allUniqueShots.length.toLocaleString()}</span>
+                                    <span aria-label="Total clips" className="shrink-0 text-xs text-zinc-500">{shotCollection.shots.length.toLocaleString()}</span>
                                 </button>
                             </li>
                             {devices.map(([name, count]) => (
@@ -392,10 +391,10 @@ function App() {
                         event.preventDefault();
                         event.dataTransfer.dropEffect = canAddClips ? "copy" : "none";
                     }}
-                    onDrop={dropSources}
-                    className={`relative flex min-w-0 flex-1 items-center justify-center overflow-y-auto text-center transition ${draggingFolders ? "bg-blue-400/5 outline-2 -outline-offset-4 outline-dashed outline-blue-400/50" : ""}`}
+                    onDrop={dropClips}
+                    className={`relative flex min-w-0 flex-1 items-center justify-center overflow-y-auto text-center transition ${draggingClips ? "bg-blue-400/5 outline-2 -outline-offset-4 outline-dashed outline-blue-400/50" : ""}`}
                 >
-                    {draggingFolders ? (
+                    {draggingClips ? (
                         <p className="pointer-events-none text-sm text-blue-300">
                             {canAddClips ? "Drop videos, folders, or a card root to add clips" : "Adding clips is unavailable"}
                         </p>
@@ -406,7 +405,6 @@ function App() {
                             onEject={id => requestEject([id])}
                             ejectBusy={ejectBusy}
                             selectedShotIds={selection.editingIds}
-                            skippedShotIds={skippedShotIds}
                             onSelect={selectShot}
                         />
                     ) : (
@@ -437,21 +435,20 @@ function App() {
                         shot={inspectedShot}
                         width={inspectorWidth}
                         onResize={setInspectorWidth}
-                        skipped={selectedSkippedCount === 1}
                         onSkipChange={(skipped) => changeSkip(selectedShots.map((shot) => shot.id), skipped)}
                     />}
             </main>
             {ejectTargets && <ClipActionDialog key={ejectAction} action={ejectAction} shots={ejectTargets} busy={ejectBusy} error={ejectError}
                 onCancel={() => { if (!ejectBusy) setEjectTargets(null); }}
                 onConfirm={() => void confirmClipAction()} />}
-            {!ejectTargets && skipError && <SourceErrorDialog title="Skip could not be saved" message={skipError} onDismiss={() => setSkipError(null)} />}
-            {!ejectTargets && !skipError && workspaceError && <SourceErrorDialog title="Workspace error" message={workspaceError} onDismiss={() => setWorkspaceError(null)} />}
+            {!ejectTargets && skipError && <ErrorDialog title="Skip could not be saved" message={skipError} onDismiss={() => setSkipError(null)} />}
+            {!ejectTargets && !skipError && workspaceError && <ErrorDialog title="Workspace error" message={workspaceError} onDismiss={() => setWorkspaceError(null)} />}
             {!ejectTargets && !skipError && !workspaceError && unavailableDirectories.length > 0 && <DirectoryUnavailableDialog
                 directories={unavailableDirectories} onDismiss={() => setUnavailableDirectories([])}
                 onEject={ids => { setUnavailableDirectories([]); requestEject(ids); }} />}
             <footer className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-5 border-t border-white/8 px-5 py-3 text-xs text-zinc-500">
                 <ApplicationIndicator backend={status} communicationError={communicationError} />
-                <IngestFooter selectedShotIds={selectedShots.map(shot => shot.id)} refreshTarget={libraryActions} shots={allUniqueShots} connected={status.state === 'connected'} onRefresh={async () => receiveShots(await window.desktop.getShots())} />
+                <CommitControls selectedShotIds={selectedShots.map(shot => shot.id)} refreshTarget={libraryActions} shots={shotCollection.shots} connected={status.state === 'connected'} onRefresh={async () => receiveShots(await window.desktop.getShots())} />
             </footer>
         </div>
     );

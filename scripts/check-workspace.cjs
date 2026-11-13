@@ -32,6 +32,8 @@ async function until(test, label) {
         const fileRoot = join(root, 'file-drops'); await fs.mkdir(fileRoot);
         const selectedFile = join(fileRoot, 'selected.MOV'), siblingFile = join(fileRoot, 'sibling.mp4');
         await fs.writeFile(selectedFile,bytes); await fs.writeFile(siblingFile,Buffer.concat([bytes,Buffer.from('distinct fixture')]));
+        const fixedFileTime = new Date(1700000000000);
+        await fs.utimes(selectedFile, fixedFileTime, fixedFileTime);
         const unsupported = join(fileRoot,'notes.txt'); await fs.writeFile(unsupported,'not video');
         const files = new WorkspaceManager(undefined,join(root,'file-fingerprints'),join(root,'file-drafts.json'));
         let releaseFile;
@@ -64,6 +66,20 @@ async function until(test, label) {
             await until(()=>!files.scanner.isBusy(folder.id),'folder overlap after file drop');
             assert.equal(files.scanner.snapshot().shots.length,2,'Folder addition adds siblings without duplicating the selected file');
             assert.deepEqual(await fs.readFile(selectedFile),bytes,'File discovery preserves original bytes');
+            // A changed file must not keep its old fingerprint merely because size/mtime match.
+            const selected = files.scanner.snapshot().shots.find(shot => shot.filePath === selectedFile);
+            const fileIdentity = files.scanner.clips.get(selected.id).result.fileIdentity;
+            const beforeChange = await fs.stat(selectedFile);
+            await sleep(20);
+            const changedBytes = Buffer.from(bytes); changedBytes[changedBytes.length - 1] ^= 1;
+            await fs.writeFile(selectedFile, changedBytes);
+            await fs.utimes(selectedFile, fixedFileTime, fixedFileTime);
+            const afterChange = await fs.stat(selectedFile);
+            assert.equal(afterChange.size, beforeChange.size); assert.equal(afterChange.mtimeMs, beforeChange.mtimeMs);
+            assert.notEqual(afterChange.ctimeMs, beforeChange.ctimeMs);
+            await assert.rejects(files.scanner.validateIngest(selected.id, selectedFile, fileIdentity), /no longer accessible/);
+            await assert.rejects(files.scanner.openVideo(selected.id), /no longer accessible/);
+            assert.equal(files.scanner.snapshot().shots.find(shot => shot.id === selected.id).available, false);
         } finally { releaseFile?.(); await files.close(); await fs.rm(fileRoot,{recursive:true,force:true}); }
         const source = (id, path) => ({ id, path, name: id, type: 'folder', available: true, cameraModels: [] });
         const a = source('first', first), b = source('second', second), c = source('third', third);
@@ -139,6 +155,8 @@ async function until(test, label) {
         assert.ok(missing.errors.length);
         assert.equal(scanner.snapshot().shots[0].available, false, 'Individual file access flags a missing clip');
         await fs.rename(alternative + '.offline', alternative);
+        // Renaming can change ctime. Fresh discovery confirms identity before reuse.
+        await scan(c);
         assert.equal((await scanner.details(id)).errors.length, 0);
         assert.equal(scanner.snapshot().shots[0].available, true);
         // Keep the old unavailable fingerprint distinct when a path now contains different media.
@@ -162,7 +180,7 @@ async function until(test, label) {
         await scanner.pending;
         assert.equal(scanner.snapshot().shots.length, 0, 'A cancelled scan cannot reintroduce a removed record');
         assert.deepEqual(await fs.readFile(join(offline, 'original.mp4')), bytes, 'Original synthetic footage was preserved');
-        console.log('PASS: independent clip/thumbnail lifetime, duplicate/overlapping discovery, stable active paths, unavailable-path replacement, queued-path protection, directory recovery, per-file validation, draft/receipt/custom-thumbnail preservation, and stale-scan cancellation.');
+        console.log('PASS: independent clip/thumbnail lifetime, duplicate/overlapping discovery, stable active paths, unavailable-path replacement, queued-path protection, directory recovery, per-file validation including preserved size/mtime changes, draft/receipt/custom-thumbnail preservation, and stale-scan cancellation.');
     } finally {
         releaseThumbnail?.(); releaseFingerprint?.();
         await scanner?.close();

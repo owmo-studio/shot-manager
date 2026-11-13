@@ -13,7 +13,7 @@ async function until(test, description) {
 
 (async () => {
     const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'owmo-ingest-check-')));
-    let scanner, queue, server;
+    let scanner, queue, server, releaseRefresh;
     try {
         const entry = join(root, 'entry.ts');
         await fs.writeFile(entry, ['server/ingestion.ts', 'server/scanner.ts', 'server/library.ts', 'server/rsync.ts', 'server/app.ts', 'server/workspace.ts'].map(path => `export * from ${JSON.stringify(join(__dirname, '..', path))};`).join('\n'));
@@ -325,7 +325,28 @@ async function until(test, description) {
         assert.equal(scanner.snapshot().shots.find(shot => shot.id === a.id).ingestState, undefined, 'Deleted shot becomes eligible again');
         plan = await queue.preview([a.id]);
         assert.equal(plan.clips[0].mode, 'new', 'Deleted shot is reviewed as New despite its saved receipt');
-        await queue.submit(plan.token, [a.id]); await finish();
+        // Hold transfer, then hold a refresh after its listing but before it is applied.
+        // The Commit must remain Synced when that older refresh finally returns.
+        entered = false; gate = true;
+        await queue.submit(plan.token, [a.id]);
+        await until(() => entered, 'transfer before concurrent presence refresh');
+        const inspectBeforeRefresh = queue.inspect;
+        let refreshChecks = 0, refreshHeld = false;
+        queue.inspect = async (...args) => {
+            const location = await inspectBeforeRefresh(...args);
+            if (++refreshChecks === 2) {
+                refreshHeld = true;
+                await new Promise(resolve => { releaseRefresh = resolve; });
+            }
+            return location;
+        };
+        const refreshing = queue.refreshLibrary();
+        await until(() => refreshHeld, 'Library refresh after listing');
+        gate = false; release(); await finish();
+        assert.equal(scanner.snapshot().shots.find(shot => shot.id === a.id).ingestState, 'unverified', 'In-flight presence is explicitly unverified');
+        releaseRefresh(); await refreshing;
+        queue.inspect = inspectBeforeRefresh;
+        assert.equal(scanner.snapshot().shots.find(shot => shot.id === a.id).ingestState, 'synced', 'Slow refresh preserves a newer completed Commit');
         const presentReceipt = scanner.snapshot().shots.find(shot => shot.id === a.id).ingestion;
         const offlineQueue = new IngestQueue(scanner, async () => library, async () => { throw new Error('Synthetic offline Library'); });
         await offlineQueue.status();
@@ -403,8 +424,9 @@ async function until(test, description) {
         assert.equal((await server.inject({ method: 'GET', url: '/api/ingestion', headers: { authorization: 'Bearer test-token' } })).json().active, false);
         await server.close(); server = null;
         for (const [name, contents] of originals) assert.deepEqual(await fs.readFile(join(source, name)), contents, 'Original synthetic footage untouched');
-        console.log('PASS: rsync ingestion, empty attributes, review/removal/replacement, locks, quick-check reuse, cancellation, failures, stale conflicts/mount changes, source reload, receipts, Library deletion/startup/offline checks, and API access checks.');
+        console.log('PASS: rsync ingestion, empty attributes, review/removal/replacement, locks, quick-check reuse, cancellation, failures, stale conflicts/mount changes, source reload, receipts, Library deletion/startup/offline checks, concurrent refresh/publication, and API access checks.');
     } finally {
+        releaseRefresh?.();
         await queue?.close(); await scanner?.close(); await server?.close();
         await fs.rm(root, { recursive: true, force: true });
     }

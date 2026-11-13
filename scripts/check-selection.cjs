@@ -345,55 +345,31 @@ if (!process.versions.electron) {
             };
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
             const originals = structuredClone(collection.shots);
-            const duplicate = {
-                ...structuredClone(originals[0]),
-                id: originals[0].id,
-                discoveryId: "B",
-                filename: "Copied Clip.mp4",
-            };
-            await push([...originals, duplicate]);
-            await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
             assert.equal(
                 await js(`document.querySelector('[aria-label="Total clips"]').textContent.trim()`),
                 "6",
-                "Duplicate hashes do not increase the total",
+                "Workspace totals use the backend's one-record-per-fingerprint collection",
             );
-            await push([{ ...originals[0], available: false }, ...originals.slice(1), duplicate]);
-            await wait(`!!document.querySelector('[aria-label="Inspect Copied Clip.mp4"]')`);
-            assert.equal(
-                await js(
-                    `document.querySelector('[aria-label="Inspect Copied Clip.mp4"]').textContent.includes('source unavailable')`,
-                ),
-                false,
-                "An available occurrence takes priority over an offline copy",
-            );
-            await push([{ ...originals[0], editable: false }, ...originals.slice(1), duplicate]);
-            await wait(`!!document.querySelector('[aria-label="Inspect Copied Clip.mp4"]')`);
-            assert.equal(
-                await js(`document.querySelector('[aria-label="Inspect Copied Clip.mp4"]').disabled`),
-                false,
-                "An editable occurrence takes priority over a rescanning copy",
-            );
-            await push([...originals, duplicate]);
-            await wait(`!!document.querySelector('[aria-label="Inspect Clip 1.mp4"]')`);
             assert.equal(await js(`document.querySelector('[aria-label="Show all clips"]').hasAttribute('aria-pressed')`),false,'All is a neutral reset action');
             assert.equal(await js(`!!document.querySelector('aside [aria-label="Add clips"]')`),false,'Sidebar has no Add button');
             await click("Filter clips by device: ZV-E10 II");
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===3`);
             assert.equal(await js(`document.querySelector('[aria-label="Show all clips"]').hasAttribute('aria-pressed')`),false,'All stays neutral with a device selected');
-            assert.equal(await js(`!!document.querySelector('[aria-label="Inspect Copied Clip.mp4"]')`),false,"Filtering uses per-clip metadata, independent of discovery folder");
+            assert.equal(await js(`!!document.querySelector('[aria-label="Inspect Clip 1.mp4"]')`),false,"Filtering uses per-clip metadata, independent of discovery folder");
             await click("Filter clips by device: FX30");
             assert.equal(await js(`document.querySelector('[aria-label="Show all clips"]').hasAttribute('aria-pressed')`),false,'All stays neutral with multiple device filters');
             await click("Show all clips");
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
             assert.equal(await js(`document.querySelector('[aria-label="Show all clips"]').hasAttribute('aria-pressed')`),false);
             assert.equal(await js(`document.querySelectorAll('[aria-label^="Filter clips by device:"][aria-pressed="true"]').length`),0,'All clears every device filter');
-            await push([...originals.slice(1), duplicate]);
+            // The backend chooses a matching copy; the renderer receives one updated record.
+            const relocated = { ...structuredClone(originals[0]), filename: "Copied Clip.mp4", filePath: "/synthetic/B/copy.mp4" };
+            await push([relocated, ...originals.slice(1)]);
             await wait(`!!document.querySelector('[aria-label="Inspect Copied Clip.mp4"]')`);
             assert.equal(
                 await js(`document.querySelectorAll('button[aria-label^="Inspect "]').length`),
                 6,
-                "Removing one occurrence retains the other",
+                "Changing a clip's active file location keeps one workspace card",
             );
             await push(
                 originals.map((shot, index) =>

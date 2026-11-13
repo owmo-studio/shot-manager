@@ -1,3 +1,4 @@
+import { hasPendingCommit } from "./clipState";
 import { StopIcon, EjectIcon } from "./EjectButton";
 import type { MouseEvent } from "react";
 import { useEffect, useRef, useState } from "react";
@@ -10,20 +11,19 @@ function ShotCard({
     onEject,
     ejectBusy,
     selected,
-    skipped,
     onSelect,
 }: {
     shot: VideoShot;
     onEject: () => void;
     ejectBusy: boolean;
     selected: boolean;
-    skipped: boolean;
     onSelect: (event: MouseEvent<HTMLButtonElement>) => void;
 }) {
     const [thumbnail, setThumbnail] = useState<string | null>(null);
     const [failedImage, setFailedImage] = useState(false);
     const card = useRef<HTMLButtonElement>(null);
-    const cancelCommit = shot.ingestState === "queued" || shot.ingestState === "processing";
+    const cancelCommit = hasPendingCommit(shot);
+    const skipped = !!shot.organization?.skipped;
     const ActionIcon = cancelCommit ? StopIcon : EjectIcon;
     const unavailable = !shot.available;
     const inactive = !unavailable && !shot.editable;
@@ -265,7 +265,6 @@ export function ShotGrid({
     onEject,
     ejectBusy,
     selectedShotIds,
-    skippedShotIds,
     onSelect,
 }: {
     collection: ShotCollection;
@@ -273,10 +272,10 @@ export function ShotGrid({
     onEject: (id: string) => void;
     ejectBusy: boolean;
     selectedShotIds: string[];
-    skippedShotIds: string[];
     onSelect: (id: string, event: MouseEvent<HTMLButtonElement>) => void;
 }) {
     const groups = new Map<string, VideoShot[]>();
+    const selectedIds = new Set(selectedShotIds);
     const sortedShots = orderedShots(collection.shots, newestFirst);
     for (const shot of sortedShots) {
         const day = shot.timestamp.slice(0, 10);
@@ -327,8 +326,7 @@ export function ShotGrid({
                                 shot={shot}
                                 onEject={() => onEject(shot.id)}
                                 ejectBusy={ejectBusy}
-                                selected={selectedShotIds.includes(shot.id)}
-                                skipped={skippedShotIds.includes(shot.id)}
+                                selected={selectedIds.has(shot.id)}
                                 onSelect={(event) => onSelect(shot.id, event)}
                             />
                         ))}

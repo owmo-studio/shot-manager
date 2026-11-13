@@ -1,171 +1,15 @@
 import { secondaryButton as button, primaryButton, dangerButton as destructiveButton } from "./buttonStyles";
-import type { ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { errorMessage } from "../../shared/errors";
 import type { IngestReview, IngestStatus } from "../../shared/ingestion";
 import type { VideoShot } from "../../shared/shots";
-import { SourceErrorDialog } from "./SourceErrorDialog";
+import { ErrorDialog } from "./ErrorDialog";
+import { CommitReviewDialog } from "./CommitReviewDialog";
+import { ModalDialog } from "./ModalDialog";
+import { hasPendingCommit } from "./clipState";
 
-const bytes = (value: number) =>
-    value >= 1e9
-        ? `${(value / 1e9).toFixed(1)} GB`
-        : value >= 1e6
-          ? `${(value / 1e6).toFixed(1)} MB`
-          : `${Math.max(1, Math.round(value / 1000))} KB`;
-
-function IngestDialog({
-    title,
-    busy,
-    onCancel,
-    children,
-    compact = false,
-}: {
-    title: string;
-    busy: boolean;
-    onCancel: () => void;
-    children: ReactNode;
-    compact?: boolean;
-}) {
-    const dialog = useRef<HTMLDialogElement>(null);
-    useEffect(() => {
-        const element = dialog.current;
-        element?.showModal();
-        return () => element?.close();
-    }, []);
-    return (
-        <dialog
-            ref={dialog}
-            aria-labelledby="ingest-dialog-title"
-            onCancel={(event) => {
-                event.preventDefault();
-                if (!busy) onCancel();
-            }}
-            className={`m-auto ${compact ? "w-[min(420px,90vw)]" : "w-[min(760px,90vw)]"} rounded-2xl border border-white/10 bg-[#1b2029] p-6 text-zinc-200 shadow-2xl backdrop:bg-black/60`}
-        >
-            <h2 id="ingest-dialog-title" className="text-lg font-medium">
-                {title}
-            </h2>
-            {children}
-        </dialog>
-    );
-}
-
-function ReviewDialog({
-    review,
-    shots,
-    busy,
-    error,
-    onCancel,
-    onStart,
-}: {
-    review: IngestReview;
-    shots: VideoShot[];
-    busy: boolean;
-    error: string | null;
-    onCancel: () => void;
-    onStart: (ids: string[]) => void;
-}) {
-    const [ids, setIds] = useState(review.clips.map((clip) => clip.id));
-    const clips = review.clips.filter((clip) => ids.includes(clip.id));
-    const replacements = clips.filter((clip) => clip.mode === "replace").length;
-    return (
-        <IngestDialog title="Ready to Commit?" busy={busy} onCancel={onCancel}>
-            <p className="mt-3 text-sm text-zinc-400">
-                {clips.length} {clips.length === 1 ? "clip" : "clips"} ·{" "}
-                {bytes(clips.reduce((sum, clip) => sum + clip.bytes, 0))}
-                {review.proxyPreparation && (
-                    <span className="ml-1 text-xs text-zinc-500">excl. proxies</span>
-                )}
-            </p>
-            <p className="mt-2 break-all text-xs text-zinc-500">{review.libraryPath}</p>
-            <div className="mt-4 max-h-[45vh] overflow-y-auto rounded-lg border border-white/10">
-                {review.clips.map((clip) => {
-                    const included = ids.includes(clip.id);
-                    const proxyReady =
-                        clip.proxyReady || shots.some((shot) => shot.id === clip.id && shot.proxyState === "ready");
-                    return (
-                        <div
-                            key={clip.id}
-                            data-review-included={included}
-                            className={`flex items-start gap-3 border-b border-white/8 p-3 last:border-0 ${included ? "" : "bg-white/[0.02]"}`}
-                        >
-                            <div
-                                className={`mt-0.5 flex shrink-0 flex-col items-start gap-1 ${included ? "" : "opacity-40"}`}
-                            >
-                                <span className="rounded bg-blue-400/10 px-2 py-0.5 text-xs text-blue-300">
-                                    {clip.mode === "replace" ? "↻ Update" : "New"}
-                                </span>
-                                {review.proxyPreparation && proxyReady && (
-                                    <span
-                                        data-review-proxy-ready="true"
-                                        title="Proxy available"
-                                        className="rounded bg-blue-400/10 px-2 py-0.5 text-xs text-blue-300"
-                                    >
-                                        Proxy
-                                    </span>
-                                )}
-                            </div>
-                            <div className={`min-w-0 flex-1 text-sm ${included ? "" : "opacity-40"}`}>
-                                <p className="break-all">
-                                    {clip.filename} <span className="text-xs text-zinc-500">{bytes(clip.bytes)}</span>
-                                </p>
-                                <details className="mt-1 text-xs text-zinc-500">
-                                    <summary className="cursor-pointer">File destinations</summary>
-                                    {clip.files.map((file) => (
-                                        <p key={file.to} className="mt-2 break-all">
-                                            {file.from}
-                                            <br />→ {file.to}
-                                        </p>
-                                    ))}
-                                </details>
-                            </div>
-                            <button
-                                disabled={busy}
-                                onClick={() =>
-                                    setIds((current) =>
-                                        current.includes(clip.id)
-                                            ? current.filter((id) => id !== clip.id)
-                                            : [...current, clip.id],
-                                    )
-                                }
-                                aria-label={`${included ? "Remove" : "Restore"} ${clip.filename} ${included ? "from" : "to"} review`}
-                                aria-pressed={!included}
-                                className="grid size-7 shrink-0 place-items-center rounded text-2xl leading-none text-zinc-400 hover:bg-white/8 hover:text-zinc-100 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                                {included ? "×" : "−"}
-                            </button>
-                        </div>
-                    );
-                })}
-            </div>
-            {replacements > 0 && (
-                <p className="mt-3 text-sm text-amber-300">
-                    Updates {replacements} existing Library {replacements === 1 ? "clip" : "clips"}.
-                </p>
-            )}
-            {error && (
-                <p role="alert" className="mt-3 text-sm text-red-300">
-                    {error}
-                </p>
-            )}
-            <div className="mt-5 flex justify-end gap-3">
-                <button autoFocus disabled={busy} onClick={onCancel} className={button}>
-                    Cancel
-                </button>
-                <button
-                    disabled={busy || !clips.length}
-                    onClick={() => onStart(ids)}
-                    className={primaryButton}
-                >
-                    {busy ? "Queueing…" : "Commit"}
-                </button>
-            </div>
-        </IngestDialog>
-    );
-}
-
-export function IngestFooter({
+export function CommitControls({
     shots,
     selectedShotIds,
     connected,
@@ -215,10 +59,11 @@ export function IngestFooter({
     }, [connected]);
 
     const selected = selectedShotIds.length > 0;
-    const scope = selected ? shots.filter(shot => selectedShotIds.includes(shot.id)) : shots;
+    const selectedIds = new Set(selectedShotIds);
+    const scope = selected ? shots.filter(shot => selectedIds.has(shot.id)) : shots;
     const skipped = scope.filter((shot) => shot.organization?.skipped).length;
     const candidates = scope.filter(
-        (shot) => !shot.organization?.skipped && !["synced", "queued", "processing"].includes(shot.ingestState ?? ""),
+        (shot) => !shot.organization?.skipped && shot.ingestState !== "synced" && !hasPendingCommit(shot),
     );
     const blocked = candidates.filter(
         (shot) => !shot.available || !shot.editable || !shot.hasThumbnail || shot.thumbnailStatus !== "ready",
@@ -256,7 +101,7 @@ export function IngestFooter({
                 // Existing transfers do not establish whether this appended submission succeeded.
                 const collection = await window.desktop.getShots().catch(() => null);
                 if (collection && ids.every(id => collection.shots.some(shot => shot.id === id &&
-                    ["queued", "processing", "synced"].includes(shot.ingestState ?? "")))) setReview(null);
+                    (hasPendingCommit(shot) || shot.ingestState === "synced")))) setReview(null);
             }
         } finally {
             setBusy(false);
@@ -401,7 +246,7 @@ export function IngestFooter({
                 </div>
             </div>
             {review && (
-                <ReviewDialog
+                <CommitReviewDialog
                     review={review}
                     shots={shots}
                     busy={busy}
@@ -414,7 +259,7 @@ export function IngestFooter({
                 />
             )}
             {stopConfirm && (
-                <IngestDialog title="Stop All Work?" compact busy={busy} onCancel={() => setStopConfirm(false)}>
+                <ModalDialog titleId="ingest-dialog-title" title="Stop All Work?" width="w-[min(420px,90vw)]" busy={busy} onCancel={() => setStopConfirm(false)}>
                     <p className="mt-3 text-sm leading-6 text-zinc-400">Stop all queued and active Commits, proxy encoding, and thumbnail generation?</p>
                     <p className="mt-2 text-xs text-zinc-500">Completed work is kept.</p>
                     <div className="mt-5 flex justify-end gap-3">
@@ -425,13 +270,13 @@ export function IngestFooter({
                             {busy ? "Stopping…" : "Stop All"}
                         </button>
                     </div>
-                </IngestDialog>
+                </ModalDialog>
             )}
             {!review && !stopConfirm && error && (
-                <SourceErrorDialog title={errorTitle} message={error} onDismiss={() => setError(null)} />
+                <ErrorDialog title={errorTitle} message={error} onDismiss={() => setError(null)} />
             )}
             {!review && !stopConfirm && !error && failure && (
-                <SourceErrorDialog
+                <ErrorDialog
                     title="Commit failed"
                     message={`${failure.filename}: ${failure.message}`}
                     onDismiss={() => {

@@ -75,7 +75,7 @@ The toolbar control immediately left of Configuration shows **Refresh** when idl
 
 The queue survives renderer reloads, but is not persisted across application crashes/restarts. Graceful shutdown stops transfers before closing the backend. Only the usual drafts and successful processing receipts persist; there is no durable queue journal or automatic resume. A crash between Library publication and receipt persistence can leave a processed Library shot without a local checkmark; it will appear as Update in a subsequent review.
 
-Library browsing/editing and its disposable local catalog remain future work. Validate processing with dummy folders only; real NAS reads/writes require explicit authorization for that operation.
+Library browsing/editing and its disposable local catalog remain future work. The existing JSON contract and reserved asset names live in `shared/library.ts`. Presence discovery streams the flat directory into a per-clip index; review/submission share each listing and inspect only their selected target files. A slow refresh preserves Commits completed during that scan. The future catalog should be separate from Import's workspace/drafts: refresh remote JSON with bounded concurrency, search/filter locally, and load thumbnails on demand. Catalog invalidation/offline behavior and editing destinations/layouts need discussion before implementation. Local scale checks do not establish SMB performance. Real NAS reads/writes require explicit authorization for that operation.
 
 ## Development
 
@@ -106,6 +106,7 @@ npm run check:append
 npm run check:selection
 npm run check:quit
 npm run check:ingestion
+npm run check:library
 npm run check:proxies
 npm run check:proxy-priority
 npm run check:ingestion-ui

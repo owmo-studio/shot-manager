@@ -1,3 +1,4 @@
+import { hasPendingCommit } from "./clipState";
 import { errorMessage } from '../../shared/errors';
 import { useEffect, useRef, useState } from "react";
 import type { ShotCollection, ShotDetails, VideoShot } from "../../shared/shots";
@@ -46,7 +47,6 @@ export function ClipInspector({
     ejectBusy,
     width,
     onResize,
-    skipped,
     onSkipChange,
     onOrganizationUpdated,
 }: {
@@ -55,12 +55,12 @@ export function ClipInspector({
     ejectBusy: boolean;
     width: number;
     onResize: (width: number) => void;
-    skipped: boolean;
     onSkipChange: (skipped: boolean) => void;
     onOrganizationUpdated: (collection: ShotCollection) => void;
 }) {
     const empty = !selectedShot;
     const shot = selectedShot ?? emptyShot;
+    const skipped = !!shot.organization?.skipped;
     const [tab, setTab] = useState<"metadata" | "file">("metadata");
     const [details, setDetails] = useState<ShotDetails | null>(null);
     const [detailsError, setDetailsError] = useState<string | null>(null);
@@ -73,7 +73,7 @@ export function ClipInspector({
     const [copyStatus, setCopyStatus] = useState<"idle" | "copying" | "copied" | "failed">("idle");
     const preview = useRef<PreviewHandle>(null);
     const unavailable = !shot.available;
-    const pausedForScan = !shot.editable;
+    const locked = !shot.editable;
     const summary = empty ? "" : quickMediaSummary(shot.metadata);
     const rawMetadata =
         details?.embeddedMetadata
@@ -126,7 +126,7 @@ export function ClipInspector({
         let disposed = false;
         setDetails(null);
         setDetailsError(null);
-        if (empty || pausedForScan) return;
+        if (empty || locked) return;
         window.desktop
             .getShotDetails(shot.id)
             .then((data) => {
@@ -138,7 +138,7 @@ export function ClipInspector({
         return () => {
             disposed = true;
         };
-    }, [shot.id, unavailable, pausedForScan, empty]);
+    }, [shot.id, unavailable, locked, empty]);
 
     return (
         <ResizableInspector width={width} onResize={onResize}>
@@ -159,7 +159,7 @@ export function ClipInspector({
                         <button
                             type="button"
                             onClick={() => void setThumbnail()}
-                            disabled={thumbnailBusy || unavailable || pausedForScan || scrubbing || !frameReady || !thumbnailReady}
+                            disabled={thumbnailBusy || unavailable || locked || scrubbing || !frameReady || !thumbnailReady}
                             aria-label="Set current frame as thumbnail"
                             title="Set current frame as thumbnail"
                             className="flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-white/15 bg-white/8 px-2 text-[10px] font-medium text-zinc-200 transition duration-75 hover:border-white/25 hover:bg-white/15 hover:text-white focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40"
@@ -180,8 +180,8 @@ export function ClipInspector({
                             </svg>
                             <span>{thumbnailBusy ? "Saving…" : "Thumb"}</span>
                         </button>
-                        <EjectButton cancel={shot.ingestState === "queued" || shot.ingestState === "processing"} count={empty ? 0 : 1} busy={ejectBusy} onClick={onEject} />
-                        <SkipSelection count={empty ? 0 : 1} skippedCount={skipped ? 1 : 0} disabled={empty || pausedForScan} onChange={onSkipChange} />
+                        <EjectButton cancel={hasPendingCommit(shot)} count={empty ? 0 : 1} busy={ejectBusy} onClick={onEject} />
+                        <SkipSelection count={empty ? 0 : 1} skippedCount={skipped ? 1 : 0} disabled={empty || locked} onChange={onSkipChange} />
                     </div>
                 </header>
                 {thumbnailError && (
@@ -191,7 +191,7 @@ export function ClipInspector({
                 )}
                 <div data-inspector-preview className={`relative shrink-0 overflow-hidden rounded-lg border ${!empty && unavailable ? "border-red-500/30 bg-red-500/8" : "border-white/8 bg-black"}`}>
                         {viewingProfile(shot.metadata) && <button type="button" aria-label="Toggle viewing LUT" aria-pressed={lutEnabled}
-                            disabled={empty || unavailable || pausedForScan}
+                            disabled={empty || unavailable || locked}
                             title={lutEnabled ? "LUT on — view in Rec.709" : "LUT off — view original"}
                             onClick={() => setLutEnabled((enabled) => !enabled)}
                             className={"absolute left-2 top-2 z-20 flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] font-medium transition duration-75 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40 " + (lutEnabled ? "border-white/15 bg-black/70 text-zinc-200 hover:border-white/25 hover:bg-white/15 hover:text-white" : "border-white/10 bg-black/70 text-zinc-500 hover:bg-white/8")}>
@@ -199,7 +199,7 @@ export function ClipInspector({
                         </button>}
                     {empty ? (
                         <div className="aspect-video" aria-label="No clip selected" />
-                    ) : unavailable || pausedForScan ? (
+                    ) : unavailable || locked ? (
                         <div
                             role="status"
                             className={
@@ -209,7 +209,7 @@ export function ClipInspector({
                         >
                             {unavailable
                                 ? "source unavailable"
-                                : shot.ingestState === "queued" || shot.ingestState === "processing"
+                                : hasPendingCommit(shot)
                                   ? "Locked during Commit."
                                   : "Preparing clip…"}
                         </div>
@@ -300,7 +300,7 @@ export function ClipInspector({
                                 {detailsError}
                             </p>
                         )}
-                        {!details && !detailsError && !unavailable && !pausedForScan && (
+                        {!details && !detailsError && !unavailable && !locked && (
                             <p className="text-zinc-500">Loading embedded metadata…</p>
                         )}
                         {details?.errors.map((error) => (

@@ -7,7 +7,7 @@ import type { OptionRemovalPlan, TagField, TagVocabulary } from "../../shared/or
 import { emptyVocabulary, OPTION_FIELDS } from "../../shared/organization";
 import { RemoveOptionsDialog } from "./RemoveOptionsDialog";
 
-import { ResetLocalDataButton } from "./ResetLocalDataButton";
+import { ClearCacheButton } from "./ClearCacheButton";
 
 function sizeLabel(bytes: number) {
     if (bytes < 1024) return `${bytes} B`;
@@ -360,7 +360,7 @@ export function Configuration({ libraryActionsRef }: { libraryActionsRef?: Ref<H
                     )}
                     <div className="mt-8 flex items-center justify-end gap-3">
                         <div className="mr-auto flex items-center gap-2">
-                            <ResetLocalDataButton
+                            <ClearCacheButton
                                 disabled={!!busy}
                                 onBusyChange={(value) => {
                                     mutation.current = value;

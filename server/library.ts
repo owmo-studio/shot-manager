@@ -1,38 +1,49 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { constants } from 'node:fs';
-import { lstat, open, readdir, realpath, stat } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
+import { lstat, open, opendir, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { validateClipAttributes } from '../shared/organization';
+import { libraryAssetName, parseLibraryAssetName } from '../shared/library';
+
+export { libraryAssetName } from '../shared/library';
 
 const execute = promisify(execFile);
 export interface LibraryLocation { path: string; identity: string; mount: string }
 export interface LibraryPresence { existing: Set<string>; complete: Set<string>; proxies: Set<string> }
 
-export function libraryAssetName(id: string, role: 'source' | 'thumb' | 'metadata' | 'proxy', extension: string) {
-    if (!/^[a-f0-9]{64}$/.test(id) || !/^[a-z0-9]+$/.test(extension)) throw new Error('Invalid Library asset identifier.');
-    return `${id}.${role}.${extension}`;
+export interface LibraryListing extends LibraryPresence { assets: Map<string, string[]> }
+
+// Stream one flat listing and index by clip, rather than retaining all Dirents or
+// searching the full Library once per reviewed clip. No asset contents are opened.
+export async function listLibrary(location: LibraryLocation): Promise<LibraryListing> {
+    return indexLibraryEntries(await opendir(location.path));
 }
 
-// One flat directory listing; no video, thumbnail, or JSON contents are opened.
-export async function listLibrary(location: LibraryLocation) {
-    const entries = await readdir(location.path, { withFileTypes: true });
-    const assets = new Map<string, { sources: number; thumbnail: boolean; metadata: boolean }>();
+export async function indexLibraryEntries(entries: AsyncIterable<Pick<Dirent, 'name' | 'isFile'>>): Promise<LibraryListing> {
+    const assets = new Map<string, string[]>();
+    const core = new Map<string, { sources: number; thumbnail: boolean; metadata: boolean }>();
     const proxies = new Set<string>();
-    for (const entry of entries) {
-        if (!entry.isFile() || entry.name.endsWith('.partial')) continue;
-        const proxy = /^([a-f0-9]{64})\.proxy\.mov$/.exec(entry.name);
-        if (proxy) { proxies.add(proxy[1]); continue; }
-        const match = /^([a-f0-9]{64})\.(source\.[a-z0-9]+|thumb\.jpg|metadata\.json)$/.exec(entry.name);
+    for await (const entry of entries) {
+        const match = parseLibraryAssetName(entry.name);
         if (!match) continue;
-        const asset = assets.get(match[1]) ?? { sources: 0, thumbnail: false, metadata: false };
-        if (match[2].startsWith('source.')) asset.sources++;
-        else if (match[2] === 'thumb.jpg') asset.thumbnail = true;
+        const names = assets.get(match.id) ?? [];
+        names.push(entry.name); assets.set(match.id, names);
+        // Non-files still participate in conflict detection, but never prove presence.
+        if (!entry.isFile()) continue;
+        if (match.role === 'proxy' && match.extension === 'mov') { proxies.add(match.id); continue; }
+        if (match.role !== 'source' && !(match.role === 'thumb' && match.extension === 'jpg') &&
+            !(match.role === 'metadata' && match.extension === 'json')) continue;
+        const asset = core.get(match.id) ?? { sources: 0, thumbnail: false, metadata: false };
+        if (match.role === 'source') asset.sources++;
+        else if (match.role === 'thumb') asset.thumbnail = true;
         else asset.metadata = true;
-        assets.set(match[1], asset);
+        core.set(match.id, asset);
     }
-    return { names: entries.map(entry => entry.name), proxies, existing: new Set(assets.keys()), complete: new Set([...assets].filter(([, asset]) =>
-        asset.sources === 1 && asset.thumbnail && asset.metadata).map(([id]) => id)) };
+    const complete = new Set<string>();
+    for (const [id, asset] of core) if (asset.sources === 1 && asset.thumbnail && asset.metadata) complete.add(id);
+    return { assets, proxies, existing: new Set(core.keys()), complete };
 }
 
 export function within(parent: string, child: string) {

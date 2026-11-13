@@ -1,24 +1,6 @@
 import { useEffect, useReducer } from "react";
 import type { VideoShot } from "../../shared/shots";
 
-export function clipIdentity(shot: VideoShot): string {
-    return shot.id;
-}
-
-export function uniqueShots(shots: VideoShot[]): VideoShot[] {
-    const preferred = new Map<string, VideoShot>();
-    for (const shot of shots) {
-        const key = clipIdentity(shot);
-        const previous = preferred.get(key);
-        // Match backend asset lookup: prefer an available occurrence, then an editable one.
-        if (!previous || Number(shot.available) > Number(previous.available) ||
-            (shot.available === previous.available && Number(shot.editable) > Number(previous.editable))) {
-            preferred.set(key, shot);
-        }
-    }
-    return [...preferred.values()];
-}
-
 export function orderedShots(shots: VideoShot[], newestFirst: boolean) {
     const direction = newestFirst ? -1 : 1;
     return [...shots].sort((first, second) => direction * (
@@ -96,5 +78,5 @@ export function useShotSelection(shots: VideoShot[], visibleShots: VideoShot[]) 
     useEffect(() => {
         dispatch({ type: "reconcile", existingIds: JSON.parse(existingKey), visibleIds: JSON.parse(visibleKey) });
     }, [existingKey, visibleKey]);
-    return { ...state, skippedIds: shots.filter(shot => shot.organization?.skipped).map(shot => shot.id), dispatch };
+    return { ...state, dispatch };
 }

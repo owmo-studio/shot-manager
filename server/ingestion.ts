@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
 import { ingestAttributes } from '../shared/ingestion';
 import type { IngestReview, IngestStatus } from '../shared/ingestion';
 import { ShotScanner } from './scanner';
 import { inspectLibrary, libraryAssetName, libraryFileIdentity, listLibrary, readLibraryRevertAssets } from './library';
-import type { LibraryLocation, LibraryPresence } from './library';
+import type { LibraryListing, LibraryLocation } from './library';
+import { parseLibraryAssetName } from '../shared/library';
+import type { LibraryMetadata } from '../shared/library';
 import { rsyncFile } from './rsync';
 import { AppError } from '../shared/errors';
 import type { ProxyQueue } from './proxies';
@@ -17,7 +19,7 @@ interface Entry {
     names: [string, string, string, ...string[]];
     existing: Record<string, string | null>;
 }
-interface LibrarySnapshot extends LibraryPresence { location: LibraryLocation; names: string[] }
+interface LibrarySnapshot extends LibraryListing { location: LibraryLocation }
 interface Review { token: string; location: LibraryLocation; entries: Entry[]; created: number }
 
 export class IngestQueue {
@@ -38,7 +40,7 @@ export class IngestQueue {
     private progressTimer?: ReturnType<typeof setTimeout>;
     private libraryScanVersion = 0;
     private workGeneration = 0;
-    private libraryRefresh?: { path: string; promise: Promise<LibrarySnapshot | undefined> };
+    private libraryRefresh?: { path: string; promise: Promise<LibrarySnapshot | undefined>; published: Map<string, Entry['names']> };
     onChange?: (status: IngestStatus) => void;
     private state: IngestStatus = { revision: 0, libraryPath: null, active: false, stopping: false, position: 0, total: 0, errors: [] };
 
@@ -83,7 +85,7 @@ export class IngestQueue {
         this.state.libraryScan = { state: 'checking' };
         this.scanner.setLibraryPresence(path, null);
         this.publish();
-        const refresh = { path, promise: Promise.resolve(undefined) as Promise<LibrarySnapshot | undefined> };
+        const refresh = { path, promise: Promise.resolve(undefined) as Promise<LibrarySnapshot | undefined>, published: new Map<string, Entry['names']>() };
         this.libraryRefresh = refresh;
         refresh.promise = (async () => {
             try {
@@ -92,6 +94,13 @@ export class IngestQueue {
                 const listing = await listLibrary(location);
                 await this.location(location);
                 if (!current()) return undefined;
+                // A slow listing can predate a Commit completed by our other worker.
+                // Keep that acknowledged publication rather than replacing it with stale presence.
+                for (const [id, names] of refresh.published) {
+                    listing.existing.add(id); listing.complete.add(id);
+                    if (names[3]) listing.proxies.add(id);
+                    listing.assets.set(id, [...new Set([...(listing.assets.get(id) ?? []), ...names])]);
+                }
                 this.scanner.setLibraryPresence(path, listing);
                 this.proxies?.refresh();
                 this.state.libraryScan = { state: 'ready', scannedAt: new Date().toISOString() };
@@ -212,11 +221,13 @@ export class IngestQueue {
             ...(this.proxies ? [libraryAssetName(capture.shot.id, 'proxy', 'mov')] : [])];
     }
 
-    private async existing(location: LibraryLocation, id: string, names: Entry['names'], listing?: string[]) {
-        const files = listing ?? [];
+    private async existing(location: LibraryLocation, id: string, names: Entry['names'], listing?: LibraryListing) {
+        const files = listing?.assets.get(id) ?? [];
         // A different extension would create two assets with the same role. Do not silently choose one.
-        const unexpected = files.find(name => (name.startsWith(`${id}.source.`) || name.startsWith(`${id}.thumb.`)) && !names.includes(name) &&
-            !name.endsWith('.partial') && /^[a-f0-9]{64}\.(?:source|thumb)\.[a-z0-9]+$/.test(name));
+        const unexpected = files.find(name => {
+            const asset = parseLibraryAssetName(name);
+            return asset && (asset.role === 'source' || asset.role === 'thumb') && !names.includes(name);
+        });
         if (unexpected) throw new Error(`Existing asset ${unexpected} uses a different extension. Resolve it before committing this clip.`);
         const entries = await Promise.all(names.map(async name => [name, await libraryFileIdentity(join(location.path, name))] as const));
         return Object.fromEntries(entries);
@@ -230,7 +241,7 @@ export class IngestQueue {
             await this.status();
             const library = await this.scanLibrary();
             if (!library) throw new Error(this.state.libraryScan?.error ?? 'The Library could not be checked.');
-            const { location, names: listing } = library;
+            const { location } = library;
             await this.proxies?.checkConfiguration(ids);
             const entries: Entry[] = [];
             for (const id of [...new Set(ids)]) {
@@ -238,7 +249,7 @@ export class IngestQueue {
                 const capture = await this.scanner.captureIngest(id);
                 if (library.complete.has(id) && (!this.proxies || library.proxies.has(id)) && capture.shot.ingestion?.libraryPath === location.path && capture.shot.ingestion.signature === capture.signature) continue;
                 const names = this.names(capture);
-                entries.push({ capture, names, existing: await this.existing(location, id, names, listing) });
+                entries.push({ capture, names, existing: await this.existing(location, id, names, library) });
             }
             if (!entries.length) throw new Error('No clips need committing.');
             await this.location(location);
@@ -284,7 +295,7 @@ export class IngestQueue {
             this.preparing = new Promise(resolve => { preparationFinished = resolve; });
             await this.location(review.location);
             signal.throwIfAborted();
-            const listing = await readdir(review.location.path);
+            const listing = await listLibrary(review.location);
             for (const entry of entries) {
                 signal.throwIfAborted();
                 if (this.cancelledIds.has(entry.capture.shot.id)) continue;
@@ -325,7 +336,7 @@ export class IngestQueue {
         }
     }
 
-    private async checkExisting(location: LibraryLocation, entry: Entry, listing?: string[]) {
+    private async checkExisting(location: LibraryLocation, entry: Entry, listing?: LibraryListing) {
         const existing = await this.existing(location, entry.capture.shot.id, entry.names, listing);
         if (JSON.stringify(existing) !== JSON.stringify(entry.existing)) throw new Error('Library assets changed after review. Review the commit plan again to approve replacement.');
     }
@@ -475,8 +486,8 @@ export class IngestQueue {
             this.scanner.setTransferProgress(shot.id, 99);
             this.publish();
             const ingestedAt = new Date().toISOString();
-            const metadata = {
-                id: shot.id, fingerprint: shot.fingerprint, originalFilename: shot.filename, bytes: shot.bytes,
+            const metadata: LibraryMetadata = {
+                id: shot.id, fingerprint: shot.fingerprint!, originalFilename: shot.filename, bytes: shot.bytes,
                 recordedAt: shot.timestamp, dateSource: shot.dateSource, dateEvidence: shot.dateEvidence, dateConfidence: shot.dateConfidence,
                 durationSeconds: shot.durationSeconds, metadata: shot.metadata, warnings: shot.warnings,
                 ...ingestAttributes(shot.organization!), ingestion: { completedAt: ingestedAt, transfer: 'rsync' },
@@ -488,6 +499,7 @@ export class IngestQueue {
             await rename(temporaryJSON, metadataPath);
             // Publication is the completion boundary. A concurrent Stop must preserve this success.
             await this.scanner.markIngested(shot.id, { libraryPath: location.path, signature, ingestedAt });
+            if (this.libraryRefresh?.path === location.path) this.libraryRefresh.published.set(shot.id, entry.names);
             await this.proxies?.published(shot.id, proxy, location.path);
         } finally {
             await unlink(temporaryJSON).catch(() => undefined);

@@ -1,3 +1,4 @@
+import { hasPendingCommit } from "./clipState";
 import { AttributeFields } from "./AttributeFields";
 import { EjectButton } from "./EjectButton";
 import { SkipSelection } from "./SkipSelection";
@@ -10,7 +11,7 @@ export function MultiClipInspector({ shots, onEject, ejectBusy, skippedCount, di
     onOrganizationUpdated: (collection: ShotCollection) => void;
 }) {
     const count = shots.length;
-    const cancelCount = shots.filter(shot => shot.ingestState === "queued" || shot.ingestState === "processing").length;
+    const cancelCount = shots.filter(shot => hasPendingCommit(shot)).length;
     return <ResizableInspector width={width} onResize={onResize}>
         <div className="multi-clip-inspector flex h-full min-h-0 flex-col">
         <header className="mb-4 flex items-start justify-between gap-3">

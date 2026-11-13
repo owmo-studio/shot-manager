@@ -10,7 +10,7 @@ const cacheKinds = [
     { key: 'proxies', label: 'Proxies', detail: 'Local encoded proxies' },
 ] as const;
 
-export function ResetLocalDataButton({ disabled, onBusyChange, onReset }: {
+export function ClearCacheButton({ disabled, onBusyChange, onReset }: {
     disabled: boolean;
     onBusyChange: (busy: boolean) => void;
     onReset: () => void;
