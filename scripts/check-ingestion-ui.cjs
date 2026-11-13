@@ -13,6 +13,7 @@ if (!process.versions.electron) {
         fs.writeFileSync(join(root, "profile", "Cache", "Cache_Data", "chromium-marker"), "Electron cache");
         fs.mkdirSync(join(root, "library"));
         fs.mkdirSync(join(root, "source"));
+        fs.mkdirSync(join(root, "destination"));
         fs.writeFileSync(
             join(root, "profile", "configuration.json"),
             JSON.stringify({ version: 1, libraryPath: null }),
@@ -147,6 +148,7 @@ if (!process.versions.electron) {
             js(
                 `Array.from((document.querySelector('dialog[open]') ?? document).querySelectorAll('button')).find(button => button.textContent.trim() === ${JSON.stringify(text)}).click()`,
             );
+        const fillAttribute = (label,value) => js(`(()=>{const el=document.querySelector('[aria-label="${label}"]');const select=el.tagName==='SELECT';Object.getOwnPropertyDescriptor(select?HTMLSelectElement.prototype:HTMLInputElement.prototype,'value').set.call(el,${JSON.stringify(value)});el.dispatchEvent(new Event(select?'change':'input',{bubbles:true}));})()`);
         try {
             await until(() => window && !window.webContents.isLoading(), "Renderer not loaded");
             await until(
@@ -184,7 +186,7 @@ if (!process.versions.electron) {
                 ...electron.dialog,
                 showOpenDialog: async (_owner, options) => ({
                     canceled: false,
-                    filePaths: [join(root, options.title === "Set Library Location" ? "library" : "source")],
+                    filePaths: [join(root, options.title === "Set Library Location" ? "library" : options.title === 'Choose Sync Destination' ? 'destination' : "source")],
                 }),
             };
             const openConfiguration = () => js(`document.querySelector('[aria-label="Configuration"]').click()`);
@@ -295,6 +297,17 @@ if (!process.versions.electron) {
             const selectCard = (index, additive = false) => js(`document.getElementById(${JSON.stringify(cardIds[index])}).dispatchEvent(new MouseEvent('click',{bubbles:true,metaKey:${additive}}))`);
             const commitDisabled = () => js(`Array.from(document.querySelectorAll('footer button')).find(button=>button.textContent==='Commit').disabled`);
             await selectCard(0);
+            assert.deepEqual(await js(`Array.from(document.querySelectorAll('[data-clip-grouping] label')).map(el=>el.querySelector('.attribute-label').textContent)`),['Group','Camera','Rating']);
+            assert.equal(await js(`(()=>{const g=document.querySelector('[aria-label="Group"]').getBoundingClientRect(),c=document.querySelector('[aria-label="Camera"]').getBoundingClientRect(),r=document.querySelector('[aria-label="Rating"]').getBoundingClientRect();return Math.abs(g.width-2*c.width)<3&&Math.abs(c.width-r.width)<2&&g.top===c.top&&c.top===r.top;})()`),true,'Grouping fields share the requested 50/25/25 row');
+            assert.equal(await js(`document.querySelector('[aria-label="Notes"]').rows`),3,'Notes leaves room for grouping');
+            await fillAttribute('Group','TH01-T02');await fillAttribute('Camera','A');await fillAttribute('Rating','preferred');
+            await js('window.desktop.flushOrganizationText()');
+            await until(()=>js(`window.desktop.getShots().then(c=>c.shots.find(s=>s.id===${JSON.stringify(cardIds[0].replace('shot-',''))}).organization.rating==='preferred')`),'Import grouping saves');
+            const importGrouping=await js(`window.desktop.getShots().then(c=>c.shots.find(s=>s.id===${JSON.stringify(cardIds[0].replace('shot-',''))}).organization)`);
+            assert.equal(importGrouping.group,'TH01-T02');assert.equal(importGrouping.camera,'A');
+            await js(`window.desktop.updateOrganization([${JSON.stringify(cardIds[0].replace('shot-',''))}],{field:'all',operation:'clear',value:''})`);
+            await until(()=>js(`document.querySelector('[aria-label="Group"]').value===''&&document.querySelector('[aria-label="Camera"]').value===''&&document.querySelector('[aria-label="Rating"]').value===''`),'Clear resets grouping controls');
+            assert.equal(await js(`Array.from(document.querySelectorAll('#clip-inspector header button, #clip-inspector header label')).map(el=>el.textContent.trim()).filter(text=>['Thumb','Skip','Eject'].includes(text)).join(',')`),'Thumb,Skip,Eject','Import button order');
             await until(() => js(`document.querySelector('footer').textContent.includes('1 selected clip to commit')`), 'Footer identifies selected Commit scope');
             await click('Commit');
             await until(() => js(`document.querySelectorAll('dialog [data-review-included]').length===1`), 'Only selected clip enters review');
@@ -321,7 +334,7 @@ if (!process.versions.electron) {
                 () => js(`document.querySelector('dialog[open]')?.textContent.includes('Ready to Commit?')`),
                 "Review did not open",
             );
-            assert.equal(await js(`Array.from(document.querySelectorAll('dialog [data-review-proxy-ready]')).every(tag=>tag.textContent.trim()==='Proxy' && tag.classList.contains('text-blue-300'))`), true, "Only available proxies get neutral blue tags");
+            assert.equal(await js(`Array.from(document.querySelectorAll('dialog span')).some(tag=>tag.textContent.trim()==='Proxy')`), false, "Commit review shows no Proxy tag");
             assert.equal(await js(`(() => { const tags=Array.from(document.querySelectorAll('dialog span')).filter(tag=>tag.textContent.trim()==='New'); return tags.length===2 && tags.every(tag=>tag.classList.contains('text-blue-300')); })()`), true, "New tags are blue without a plus");
             assert.equal(await js(`document.querySelectorAll('dialog button[aria-label^="Remove "]').length`), 2);
             assert.equal(await js(`(() => { const style=getComputedStyle(document.querySelector('dialog button[aria-label^="Remove "]')); return style.borderTopWidth==='0px' && style.fontSize==='24px'; })()`), true, "Review removal control is large and borderless");
@@ -385,9 +398,11 @@ if (!process.versions.electron) {
             await until(async()=>!(await js('window.desktop.getIngestStatus()')).active,'Restore fixture thumbnail');
             assert.equal(await js(`!!document.querySelector('[aria-label="Skip selected clips"]') || !!document.querySelector('[aria-label^="Eject "]')`),false,'Library omits Skip and Eject');
             await js(`window.desktop.updateLibraryOrganization(['${publishedId}'],{field:'notes',operation:'set',value:'Library draft'})`);
+            await fillAttribute('Group','Studio/Intro-T02');await fillAttribute('Camera','B');await fillAttribute('Rating','usable');await js('window.desktop.flushOrganizationText()');
             await until(()=>js(`document.querySelector('[data-shot-status="changes-pending"]') && document.querySelector('[aria-label="Notes"]').value==='Library draft'`),'Library edits show yellow');
             await click('Revert');await js(`document.querySelector('[aria-label="Confirm revert clip attributes"]').click()`);
             await until(()=>js(`!document.querySelector('dialog[open]') && !document.querySelector('[data-shot-status="changes-pending"]') && document.querySelector('[aria-label="Notes"]').value===''`),'Library Revert restores committed metadata');
+            await until(()=>js(`document.querySelector('[aria-label="Group"]').value===''&&document.querySelector('[aria-label="Camera"]').value===''&&document.querySelector('[aria-label="Rating"]').value===''`),'Library Revert restores blank grouping fields');
             await js(`window.desktop.updateLibraryOrganization(['${publishedId}'],{field:'notes',operation:'set',value:'Library committed edit'})`);
             await until(()=>js(`!!document.querySelector('[data-shot-status="changes-pending"]')`),'Library update ready');
             await click('Commit');await until(()=>js(`document.querySelector('dialog[open]')?.textContent.includes('Ready to Commit?')`),'Library Commit review');
@@ -398,6 +413,45 @@ if (!process.versions.electron) {
             // Restore empty Notes for the remaining Import regression checks.
             await js(`(async()=>{ await window.desktop.updateLibraryOrganization(['${publishedId}'],{field:'notes',operation:'set',value:''}); const r=await window.desktop.reviewLibraryCommit(['${publishedId}']); await window.desktop.startLibraryCommit(r.token,['${publishedId}']); })()`);
             await until(async()=>!(await js('window.desktop.getIngestStatus()')).active,'Library reset Commit');
+            await until(()=>js(`!document.querySelector('[data-shot-status="changes-pending"]')`),'Reset Library draft settles');
+            assert.equal(await js(`Array.from(document.querySelectorAll('#clip-inspector header button')).filter(el=>['Thumb','Sync','Delete'].includes(el.textContent.trim())).map(el=>el.textContent.trim()).join(',')`),'Thumb,Sync,Delete','Library button order');
+            assert.equal(await js(`Array.from(document.querySelectorAll('#clip-inspector button')).find(el=>el.textContent.trim()==='Delete').disabled`),true,'Delete is only a disabled placeholder');
+            await click('Sync');await click('Choose Destination');
+            await until(()=>js(`document.querySelectorAll('[data-sync-included]').length===1 && document.querySelector('dialog[open]').textContent.includes(${JSON.stringify(join(root,'destination'))})`),'Sync reviews selected Library clip and native-picked destination');
+            assert.equal(await js(`document.querySelector('dialog[open]').textContent.includes('Direct Copy')`),false,'No redundant Sync format note');
+            assert.equal(await js(`(()=>{const row=document.querySelector('[data-sync-included]'),tag=row.querySelector('span'),name=row.querySelector('p');return tag.getBoundingClientRect().right<name.getBoundingClientRect().left && Math.abs(tag.getBoundingClientRect().top-name.getBoundingClientRect().top)<3;})()`),true,'New/Update tag sits left of filename');
+            await js(`document.querySelector('dialog button[aria-label^="Remove "]').click()`);
+            assert.equal(await js(`!!document.querySelector('[data-sync-included="false"]') && Array.from(document.querySelectorAll('dialog button')).find(el=>el.textContent.trim()==='Sync').disabled`),true,'Exclusion retains the row and disables empty submission');
+            assert.equal(await js(`document.querySelector('dialog button[aria-label^="Restore "]').textContent.trim()`),'−');
+            await js(`document.querySelector('dialog button[aria-label^="Restore "]').click()`);
+            await click('Cancel');assert.equal(fs.readdirSync(join(root,'destination')).length,0,'Cancel never exports');
+            await click('Sync');await click('Choose Destination');
+            await until(()=>js(`!!document.querySelector('dialog [data-sync-included]') && Array.from(document.querySelectorAll('dialog button')).find(el=>el.textContent.trim()==='Sync')?.disabled===false`),'Sync plan ready');
+            await fs.promises.writeFile('/tmp/owmo-sync-review.png',(await window.webContents.capturePage()).toPNG());
+            await click('Sync');
+            await until(async()=>!(await js('window.desktop.getIngestStatus()')).active && fs.readdirSync(join(root,'destination')).length===2,'Source and proxy Sync completes');
+            assert.deepEqual(fs.readdirSync(join(root,'destination')).sort(),[`${publishedId}.proxy.mov`,`${publishedId}.source.mp4`]);
+            for(const role of ['source.mp4','proxy.mov']) assert.deepEqual(fs.readFileSync(join(root,'destination',`${publishedId}.${role}`)),fs.readFileSync(join(root,'library',`${publishedId}.${role}`)));
+            await js(`window.desktop.updateLibraryOrganization(['${publishedId}'],{field:'scene',operation:'set',value:'Pending Sync test'})`);
+            await click('Sync');await click('Choose Destination');
+            await until(()=>js(`document.querySelector('dialog[open]')?.textContent.includes('Commit or Revert changes before Sync.')`),'Sync explains pending edits');
+            assert.equal(await js(`Array.from(document.querySelectorAll('dialog button')).find(el=>el.textContent.trim()==='Sync').disabled`),true,'Dirty clip blocks Sync until excluded');
+            await click('Cancel');await js(`window.desktop.updateLibraryOrganization(['${publishedId}'],{field:'scene',operation:'set',value:''})`);
+            // A second temporary catalogue row exercises the actual multi-selection inspector.
+            const syncSecondId='f'.repeat(64), syncSecondJSON=JSON.parse(fs.readFileSync(join(root,'library',`${publishedId}.metadata.json`),'utf8'));
+            syncSecondJSON.id=syncSecondId; syncSecondJSON.fingerprint.value=syncSecondId; syncSecondJSON.originalFilename='Second Library Fixture.mp4';
+            fs.writeFileSync(join(root,'library',`${syncSecondId}.metadata.json`),JSON.stringify(syncSecondJSON));
+            for(const role of ['source.mp4','proxy.mov','thumb.jpg']) fs.copyFileSync(join(root,'library',`${publishedId}.${role}`),join(root,'library',`${syncSecondId}.${role}`));
+            await js('window.desktop.refreshCatalogue()');
+            await until(()=>js(`!!document.getElementById('shot-${syncSecondId}')`),'Second temporary Library row appears');
+            await js(`document.getElementById('shot-${syncSecondId}').dispatchEvent(new MouseEvent('click',{bubbles:true,metaKey:true}))`);
+            await until(()=>js(`document.querySelector('#clip-inspector h2')?.textContent==='2 Selected Clips'`),'Library multi-selection inspector');
+            await click('Sync');await click('Choose Destination');
+            await until(()=>js(`document.querySelectorAll('dialog [data-sync-included]').length===2 && Array.from(document.querySelectorAll('dialog button')).find(el=>el.textContent.trim()==='Sync')?.disabled===false`),'Sync includes the full explicit multi-selection');
+            await click('Cancel');
+            for(const role of ['source.mp4','proxy.mov','thumb.jpg','metadata.json']) fs.unlinkSync(join(root,'library',`${syncSecondId}.${role}`));
+            await js('window.desktop.refreshCatalogue()');
+            await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===1`),'Temporary Library row removed');
             await click('Import');
             assert.equal(await js(`document.querySelector('[aria-label^="Filter clips by device:"]').getAttribute('aria-pressed')`),'true','Import retains its filters');
             await js(`document.querySelector('[aria-label="Show all clips"]').click()`);
@@ -427,6 +481,33 @@ if (!process.versions.electron) {
             await js(`document.querySelector('[data-shot-status="synced"]').click()`);
             const retained = await js(`window.desktop.cancelClips([${JSON.stringify(ingested.id)}])`);
             assert.ok(retained.shots.some(shot=>shot.id===ingested.id&&shot.ingestState==='synced'), 'Cancel IPC leaves completed clips and receipts in the workspace');
+            await click('Commit');
+            await until(()=>js(`!!document.querySelector('[data-review-mode="synced"]') && !!document.getElementById('shot-${ingested.id}')`),'Unselected Commit reviews green cards without removing them');
+            assert.equal(await js(`document.querySelector('[data-review-mode="synced"] span').textContent==='Synced' && document.querySelector('[data-review-mode="synced"] span').classList.contains('text-emerald-300')`),true,'Synced tag is green');
+            await js(`document.querySelector('[data-review-mode="synced"] button').click()`);
+            assert.equal(await js(`document.querySelector('[data-review-mode="synced"]').getAttribute('data-review-included')`),'false');
+            await click('Cancel');
+            assert.equal(await js(`!!document.getElementById('shot-${ingested.id}')`),true,'Cancelling review preserves synced clips');
+            const newId=await js(`window.desktop.getShots().then(c=>c.shots.find(s=>s.id!==${JSON.stringify(ingested.id)}).id)`);
+            await js(`window.desktop.ejectClips(['${newId}'])`);
+            await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===1 && Array.from(document.querySelectorAll('footer button')).find(button=>button.textContent==='Commit')?.disabled===false`),'Commit remains available when only synced rows need review');
+            await click('Commit');
+            await until(()=>js(`document.querySelectorAll('[data-review-included]').length===1 && !!document.querySelector('[data-review-mode="synced"]')`),'Only-green workspace opens a removal review');
+            await click('Cancel');
+            await js('window.desktop.chooseClips()');
+            await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===2 && !!document.getElementById('shot-${newId}')?.querySelector('[data-shot-image]')`),'Restore the excluded new fixture clip');
+            await js(`document.getElementById('shot-${newId}').click()`);await click('Commit');
+            await until(()=>js(`document.querySelectorAll('[data-review-included]').length===1`),'Selected-only review targets selected new clip');
+            assert.equal(await js(`!!document.querySelector('[data-review-mode="synced"]')`),false,'Selected-only Commit excludes all green cards');
+            await click('Cancel');await js(`document.getElementById('shot-${newId}').click()`);
+            await click('Commit');await until(()=>js(`!!document.querySelector('[data-review-mode="synced"]')`),'Review green card for confirmation');
+            await js(`document.querySelector('[data-review-mode="new"] button').click()`);
+            await click('Commit');
+            await until(()=>js(`!document.querySelector('dialog[open]')&&!document.getElementById('shot-${ingested.id}')`),'Confirming the included Synced row removes only that card');
+            assert.equal(await js(`!!document.getElementById('shot-${newId}')`),true,'Excluded new clip remains');
+            assert.equal((await js('window.desktop.getIngestStatus()')).active,false,'Synced-only confirmation queues no transfers');
+            await js('window.desktop.chooseClips()');
+            await until(()=>js(`!!document.querySelector('[data-shot-status="synced"]')`),'Explicit discovery can restore a green card with its receipt intact');
             await window.loadFile(join(__dirname, "../out/renderer/index.html"));
             await until(
                 () => js(`!!document.querySelector('[data-shot-status="synced"]')`),
@@ -703,6 +784,16 @@ if (!process.versions.electron) {
                 null,
                 "Footer uses task counts without an aggregate progress bar",
             );
+            const commitOnlyStatus = statusOverride;
+            statusOverride = { ...statusOverride, revision: statusOverride.revision + 1, tasks: { ...statusOverride.tasks, syncsRemaining: 2, sync: { completed: 1, total: 3, percent: 47 } } };
+            backend.emit('message', { type: 'ingestion:changed', status: statusOverride });
+            await until(()=>js(`document.querySelector('[data-work-progress]')?.getAttribute('aria-label')==='1 proxy, 2 commits, Sync 1/3' && document.querySelector('[aria-label="Sync progress"]')?.getAttribute('aria-valuenow')==='47'`),'Sync progress coexists with proxy/Commit counts');
+            statusOverride = { ...statusOverride, revision: statusOverride.revision + 1, tasks: { ...statusOverride.tasks, proxiesRemaining: 0, transfersRemaining: 0 } };
+            backend.emit('message', { type: 'ingestion:changed', status: statusOverride });
+            await until(()=>js(`document.querySelector('[data-work-progress]')?.getAttribute('aria-label')==='Sync 1/3'`),'Sync-only work stays visible');
+            statusOverride = { ...commitOnlyStatus, revision: statusOverride.revision + 1 };
+            backend.emit('message', { type: 'ingestion:changed', status: statusOverride });
+            await until(()=>js(`!document.querySelector('[data-sync-progress]') && document.querySelector('[data-work-progress]')?.getAttribute('aria-label')==='1 proxy, 2 commits'`),'Sync progress hides when its queue finishes');
             const originalQueuedShots = shotsOverride.shots;
             shotsOverride = { ...shotsOverride, revision: shotsOverride.revision + 1, shots: [...originalQueuedShots, {
                 ...cardCollection.shots[0], id: 'f'.repeat(64), filename: 'Append candidate.mp4',
@@ -896,7 +987,7 @@ if (!process.versions.electron) {
             await fs.promises.writeFile(join(root, "validated"), "passed");
             clearTimeout(timer);
             console.log(
-                "PASS: Library Thumb capture, pending preview, Commit/Revert, source/proxy preservation, Library browsing/playback, independent tab filters, shared metadata Commit/Revert, automatic Import retirement, green rediscovery, managed Cache and Browse Cache, staged Library Save/Cancel/Escape, selective Clear Cache with media preservation, real Electron review, X exclusion, ingestion, persisted sync badge, renderer reload, deleted-Library refresh/New review, replacement review, proxy readiness and compact centered sync summary at wide/narrow sizes, notifications without polling, stale-update protection, and unified toolbar Refresh–Stop control.",
+                "PASS: native Library Sync destination/review/exclusion/copy, pending-edit protection and multi-selection, inspector button order and disabled Delete, Library Thumb capture/Commit/Revert, media preservation, browsing/playback, independent filters, shared Commit, Import retirement/rediscovery, Cache/configuration, ingestion, notifications and unified Stop.",
             );
             app.quit();
         } catch (error) {

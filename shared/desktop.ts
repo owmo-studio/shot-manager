@@ -4,6 +4,7 @@ import type { ViewingLut } from './viewing'
 import type { OptionRemovalPlan, OrganizationAction, TagVocabulary } from './organization'
 import type { IPCResult } from './errors'
 import type { LibraryCollection } from './library'
+import type { SyncReview } from './sync'
 
 export interface BackendHealth {
   status: 'ok'
@@ -59,6 +60,9 @@ export interface LocalDataSummary extends CacheSummary {
 }
 
 export interface DesktopAPI {
+  chooseSyncDestination: () => Promise<LocationChoice | null>
+  reviewLibrarySync: (shotIds: string[], destinationToken: string) => Promise<SyncReview>
+  startLibrarySync: (token: string, shotIds: string[]) => Promise<IngestStatus>
   getLibrary: () => Promise<LibraryCollection>
   refreshCatalogue: () => Promise<LibraryCollection>
   onLibraryChanged: (listener: (change: ShotChange) => void) => () => void
@@ -74,7 +78,7 @@ export interface DesktopAPI {
   getIngestStatus: () => Promise<IngestStatus>
   refreshLibrary: () => Promise<IngestStatus>
   onIngestChanged: (listener: (status: IngestStatus) => void) => () => void
-  reviewIngest: (shotIds: string[]) => Promise<IngestReview>
+  reviewIngest: (shotIds: string[], includeSynced?: boolean) => Promise<IngestReview>
   startIngest: (token: string, shotIds: string[]) => Promise<IngestStatus>
   stopAllWork: () => Promise<IngestStatus>
   resumeWork: () => Promise<IngestStatus>

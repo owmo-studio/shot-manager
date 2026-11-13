@@ -15,7 +15,7 @@ export interface IngestReview {
     proxyPreparation?: boolean;
     metadataOnly?: boolean;
     libraryEdits?: boolean;
-    clips: { id: string; filename: string; bytes: number; mode: 'new' | 'replace'; proxyReady: boolean; files: { from: string; to: string }[] }[];
+    clips: { id: string; filename: string; bytes: number; mode: 'new' | 'replace' | 'synced'; proxyReady: boolean; files: { from: string; to: string }[] }[];
 }
 
 export interface IngestStatus {
@@ -28,15 +28,16 @@ export interface IngestStatus {
     total: number;
     completed?: number;
     waiting?: number;
-    tasks?: { completed: number; total: number; percent: number; proxiesRemaining: number; transfersRemaining: number };
+    tasks?: { completed: number; total: number; percent: number; proxiesRemaining: number; transfersRemaining: number; syncsRemaining?: number;
+        sync?: { completed: number; total: number; percent: number } };
     work?: { paused: boolean; busy: boolean; encoding: boolean; queued: number; scratchPath: string | null; error?: string };
     current?: { id: string; filename: string; percent: number; phase: 'transferring' | 'metadata' };
-    errors: { id: string; filename: string; message: string; eventId: string }[];
+    errors: { id: string; filename: string; message: string; eventId: string; kind?: 'commit' | 'sync' }[];
     acceptedReviews?: string[];
 }
 
 // Stable descriptive state: Skip and selection deliberately do not contribute.
 export function ingestAttributes(attributes: ClipAttributes): ClipAttributes {
     return { identity: attributes.identity, project: attributes.project, scene: attributes.scene,
-        notes: attributes.notes, tags: [...attributes.tags] };
+        notes: attributes.notes, tags: [...attributes.tags], group: attributes.group ?? '', camera: attributes.camera ?? '', rating: attributes.rating ?? null };
 }

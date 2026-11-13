@@ -20,8 +20,9 @@ interface Entry {
     existing: Record<string, string | null>;
 }
 interface LibrarySnapshot extends LibraryListing { location: LibraryLocation }
-interface Review { token: string; location: LibraryLocation; entries: Entry[]; created: number }
-export interface MetadataCommitJob { id: string; filename: string; execute: (signal: AbortSignal) => Promise<void> }
+interface Retirement { id: string; filename: string; signature: string }
+interface Review { token: string; location: LibraryLocation; entries: Entry[]; retirements: Retirement[]; created: number }
+export interface LibraryTransferJob { id: string; filename: string; kind?: 'commit' | 'sync'; execute: (signal: AbortSignal, progress: (percent: number) => void) => Promise<void> }
 
 export class IngestQueue {
     get workRevision() { return this.workGeneration; }
@@ -37,10 +38,10 @@ export class IngestQueue {
     private submission = 0;
     private transferKeys = new Map<string, string>();
     private pending: { entry: Entry; location: LibraryLocation }[] = [];
-    private metadataPending: MetadataCommitJob[] = [];
+    private libraryPending: LibraryTransferJob[] = [];
     onPublished?: (metadata: LibraryMetadata, location: LibraryLocation, names: string[]) => Promise<void>;
     private wakeWorker?: () => void;
-    private tasks = new Map<string, { kind: 'proxy' | 'transfer'; percent: number }>();
+    private tasks = new Map<string, { kind: 'proxy' | 'transfer' | 'sync'; percent: number }>();
     private progressTimer?: ReturnType<typeof setTimeout>;
     private libraryScanVersion = 0;
     private workGeneration = 0;
@@ -158,7 +159,7 @@ export class IngestQueue {
     private updateTaskProgress() {
         const shots = this.scanner.snapshot().shots;
         const ready = new Set(shots.filter(shot => shot.proxyState === 'ready').map(shot => `proxy:${shot.id}`));
-        const pending = new Map<string, { kind: 'proxy' | 'transfer'; percent: number }>();
+        const pending = new Map<string, { kind: 'proxy' | 'transfer' | 'sync'; percent: number }>();
         for (const shot of shots) {
             if (!this.scanner.isEjecting(shot.id) && shot.available && (!shot.organization?.skipped || this.queuedIds.includes(shot.id)) &&
                 (shot.proxyState === 'queued' || shot.proxyState === 'encoding')) {
@@ -166,7 +167,7 @@ export class IngestQueue {
             }
         }
         for (const id of this.queuedIds) pending.set(this.transferKeys.get(id)!, {
-            kind: 'transfer', percent: this.state.current?.id === id ? this.state.current.percent : 0,
+            kind: this.scanner.workKind(id) === 'sync' ? 'sync' : 'transfer', percent: this.state.current?.id === id ? this.state.current.percent : 0,
         });
         // Retain completed work while a session is running. New work after idle starts a fresh count.
         if (![...this.tasks.values()].some(task => task.percent < 100) && [...pending.keys()].some(key => !this.tasks.has(key))) this.tasks.clear();
@@ -178,11 +179,15 @@ export class IngestQueue {
         for (const [key, task] of pending) this.tasks.set(key, { ...task, percent: Math.max(task.percent, this.tasks.get(key)?.percent ?? 0) });
         const tasks = [...this.tasks.values()];
         const completed = tasks.filter(task => task.percent === 100).length;
+        const syncs = tasks.filter(task => task.kind === 'sync');
         this.state.tasks = {
             completed, total: tasks.length,
             percent: tasks.length ? Math.min(completed === tasks.length ? 100 : 99, Math.floor(tasks.reduce((sum, task) => sum + task.percent, 0) / tasks.length)) : 0,
             proxiesRemaining: tasks.filter(task => task.kind === 'proxy' && task.percent < 100).length,
             transfersRemaining: tasks.filter(task => task.kind === 'transfer' && task.percent < 100).length,
+            syncsRemaining: tasks.filter(task => task.kind === 'sync' && task.percent < 100).length,
+            sync: { completed: syncs.filter(task => task.percent === 100).length, total: syncs.length,
+                percent: syncs.length ? Math.floor(syncs.reduce((sum, task) => sum + task.percent, 0) / syncs.length) : 0 },
         };
     }
 
@@ -237,7 +242,7 @@ export class IngestQueue {
         return Object.fromEntries(entries);
     }
 
-    async preview(ids: string[]): Promise<IngestReview> {
+    async preview(ids: string[], includeSynced = false): Promise<IngestReview> {
         this.beginOperation();
         const generation = this.workGeneration;
         try {
@@ -246,28 +251,35 @@ export class IngestQueue {
             const library = await this.scanLibrary();
             if (!library) throw new Error(this.state.libraryScan?.error ?? 'The Library could not be checked.');
             const { location } = library;
+            await this.scanner.reloadOrganizations();
+            const retirements = includeSynced ? this.scanner.syncedForReview(ids) : [];
+            const syncedIds = new Set(retirements.map(entry => entry.id));
             await this.proxies?.checkConfiguration(ids);
             const entries: Entry[] = [];
             for (const id of [...new Set(ids)]) {
-                if (this.queuedIds.includes(id)) continue;
+                if (this.queuedIds.includes(id) || syncedIds.has(id)) continue;
                 const capture = await this.scanner.captureIngest(id);
                 if (library.complete.has(id) && (!this.proxies || library.proxies.has(id)) && capture.shot.ingestion?.libraryPath === location.path && capture.shot.ingestion.signature === capture.signature) continue;
                 const names = this.names(capture);
                 entries.push({ capture, names, existing: await this.existing(location, id, names, library) });
             }
-            if (!entries.length) throw new Error('No clips need committing.');
+            if (!entries.length && !retirements.length) throw new Error('No clips need committing.');
             await this.location(location);
             if (generation !== this.workGeneration || this.state.stopping) throw new Error('Work was stopped. Refresh or Commit again when ready.');
             if (this.proxies?.status().paused || this.scanner.workPaused) this.resume();
+            await this.scanner.reloadOrganizations();
+            if (generation !== this.workGeneration || this.state.stopping) throw new Error('Work was stopped. Commit again when ready.');
             const present = new Set(this.scanner.snapshot().shots.map(shot => shot.id));
             if (entries.some(entry => !present.has(entry.capture.shot.id) || this.scanner.isEjecting(entry.capture.shot.id) || this.queuedIds.includes(entry.capture.shot.id))) throw new Error('Clips changed while preparing review. Review again.');
-            this.review = { token: randomUUID(), location, entries, created: Date.now() };
-            return { token: this.review.token, libraryPath: location.path, proxyPreparation: !!this.proxies, clips: entries.map(entry => ({
+            this.scanner.validateSyncedRetirement(retirements);
+            this.review = { token: randomUUID(), location, entries, retirements, created: Date.now() };
+            return { token: this.review.token, libraryPath: location.path, proxyPreparation: !!this.proxies, clips: entries.map<IngestReview['clips'][number]>(entry => ({
                 id: entry.capture.shot.id, filename: entry.capture.shot.filename, bytes: entry.capture.shot.bytes + entry.capture.thumbnail.length,
                 mode: entry.names.slice(0, 3).some(name => entry.existing[name]) ? 'replace' : 'new',
                 proxyReady: !!(this.proxies && (entry.existing[entry.names[3]] || this.scanner.proxyReady(entry.capture.shot.id))),
                 files: entry.names.map((name, index) => ({ from: index === 0 ? entry.capture.path : index === 1 ? 'Current thumbnail' : index === 2 ? 'Clip metadata' : entry.existing[name] ? 'Existing Library proxy (retained)' : 'Generated ProRes proxy', to: join(location.path, name) })),
-            })) };
+            })).concat(retirements.map(entry => ({ id: entry.id, filename: entry.filename, bytes: 0, mode: 'synced' as const,
+                proxyReady: true, files: [] }))) };
         } finally { this.working = false; }
     }
 
@@ -277,12 +289,28 @@ export class IngestQueue {
         let preparationFinished: (() => void) | undefined;
         try {
             const review = this.review;
+            const generation = this.workGeneration;
             if (!review || token !== review.token || Date.now() - review.created > 30 * 60_000) throw new Error('The review expired. Review the commit plan again.');
             const unique = [...new Set(ids)];
-            if (!unique.length || unique.some(id => !review.entries.some(entry => entry.capture.shot.id === id))) throw new Error('Invalid reviewed selection.');
+            if (!unique.length || unique.some(id => !review.entries.some(entry => entry.capture.shot.id === id) && !review.retirements.some(entry => entry.id === id))) throw new Error('Invalid reviewed selection.');
             const entries = review.entries.filter(entry => unique.includes(entry.capture.shot.id));
-            this.scanner.lockIngest(unique);
-            locked = unique;
+            const retirements = review.retirements.filter(entry => unique.includes(entry.id));
+            if (!entries.length) {
+                await this.location(review.location);
+                const listing = await listLibrary(review.location);
+                await this.scanner.reloadOrganizations();
+                await this.location(review.location);
+                if (generation !== this.workGeneration || this.state.stopping) throw new Error('Work was stopped. Review Commit again.');
+                this.validateRetirements(retirements, listing);
+                this.scanner.retireSynced(retirements);
+                this.review = undefined;
+                this.state.acceptedReviews = [...(this.state.acceptedReviews ?? []), token].slice(-128);
+                this.publish();
+                return structuredClone(this.state);
+            }
+            const transferIds = entries.map(entry => entry.capture.shot.id);
+            this.scanner.lockIngest(transferIds);
+            locked = transferIds;
             if (!this.state.active) {
                 this.controller = new AbortController();
                 this.cancelledIds.clear();
@@ -293,8 +321,8 @@ export class IngestQueue {
             this.state.active = true;
             this.state.total += entries.length;
             this.submission++;
-            unique.forEach(id => { this.cancelledIds.delete(id); this.transferKeys.set(id, `transfer:${this.submission}:${id}`); });
-            this.queuedIds.push(...unique);
+            transferIds.forEach(id => { this.cancelledIds.delete(id); this.transferKeys.set(id, `transfer:${this.submission}:${id}`); });
+            this.queuedIds.push(...transferIds);
             this.publish();
             this.preparing = new Promise(resolve => { preparationFinished = resolve; });
             await this.location(review.location);
@@ -311,11 +339,16 @@ export class IngestQueue {
                     await this.checkExisting(review.location, entry, listing);
                 } catch (error) { if (!this.cancelledIds.has(entry.capture.shot.id)) throw error; }
             }
+            await this.scanner.reloadOrganizations();
+            await this.location(review.location);
             signal.throwIfAborted();
-            this.review = undefined;
+            if (generation !== this.workGeneration) throw new Error('Work was stopped. Review Commit again.');
+            this.validateRetirements(retirements, listing);
             if (this.proxies?.status().paused) this.resume();
             this.proxies?.prioritize(this.queuedIds);
             this.proxies?.retry(this.queuedIds);
+            this.scanner.retireSynced(retirements);
+            this.review = undefined;
             this.pending.push(...entries.filter(entry => !this.cancelledIds.has(entry.capture.shot.id)).map(entry => ({ entry, location: review.location })));
             this.state.acceptedReviews = [...(this.state.acceptedReviews ?? []), token].slice(-128);
             if (!this.run) this.run = this.process(signal);
@@ -346,6 +379,11 @@ export class IngestQueue {
         if (JSON.stringify(existing) !== JSON.stringify(entry.existing)) throw new Error('Library assets changed after review. Review the commit plan again to approve replacement.');
     }
 
+    private validateRetirements(entries: Retirement[], listing: LibraryListing) {
+        if (entries.some(entry => !listing.complete.has(entry.id) || this.proxies && !listing.proxies.has(entry.id))) throw new Error('Synced Library assets changed. Review Commit again.');
+        this.scanner.validateSyncedRetirement(entries);
+    }
+
     private async waitForWork(signal: AbortSignal) {
         if (signal.aborted) return;
         await new Promise<void>(resolve => {
@@ -359,18 +397,20 @@ export class IngestQueue {
         try {
             while (!signal.aborted) {
                 this.pending = this.pending.filter(item => !this.cancelledIds.has(item.entry.capture.shot.id));
-                this.metadataPending = this.metadataPending.filter(job => !this.cancelledIds.has(job.id));
-                if (!this.pending.length && !this.metadataPending.length && !this.preparing) break;
+                this.libraryPending = this.libraryPending.filter(job => !this.cancelledIds.has(job.id));
+                if (!this.pending.length && !this.libraryPending.length && !this.preparing) break;
                 const available = new Set(this.scanner.snapshot().shots.filter(shot => shot.available).map(shot => shot.id));
                 const index = this.proxies ? this.pending.findIndex(({ entry }) => this.proxies!.readyFor(entry.capture.shot.id) || !available.has(entry.capture.shot.id)) : this.pending.length ? 0 : -1;
-                if (index < 0 && !this.metadataPending.length) {
+                if (index < 0 && !this.libraryPending.length) {
                     this.state.current = undefined; this.state.waiting = this.pending.length; this.publish();
                     await this.waitForWork(signal);
                     continue;
                 }
-                const metadataJob = this.metadataPending.shift();
-                const item = metadataJob ? undefined : this.pending.splice(index, 1)[0];
-                const shot = metadataJob ?? item!.entry.capture.shot;
+                // Keep acceptance order across job types, bypassing only Imports still encoding.
+                const nextJob = this.libraryPending[0];
+                const libraryJob = nextJob && (index < 0 || this.queuedIds.indexOf(nextJob.id) < this.queuedIds.indexOf(this.pending[index].entry.capture.shot.id)) ? this.libraryPending.shift() : undefined;
+                const item = libraryJob ? undefined : this.pending.splice(index, 1)[0];
+                const shot = libraryJob ?? item!.entry.capture.shot;
                 const controller = new AbortController();
                 let finish!: () => void;
                 const done = new Promise<void>(resolve => { finish = resolve; });
@@ -382,14 +422,17 @@ export class IngestQueue {
                 this.scanner.processingIngest(shot.id);
                 this.publish();
                 try {
-                    if (metadataJob) await metadataJob.execute(clipSignal);
+                    if (libraryJob) await libraryJob.execute(clipSignal, percent => {
+                        this.state.current!.percent = Math.max(0, Math.min(99, percent));
+                        this.scanner.setTransferProgress(shot.id, this.state.current!.percent); this.publish(true);
+                    });
                     else await this.execute(item!.entry, item!.location, clipSignal);
                     this.state.current!.percent = 100;
                     this.state.completed = (this.state.completed ?? 0) + 1;
                     this.publish();
                 } catch (error) {
                     if (!clipSignal.aborted) this.state.errors.push({ id: shot.id, filename: shot.filename,
-                        message: error instanceof Error ? error.message : String(error), eventId: randomUUID() });
+                        message: error instanceof Error ? error.message : String(error), eventId: randomUUID(), kind: libraryJob?.kind });
                     this.publish();
                 } finally {
                     this.queuedIds = this.queuedIds.filter(id => id !== shot.id); this.scanner.unlockIngest([shot.id]);
@@ -401,7 +444,7 @@ export class IngestQueue {
             this.scanner.unlockIngest(this.queuedIds);
             this.queuedIds = [];
             this.pending = [];
-            this.metadataPending = [];
+            this.libraryPending = [];
             this.run = undefined;
             this.state.active = false;
             if (!signal.aborted) this.state.stopping = false;
@@ -410,11 +453,14 @@ export class IngestQueue {
         }
     }
 
-    enqueueMetadata(jobs: MetadataCommitJob[], reviewToken?: string) {
+    enqueueLibrary(jobs: LibraryTransferJob[], reviewToken?: string) {
         this.beginOperation();
         try {
             if (!jobs.length || jobs.some(job => this.queuedIds.includes(job.id))) throw new Error('Selected clips are already queued.');
-            this.scanner.lockLibraryCommit(jobs.map(job => job.id));
+            const ids = jobs.map(job => job.id), kind = jobs[0].kind ?? 'commit';
+            if (new Set(ids).size !== ids.length || jobs.some(job => (job.kind ?? 'commit') !== kind)) throw new Error('Invalid transfer submission.');
+            if (!this.scanner.canEditLibrary(ids)) throw new Error('Selected clips are locked.');
+            this.scanner.lockLibraryCommit(ids, kind);
             if (!this.state.active) {
                 this.controller = new AbortController(); this.cancelledIds.clear(); this.transferKeys.clear();
                 this.state = { ...this.state, position: 0, completed: 0, waiting: 0, total: 0, current: undefined };
@@ -424,7 +470,7 @@ export class IngestQueue {
                 this.cancelledIds.delete(job.id); this.queuedIds.push(job.id);
                 this.transferKeys.set(job.id, `transfer:${this.submission}:${job.id}`);
             }
-            this.metadataPending.push(...jobs); this.publish();
+            this.libraryPending.push(...jobs); this.publish();
             if (reviewToken) this.state.acceptedReviews = [...(this.state.acceptedReviews ?? []), reviewToken].slice(-128);
             if (!this.run) this.run = this.process(this.controller!.signal);
             this.wakeWorker?.();
@@ -439,7 +485,7 @@ export class IngestQueue {
         const active = this.activeTransfer && selected.includes(this.activeTransfer.id) ? this.activeTransfer : undefined;
         selected.forEach(id => this.cancelledIds.add(id));
         this.pending = this.pending.filter(item => !selected.includes(item.entry.capture.shot.id));
-        this.metadataPending = this.metadataPending.filter(job => !selected.includes(job.id));
+        this.libraryPending = this.libraryPending.filter(job => !selected.includes(job.id));
         this.queuedIds = this.queuedIds.filter(id => !selected.includes(id));
         active?.controller.abort();
         this.scanner.unlockIngest(selected.filter(id => id !== active?.id));

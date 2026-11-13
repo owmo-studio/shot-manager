@@ -63,6 +63,7 @@ export class ShotScanner {
         { proxyState: ProxyState; proxyPercent?: number; proxyError?: string; proxyLocation?: "cache" | "library" }
     >();
     private transferProgress = new Map<string, number>();
+    private workKinds = new Map<string, 'commit' | 'sync'>();
     private prepared = new Set<string>();
 
     libraryProxy(id: string) {
@@ -151,10 +152,12 @@ export class ShotScanner {
     }
 
     commitLock(id: string) { return this.ingestLocks.get(id); }
+    workKind(id: string) { return this.workKinds.get(id); }
+    transferPercent(id: string) { return this.transferProgress.get(id); }
 
-    lockLibraryCommit(ids: string[]) {
+    lockLibraryCommit(ids: string[], kind: 'commit' | 'sync' = 'commit') {
         if (this.clearingCache || ids.some(id => this.ingestLocks.has(id) || this.ejecting.has(id) || this.updatingThumbnails.has(id))) throw new Error('Selected clips are locked.');
-        ids.forEach(id => this.ingestLocks.set(id, 'queued'));
+        ids.forEach(id => { this.ingestLocks.set(id, 'queued'); this.workKinds.set(id, kind); });
         this.publish();
     }
 
@@ -209,8 +212,30 @@ export class ShotScanner {
     }
 
     retireCommitted(id: string) {
-        this.ejectedAt.set(id, this.scanToken);
-        this.dropClip(id);
+        this.retireClips([id]);
+    }
+
+    syncedForReview(ids: string[]) {
+        const selected = new Set(ids);
+        return this.snapshot().shots.filter(shot => selected.has(shot.id) && shot.ingestState === 'synced' && shot.editable &&
+            !shot.organization?.skipped && !this.updatingThumbnails.has(shot.id)).map(shot => ({ id: shot.id, filename: shot.filename, signature: shot.ingestion!.signature }));
+    }
+
+    validateSyncedRetirement(entries: { id: string; signature: string }[]) {
+        const current = new Map(this.syncedForReview(entries.map(entry => entry.id)).map(entry => [entry.id, entry.signature]));
+        if (entries.some(entry => current.get(entry.id) !== entry.signature)) throw new Error('Synced clips changed after review. Review Commit again.');
+    }
+
+    retireSynced(entries: { id: string; signature: string }[]) {
+        this.validateSyncedRetirement(entries);
+        if (entries.length) this.retireClips(entries.map(entry => entry.id));
+    }
+
+    private retireClips(ids: string[]) {
+        for (const id of ids) {
+            this.ejectedAt.set(id, this.scanToken);
+            this.dropClip(id);
+        }
         const used = new Set([...this.clips.values()].map(clip => dirname(clip.result.original)));
         for (const path of this.directoryStates.keys()) if (!used.has(path)) this.directoryStates.delete(path);
         this.publish();
@@ -223,6 +248,7 @@ export class ShotScanner {
     unlockIngest(ids: string[]) {
         ids.forEach((id) => {
             this.ingestLocks.delete(id);
+            this.workKinds.delete(id);
             this.transferProgress.delete(id);
         });
         this.publish();
@@ -709,6 +735,7 @@ export class ShotScanner {
                 ingestState: this.ingestState(clip.result.shot),
                 ...this.proxies.get(clip.result.shot.id),
                 transferPercent: this.transferProgress.get(clip.result.shot.id),
+                workKind: this.workKinds.get(clip.result.shot.id),
             }))
                 .sort(
                     (first, second) =>

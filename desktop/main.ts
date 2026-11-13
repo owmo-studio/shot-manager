@@ -206,6 +206,20 @@ if (!app.requestSingleInstanceLock()) {
     })
     handle('ingestion:status', event => { requireMainWindow(event); return backendRequest('/api/ingestion') })
     handle('library:list', event => { requireMainWindow(event); return backendRequest('/api/library') })
+    handle('sync:choose-destination', async event => {
+      const owner = requireMainWindow(event)
+      const result = await dialog.showOpenDialog(owner, { title: 'Choose Sync Destination', buttonLabel: 'Choose Destination', properties: ['openDirectory'] })
+      if (result.canceled || !result.filePaths[0]) return null
+      return backendRequest('/api/sync/destinations', { method: 'POST', body: JSON.stringify({ path: await realpath(result.filePaths[0]) }) })
+    })
+    for (const action of ['review', 'start'] as const) handle(`sync:${action}`, async (event, first: unknown, second: unknown) => {
+      requireMainWindow(event)
+      const shotIds = validateIngestIds(action === 'review' ? first : second)
+      const token = action === 'review' ? second : first
+      if (typeof token !== 'string' || !/^[a-f0-9-]{36}$/.test(token)) throw new Error('Invalid Sync review or destination')
+      await flushDrafts()
+      return organizationWrites.run(() => backendRequest(`/api/sync/${action}`, { method: 'POST', body: JSON.stringify(action === 'review' ? { shotIds, destinationToken: token } : { shotIds, token }) }))
+    })
     handle('library:vocabulary', event => { requireMainWindow(event); return backendRequest('/api/library/vocabulary') })
     handle('library:refresh', async event => { requireMainWindow(event); await flushDrafts(); return backendRequest('/api/library/refresh', { method: 'POST' }) })
     for (const action of ['review', 'revert'] as const) handle(`library:${action}`, async (event, value: unknown) => {
@@ -222,7 +236,7 @@ if (!app.requestSingleInstanceLock()) {
       requireMainWindow(event); const shotIds = validateIngestIds(value); const normalized = validateOrganizationAction(action)
       if (normalized.field === 'skip') throw new Error('Skip is only available in Import')
       const operation = () => backendRequest('/api/library/organization', { method: 'PATCH', body: JSON.stringify({ shotIds, action: normalized }) })
-      if (normalized.field === 'notes' || normalized.field === 'scene') return textWrites.schedule(`library:${normalized.field}:${shotIds.sort().join(',')}`, operation)
+      if (normalized.field === 'notes' || normalized.field === 'scene' || normalized.field === 'group' || normalized.field === 'camera') return textWrites.schedule(`library:${normalized.field}:${shotIds.sort().join(',')}`, operation)
       void textWrites.flush().catch(() => undefined)
       return draftWrites.run(operation)
     })
@@ -240,11 +254,12 @@ if (!app.requestSingleInstanceLock()) {
       return organizationWrites.run(() => backendRequest(`/api/library/${id}/thumbnail`, { method: 'PUT', body: JSON.stringify({ dataUrl }) }))
     })
     handle('ingestion:refresh-library', event => { requireMainWindow(event); return backendRequest('/api/work/refresh', { method: 'POST' }) })
-    handle('ingestion:review', async (event, value: unknown) => {
+    handle('ingestion:review', async (event, value: unknown, includeSynced: unknown = false) => {
       requireMainWindow(event)
       const shotIds = validateIngestIds(value)
+      if (typeof includeSynced !== 'boolean') throw new Error('Invalid Commit scope')
       await flushDrafts()
-      return backendRequest('/api/ingestion/review', { method: 'POST', body: JSON.stringify({ shotIds }) })
+      return backendRequest('/api/ingestion/review', { method: 'POST', body: JSON.stringify({ shotIds, includeSynced }) })
     })
     handle('ingestion:start', async (event, token: unknown, value: unknown) => {
       requireMainWindow(event)
@@ -355,7 +370,7 @@ if (!app.requestSingleInstanceLock()) {
       const operation = () => backendRequest('/api/organization', {
         method: 'PATCH', body: JSON.stringify({ shotIds, action: normalized })
       })
-      if (normalized.field === 'notes' || normalized.field === 'scene') return textWrites.schedule(`${normalized.field}:${[...new Set(shotIds)].sort().join(',')}`, operation)
+      if (normalized.field === 'notes' || normalized.field === 'scene' || normalized.field === 'group' || normalized.field === 'camera') return textWrites.schedule(`${normalized.field}:${[...new Set(shotIds)].sort().join(',')}`, operation)
       void textWrites.flush().catch(() => undefined)
       return draftWrites.run(operation)
     })

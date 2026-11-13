@@ -64,6 +64,7 @@ export interface VideoShot {
     editable: boolean;
     ingestion?: IngestionReceipt;
     ingestState?: IngestState;
+    workKind?: 'commit' | 'sync';
     thumbnailDigest?: string;
     proxyState?: ProxyState;
     proxyLocation?: 'cache' | 'library';

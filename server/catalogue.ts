@@ -57,7 +57,7 @@ export class LibraryCatalogue {
                 const ids = new Set<string>();
                 for (const entry of data.entries) {
                     const id = entry.metadata?.id;
-                    validateLibraryMetadata(entry.metadata, id);
+                    entry.metadata = validateLibraryMetadata(entry.metadata, id);
                     const source = entry.source && parseLibraryAssetName(entry.source);
                     if (ids.has(id) || entry.thumbnailDigest !== undefined && !/^[a-f0-9]{64}$/.test(entry.thumbnailDigest) || entry.thumbnailRevision !== undefined && !Number.isFinite(entry.thumbnailRevision) || entry.source !== null && (!source || source.id !== id || source.role !== 'source') ||
                         typeof entry.thumbnail !== 'boolean' || typeof entry.proxy !== 'boolean') throw new Error('Invalid catalogue entry.');
@@ -118,6 +118,7 @@ export class LibraryCatalogue {
                 thumbnailRevision: draft?.thumbnailDraft?.revision ?? entry.thumbnailRevision ?? (Date.parse(this.state.refreshedAt ?? '') || 0),
                 editable: !lock, available: !!entry.source && !this.error, warnings: m.warnings,
                 ingestState: lock ?? (changed ? 'changes-pending' : undefined),
+                workKind: this.scanner.workKind(m.id), transferPercent: this.scanner.transferPercent(m.id),
                 proxyState: entry.proxy ? 'ready' : 'missing', proxyLocation: entry.proxy ? 'library' : undefined,
             };
         });
@@ -286,7 +287,7 @@ export class LibraryCatalogue {
         }));
         await this.queue.status();
         if (review.generation !== this.queue.workRevision) throw new Error('Work was stopped. Commit again when ready.');
-        const result = this.queue.enqueueMetadata(captures.map(capture => ({ ...capture, execute: signal => this.commit(capture, review.location, signal) })), token);
+        const result = this.queue.enqueueLibrary(captures.map(capture => ({ ...capture, execute: signal => this.commit(capture, review.location, signal) })), token);
         this.review = undefined; this.changed(); return result;
     }
     private async commit(capture: { id: string; attributes: ReturnType<typeof ingestAttributes>; thumbnail?: Buffer }, location: LibraryLocation, signal: AbortSignal) {

@@ -12,6 +12,7 @@ import type { PreviewHandle } from "./PreviewPlayer";
 import { AttributeFields } from "./AttributeFields";
 import { EjectButton } from "./EjectButton";
 import { SkipSelection } from "./SkipSelection";
+import { SyncButton, DeletePlaceholder } from './SyncButton';
 
 function bytesLabel(bytes: number) {
     if (!bytes) return "0 B";
@@ -183,9 +184,10 @@ export function ClipInspector({
                             <span>{thumbnailBusy ? "Saving…" : "Thumb"}</span>
                         </button>
                         {mode === 'import' && <>
-                            <EjectButton cancel={hasPendingCommit(shot)} count={empty ? 0 : 1} busy={ejectBusy} onClick={onEject} />
                             <SkipSelection count={empty ? 0 : 1} skippedCount={skipped ? 1 : 0} disabled={empty || locked} onChange={onSkipChange} />
+                            <EjectButton cancel={hasPendingCommit(shot)} count={empty ? 0 : 1} busy={ejectBusy} onClick={onEject} />
                         </>}
+                        {mode === 'library' && <><SyncButton shots={empty ? [] : [shot]} /><DeletePlaceholder /></>}
                     </div>
                 </header>
                 {thumbnailError && (
@@ -214,7 +216,7 @@ export function ClipInspector({
                             {unavailable
                                 ? "source unavailable"
                                 : hasPendingCommit(shot)
-                                  ? "Locked during Commit."
+                                  ? `Locked during ${shot.workKind === 'sync' ? 'Sync' : 'Commit'}.`
                                   : "Preparing clip…"}
                         </div>
                     ) : (

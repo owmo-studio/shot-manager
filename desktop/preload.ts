@@ -8,6 +8,9 @@ function invoke<T>(channel: string, ...args: unknown[]): Promise<IPCResult<T>> {
 
 const desktop: DesktopBridge = {
   getLibrary: () => invoke('library:list'),
+  chooseSyncDestination: () => invoke('sync:choose-destination'),
+  reviewLibrarySync: (ids, destinationToken) => invoke('sync:review', ids, destinationToken),
+  startLibrarySync: (token, ids) => invoke('sync:start', token, ids),
   refreshCatalogue: () => invoke('library:refresh'),
   onLibraryChanged: listener => {
     const handler = (_event: Electron.IpcRendererEvent, change: Parameters<typeof listener>[0]) => listener(change)
@@ -30,7 +33,7 @@ const desktop: DesktopBridge = {
     ipcRenderer.on('ingestion:changed', handler)
     return () => ipcRenderer.removeListener('ingestion:changed', handler)
   },
-  reviewIngest: shotIds => invoke('ingestion:review', shotIds),
+  reviewIngest: (shotIds, includeSynced) => invoke('ingestion:review', shotIds, includeSynced),
   startIngest: (token, shotIds) => invoke('ingestion:start', token, shotIds),
   stopAllWork: () => invoke('work:stop'),
   resumeWork: () => invoke('work:resume'),

@@ -4,6 +4,8 @@ export const DRAFT_RETENTION_DAYS = 90;
 export const TAG_FIELDS = ['identity', 'project', 'tags'] as const;
 export const OPTION_FIELDS = ['identity', 'project'] as const;
 export const SCENE_MAX_LENGTH = 80;
+export const GROUPING_MAX_LENGTH = 128;
+export type ClipRating = 'preferred' | 'usable' | null;
 export type TagField = typeof TAG_FIELDS[number];
 export interface ClipAttributes {
     identity: string | null;
@@ -11,6 +13,9 @@ export interface ClipAttributes {
     scene: string;
     notes: string;
     tags: string[];
+    group: string;
+    camera: string;
+    rating: ClipRating;
 }
 // Skip is a draft status, independent of descriptive attributes and editing selection.
 export interface ShotOrganization extends ClipAttributes {
@@ -25,9 +30,10 @@ export type OrganizationAction =
     | { field: TagField; operation: 'add' | 'remove'; value: string }
     | { field: 'notes'; operation: 'set'; value: string }
     | { field: 'scene'; operation: 'set'; value: string }
+    | { field: 'group' | 'camera' | 'rating'; operation: 'set'; value: string }
     | { field: 'skip'; operation: 'set'; value: 'true' | 'false' }
     | { field: 'all'; operation: 'clear'; value: '' };
-export const emptyAttributes = (): ClipAttributes => ({ identity: null, project: null, scene: '', notes: '', tags: [] });
+export const emptyAttributes = (): ClipAttributes => ({ identity: null, project: null, scene: '', notes: '', tags: [], group: '', camera: '', rating: null });
 export const emptyOrganization = (): ShotOrganization => ({ ...emptyAttributes(), skipped: false });
 export const emptyVocabulary = (): TagVocabulary => ({ identity: [], project: [], tags: [] });
 
@@ -38,8 +44,18 @@ export function validateClipAttributes(value: unknown): ClipAttributes {
         !(data.project === null || (typeof data.project === 'string' && normalizeOption(data.project) === data.project)) ||
         typeof data.scene !== 'string' || normalizeScene(data.scene) !== data.scene ||
         typeof data.notes !== 'string' || data.notes.length > 10000 || !Array.isArray(data.tags) ||
-        data.tags.some(tag => typeof tag !== 'string' || normalizeTag(tag) !== tag)) throw new Error('Invalid Library attributes.');
-    return { identity: data.identity, project: data.project, scene: data.scene, notes: data.notes, tags: [...data.tags] } as ClipAttributes;
+        data.tags.some(tag => typeof tag !== 'string' || normalizeTag(tag) !== tag) ||
+        ['group', 'camera'].some(field => data[field] !== undefined && (typeof data[field] !== 'string' || normalizeGroupingText(data[field] as string) !== data[field])) ||
+        !(data.rating === undefined || data.rating === null || data.rating === 'preferred' || data.rating === 'usable')) throw new Error('Invalid Library attributes.');
+    // Older drafts and Library JSON have no grouping fields; missing means empty.
+    return { identity: data.identity, project: data.project, scene: data.scene, notes: data.notes, tags: [...data.tags],
+        group: data.group ?? '', camera: data.camera ?? '', rating: data.rating ?? null } as ClipAttributes;
+}
+
+export function normalizeGroupingText(value: string): string {
+    const normalized = value.normalize('NFC').trim().replace(/ +/g, ' ');
+    if ([...normalized].length > GROUPING_MAX_LENGTH || /[\p{Cc}\p{Cf}]/u.test(value)) throw new Error(`Use up to ${GROUPING_MAX_LENGTH} characters without control characters.`);
+    return normalized;
 }
 
 export function validateOptionRemovals(value: unknown): TagVocabulary {
@@ -85,6 +101,8 @@ export function organizationKey(fingerprint: { scheme: string; value: string }) 
 }
 
 export function validateOrganizationAction(action: OrganizationAction): OrganizationAction {
+    if ((action.field === 'group' || action.field === 'camera') && action.operation === 'set' && typeof action.value === 'string') return { ...action, value: normalizeGroupingText(action.value) };
+    if (action.field === 'rating' && action.operation === 'set' && ['', 'preferred', 'usable'].includes(action.value)) return action;
     if (action.field === 'scene' && action.operation === 'set' && typeof action.value === 'string') return { ...action, value: normalizeScene(action.value) };
     if (action.field === 'skip' && action.operation === 'set' && ['true', 'false'].includes(action.value)) return action;
     if (action.field === 'all' && action.operation === 'clear' && action.value === '') return action;

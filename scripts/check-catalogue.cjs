@@ -107,6 +107,7 @@ async function until(test, label) {
         assert.equal(view.shots.find(shot=>shot.id===id).organization.notes,'Changed remotely');
         assert.equal(view.shots.find(shot=>shot.id===id).ingestState,undefined);
         await catalogue.update([id],{field:'notes',operation:'set',value:'Committed edit'});
+        for(const [field,value] of [['group','TH01-T02'],['camera','B'],['rating','preferred']]) await catalogue.update([id],{field,operation:'set',value});
         let review=await catalogue.preview([id,second]);assert.equal(review.clips.length,1,'Only changed Library clips are eligible');
         assert.equal(review.clips[0].files.length,1,'Metadata Commit has no media transfers');
         await catalogue.submit(review.token,[id]);
@@ -114,6 +115,9 @@ async function until(test, label) {
         assert.deepEqual((await queue.status()).errors,[]);
         let stored=JSON.parse(await fs.readFile(join(library,`${id}.metadata.json`)));
         assert.equal(stored.notes,'Committed edit');assert.deepEqual(stored.anotherTool,{keep:true});
+        assert.equal(stored.group,'TH01-T02');assert.equal(stored.camera,'B');assert.equal(stored.rating,'preferred');
+        await catalogue.update([id],{field:'rating',operation:'set',value:'usable'});await catalogue.revert([id]);
+        assert.equal((await catalogue.snapshot()).shots.find(shot=>shot.id===id).organization.rating,'preferred','Revert restores grouping attributes');
         assert.deepEqual(stored.metadata,remote.metadata,'Technical metadata remains unchanged');
         assert.deepEqual(await fs.readFile(join(library,`${id}.source.mp4`)),originalSource);
         assert.deepEqual(await fs.readFile(join(library,`${id}.proxy.mov`)),originalProxy);

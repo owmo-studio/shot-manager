@@ -11,7 +11,7 @@ export function ClearOrganizationButton({ shots, onUpdated }: { shots: VideoShot
     const [error, setError] = useState<string | null>(null);
     const dialog = useRef<HTMLDialogElement>(null);
     const hasAttributes = shots.some(({ organization }) => organization && (
-        organization.identity || organization.project || organization.scene || organization.notes || organization.tags.length
+        organization.identity || organization.project || organization.scene || organization.group || organization.camera || organization.rating || organization.notes || organization.tags.length
     ));
     const disabled = !hasAttributes || shots.some(shot => !shot.editable || !shot.fingerprint || !shot.organization);
     useEffect(() => {
@@ -35,7 +35,7 @@ export function ClearOrganizationButton({ shots, onUpdated }: { shots: VideoShot
     }
 
     return <>
-        <button type="button" aria-label="Clear selected clip information" title="Clear Identity, Project, Scene, Notes and Tags"
+        <button type="button" aria-label="Clear selected clip information" title="Clear all assigned attributes"
             disabled={disabled || busy} onClick={() => { setError(null); setTargets([...shots]); }}
             className="flex h-7 items-center rounded-md border border-white/15 bg-white/8 px-2 text-[10px] font-medium text-zinc-200 transition duration-75 enabled:hover:border-red-400/40 enabled:hover:bg-red-500/15 enabled:hover:text-red-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">Clear</button>
         {targets && <dialog ref={dialog} role="alertdialog" aria-labelledby="clear-organization-title" aria-describedby="clear-organization-description"

@@ -186,8 +186,9 @@ if (!process.versions.electron) {
                         const data = structuredClone(shot.organization);
                         if (action.field === "skip") data.skipped = action.value === "true";
                         else if (action.field === "all")
-                            Object.assign(data, { identity: null, project: null, scene: "", tags: [], notes: "" });
-                        else if (action.field === "notes" || action.field === "scene")
+                            Object.assign(data, { identity: null, project: null, scene: "", group: '', camera: '', rating: null, tags: [], notes: "" });
+                        else if (action.field === 'rating') data.rating = action.value || null;
+                        else if (action.field === "notes" || action.field === "scene" || action.field === 'group' || action.field === 'camera')
                             data[action.field] = action.value;
                         else if (action.field === "identity" || action.field === "project") {
                             if (action.operation === "add") data[action.field] = action.value;
@@ -950,7 +951,7 @@ if (!process.versions.electron) {
                 await js(
                     `Array.from(document.querySelectorAll('#clip-inspector [data-attribute-field]')).map(node=>node.dataset.attributeField)`,
                 ),
-                ["identity", "project", "scene", "notes", "tags"],
+                ["identity", "project", "scene", "group", "camera", "rating", "notes", "tags"],
             );
             await fill("Scene", "Walking home, before sunset.");
             await wait(
@@ -1128,7 +1129,7 @@ if (!process.versions.electron) {
                 collection.shots.find((shot) => shot.filename === "Clip 4.mp4").organization.notes,
                 "Review the final take",
             );
-            assert.equal(await js(`document.querySelector('[aria-label="Notes"]').rows`), 6);
+            assert.equal(await js(`document.querySelector('[aria-label="Notes"]').rows`), 3);
             await fill("Notes", "First line\nSecond line\nThird line\nFourth line");
             await wait(
                 `!Array.from(document.querySelectorAll('#clip-inspector [role="status"]')).some(node=>node.textContent==='Saving…')`,
@@ -1214,6 +1215,11 @@ if (!process.versions.electron) {
             await wait(`!document.querySelector('[data-tag="music/rock"]')`);
             assert.ok(vocabulary.tags.includes("music/rock"));
             await fill("Scene", "Friends arriving at the studio.");
+            await js(`document.activeElement?.blur()`);
+            await push(collection.shots.map(shot=>['Clip 4.mp4','Clip 5.mp4'].includes(shot.filename)?{...shot,organization:{...shot.organization,group:shot.filename==='Clip 4.mp4'?'TH01':'TH02',camera:shot.filename==='Clip 4.mp4'?'A':'B',rating:shot.filename==='Clip 4.mp4'?'preferred':'usable'}}:shot));
+            await wait(`document.querySelector('[aria-label="Group"]').placeholder==='Mixed'&&document.querySelector('[aria-label="Camera"]').placeholder==='Mixed'&&document.querySelector('[aria-label="Rating"]').value==='mixed'`);
+            await fill('Group','TH01-T02');await fill('Camera','B');
+            await js(`(()=>{const el=document.querySelector('[aria-label="Rating"]');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(el,'usable');el.dispatchEvent(new Event('change',{bubbles:true}));})()`);
             await fill("Notes", "Shared notes");
             await wait(
                 `!Array.from(document.querySelectorAll('[role="status"]')).some(node=>node.textContent==='Saving…')`,
@@ -1223,6 +1229,7 @@ if (!process.versions.electron) {
                     .filter((shot) => ["Clip 4.mp4", "Clip 5.mp4"].includes(shot.filename))
                     .every((shot) => shot.organization.notes === "Shared notes"),
             );
+            assert.ok(collection.shots.filter(shot=>['Clip 4.mp4','Clip 5.mp4'].includes(shot.filename)).every(shot=>shot.organization.group==='TH01-T02'&&shot.organization.camera==='B'&&shot.organization.rating==='usable'),'Grouping edits apply to the full selection');
             await js(
                 `window.desktop.updateOrganization(${JSON.stringify(collection.shots.filter((shot) => ["Clip 4.mp4", "Clip 5.mp4"].includes(shot.filename)).map((shot) => shot.id))},{field:'skip',operation:'set',value:'true'})`,
             );
@@ -1304,6 +1311,9 @@ if (!process.versions.electron) {
                     identity: null,
                     project: null,
                     scene: "",
+                    group: '',
+                    camera: '',
+                    rating: null,
                     tags: [],
                     notes: "",
                     skipped: true,

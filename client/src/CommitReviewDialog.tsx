@@ -1,6 +1,5 @@
 import { useState } from "react";
 import type { IngestReview } from "../../shared/ingestion";
-import type { VideoShot } from "../../shared/shots";
 import { secondaryButton as button, primaryButton } from "./buttonStyles";
 import { ModalDialog } from "./ModalDialog";
 
@@ -13,14 +12,12 @@ const bytes = (value: number) =>
 
 export function CommitReviewDialog({
     review,
-    shots,
     busy,
     error,
     onCancel,
     onStart,
 }: {
     review: IngestReview;
-    shots: VideoShot[];
     busy: boolean;
     error: string | null;
     onCancel: () => void;
@@ -28,52 +25,45 @@ export function CommitReviewDialog({
 }) {
     const [ids, setIds] = useState(review.clips.map((clip) => clip.id));
     const includedIds = new Set(ids);
-    const readyProxyIds = new Set(shots.filter(shot => shot.proxyState === "ready").map(shot => shot.id));
     const clips = review.clips.filter((clip) => includedIds.has(clip.id));
     const replacements = clips.filter((clip) => clip.mode === "replace").length;
+    const retiring = clips.filter(clip => clip.mode === 'synced').length;
+    const transfers = clips.length - retiring;
     const thumbnailEdits = clips.some(clip => clip.files.some(file => file.to.endsWith('.thumb.jpg')));
     return (
         <ModalDialog titleId="ingest-dialog-title" title="Ready to Commit?" busy={busy} onCancel={onCancel}>
             <p className="mt-3 text-sm text-zinc-400">
                 {clips.length} {clips.length === 1 ? "clip" : "clips"} ·{" "}
-                {review.libraryEdits ? thumbnailEdits ? 'Metadata and thumbnails' : 'Metadata only' : bytes(clips.reduce((sum, clip) => sum + clip.bytes, 0))}
-                {review.proxyPreparation && (
+                {retiring > 0 && !transfers ? 'Remove from workspace' :
+                    review.libraryEdits ? thumbnailEdits ? 'Metadata and thumbnails' : 'Metadata only' : bytes(clips.reduce((sum, clip) => sum + clip.bytes, 0))}
+                {review.proxyPreparation && transfers > 0 && (
                     <span className="ml-1 text-xs text-zinc-500">excl. proxies</span>
                 )}
             </p>
+            {retiring > 0 && transfers > 0 && <p className="mt-2 text-xs text-zinc-400">{transfers} to commit · {retiring} synced to remove from workspace.</p>}
             <p className="mt-2 break-all text-xs text-zinc-500">{review.libraryPath}</p>
             <div className="mt-4 max-h-[45vh] overflow-y-auto rounded-lg border border-white/10">
                 {review.clips.map((clip) => {
                     const included = includedIds.has(clip.id);
-                    const proxyReady =
-                        clip.proxyReady || readyProxyIds.has(clip.id);
                     return (
                         <div
                             key={clip.id}
                             data-review-included={included}
+                            data-review-mode={clip.mode}
                             className={`flex items-start gap-3 border-b border-white/8 p-3 last:border-0 ${included ? "" : "bg-white/[0.02]"}`}
                         >
                             <div
                                 className={`mt-0.5 flex shrink-0 flex-col items-start gap-1 ${included ? "" : "opacity-40"}`}
                             >
-                                <span className="rounded bg-blue-400/10 px-2 py-0.5 text-xs text-blue-300">
-                                    {clip.mode === "replace" ? "↻ Update" : "New"}
+                                <span className={`rounded px-2 py-0.5 text-xs ${clip.mode === 'synced' ? 'bg-emerald-400/10 text-emerald-300' : 'bg-blue-400/10 text-blue-300'}`}>
+                                    {clip.mode === 'synced' ? 'Synced' : clip.mode === "replace" ? "↻ Update" : "New"}
                                 </span>
-                                {review.proxyPreparation && proxyReady && (
-                                    <span
-                                        data-review-proxy-ready="true"
-                                        title="Proxy available"
-                                        className="rounded bg-blue-400/10 px-2 py-0.5 text-xs text-blue-300"
-                                    >
-                                        Proxy
-                                    </span>
-                                )}
                             </div>
                             <div className={`min-w-0 flex-1 text-sm ${included ? "" : "opacity-40"}`}>
                                 <p className="break-all">
-                                    {clip.filename} <span className="text-xs text-zinc-500">{bytes(clip.bytes)}</span>
+                                    {clip.filename} {clip.mode !== 'synced' && <span className="text-xs text-zinc-500">{bytes(clip.bytes)}</span>}
                                 </p>
-                                <details className="mt-1 text-xs text-zinc-500">
+                                {clip.mode === 'synced' ? <p className="mt-1 text-xs text-zinc-500">Remove from workspace.</p> : <details className="mt-1 text-xs text-zinc-500">
                                     <summary className="cursor-pointer">File destinations</summary>
                                     {clip.files.map((file) => (
                                         <p key={file.to} className="mt-2 break-all">
@@ -81,7 +71,7 @@ export function CommitReviewDialog({
                                             <br />→ {file.to}
                                         </p>
                                     ))}
-                                </details>
+                                </details>}
                             </div>
                             <button
                                 disabled={busy}

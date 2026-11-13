@@ -11,6 +11,7 @@ const { tmpdir } = require('node:os');
         const entry = join(root, 'fixture.ts');
         await fs.writeFile(entry, [
             `export * from ${JSON.stringify(join(__dirname, '../server/organization.ts'))};`,
+            `export * from ${JSON.stringify(join(__dirname, '../server/processingState.ts'))};`,
             `export * from ${JSON.stringify(join(__dirname, '../shared/organization.ts'))};`,
             `export * from ${JSON.stringify(join(__dirname, '../server/app.ts'))};`,
             `export * from ${JSON.stringify(join(__dirname, '../server/scanner.ts'))};`,
@@ -23,7 +24,7 @@ const { tmpdir } = require('node:os');
         const Module = require('node:module');
         const loaded = new Module(__filename, module); loaded.paths = module.paths;
         loaded._compile(bundle.output.find(item => item.type === 'chunk' && item.isEntry).code, __filename);
-        const { ShotScanner, OrganizationStore, normalizeTag, organizationKey, emptyOrganization, emptyVocabulary, normalizeOption, normalizeScene, SCENE_MAX_LENGTH, createServer, pruneThumbnailCache, DEFAULT_THUMBNAIL_CACHE_EXPIRY_DAYS, WriteQueue, DebouncedWrites, RetainedWrites } = loaded.exports;
+        const { ShotScanner, OrganizationStore, normalizeTag, organizationKey, emptyOrganization, emptyVocabulary, normalizeOption, normalizeScene, SCENE_MAX_LENGTH, createServer, pruneThumbnailCache, DEFAULT_THUMBNAIL_CACHE_EXPIRY_DAYS, WriteQueue, DebouncedWrites, RetainedWrites, ingestionSignature } = loaded.exports;
         const file = join(root, 'state', 'organization.json');
         let now = Date.now();
         const day = 86400000;
@@ -32,6 +33,25 @@ const { tmpdir } = require('node:os');
         const signal = new AbortController().signal;
         const store = new OrganizationStore(file, () => now);
         const edit = (targets, field, operation, value, valid = () => true) => store.update(targets, { field, operation, value }, valid);
+        const groupingFile=join(root,'grouping.json'), grouping=new OrganizationStore(groupingFile,()=>now);
+        await grouping.scanned(a,signal);await grouping.scanned(b,signal);
+        for(const [field,value] of [['group','  TH_01/T02  '],['camera','A'],['rating','preferred']]) await grouping.update([a,b],{field,operation:'set',value},()=>true);
+        let grouped=await new OrganizationStore(groupingFile).scanned(a,signal);
+        assert.equal(grouped.group,'TH_01/T02');assert.equal(grouped.camera,'A');assert.equal(grouped.rating,'preferred');
+        const beforeInvalidGrouping=await fs.readFile(groupingFile,'utf8');
+        for(const [field,value] of [['group','bad\ncode'],['camera','x'.repeat(129)],['rating','reject']]) await assert.rejects(grouping.update([a,b],{field,operation:'set',value},()=>true));
+        assert.equal(await fs.readFile(groupingFile,'utf8'),beforeInvalidGrouping,'Invalid grouping edits change no drafts');
+        await grouping.update([a,b],{field:'rating',operation:'set',value:''},()=>true);
+        assert.equal((await grouping.scanned(a,signal)).rating,null,'Blank rating is optional');
+        const oldAttributes={identity:null,project:null,scene:'',notes:'',tags:[]};
+        const legacySignature=require('node:crypto').createHash('sha256').update(JSON.stringify([oldAttributes,'thumbnail'])).digest('hex');
+        assert.equal(ingestionSignature(emptyOrganization(),'thumbnail'),legacySignature,'Empty new fields retain existing synced signatures');
+        assert.notEqual(ingestionSignature({...emptyOrganization(),camera:'A'},'thumbnail'),legacySignature);
+        const legacyGrouping=JSON.parse(await fs.readFile(groupingFile,'utf8'));
+        for(const draft of Object.values(legacyGrouping.drafts)) for(const field of ['group','camera','rating']) delete draft.data[field];
+        const legacyGroupingFile=join(root,'old-grouping.json');await fs.writeFile(legacyGroupingFile,JSON.stringify(legacyGrouping));
+        grouped=await new OrganizationStore(legacyGroupingFile).scanned(a,signal);
+        assert.equal(grouped.group,'');assert.equal(grouped.camera,'');assert.equal(grouped.rating,null,'Older drafts open with blank fields');
         assert.equal(normalizeTag('MuSiC/EDM'), 'music/edm');
         assert.equal(normalizeScene("  Zoë’s   first take — walking home.  "), "Zoë's first take - walking home.");
         assert.equal(normalizeScene(''), '');
@@ -388,7 +408,7 @@ const { tmpdir } = require('node:os');
         assert.equal(optionResponse.json().collection.shots[0].editable,true,'Save edits clips without rescanning');
         assert.ok(optionResponse.json().collection.scans.every(scan=>scan.state==='complete'));
         const removedData=optionResponse.json().collection.shots[0].organization;
-        assert.deepEqual(removedData,{identity:null,project:null,scene:'Walking home, before sunset.',tags:['music/rock'],skipped:true,notes:beforeOptionSave[organizationKey(rescanned.fingerprint)].data.notes});
+        assert.deepEqual(removedData,{identity:null,project:null,scene:'Walking home, before sunset.',group:'',camera:'',rating:null,tags:['music/rock'],skipped:true,notes:beforeOptionSave[organizationKey(rescanned.fingerprint)].data.notes});
         assert.deepEqual((await new OrganizationStore(apiFile).scanned(rescanned.fingerprint,signal)).tags,['music/rock'],'Tags survives option removal and restart');
         const savedOptions=(await server.inject({method:'GET',url:'/api/organization/vocabulary',headers})).json();
         assert.deepEqual(savedOptions,{identity:[],project:[],tags:['music/rock']});

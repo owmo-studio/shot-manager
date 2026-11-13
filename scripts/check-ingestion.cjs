@@ -96,7 +96,7 @@ async function until(test, description) {
         assert.ok(changes.every((status, index) => !index || status.revision > changes[index - 1].revision), 'Notifications have increasing revisions');
         const jsonPath = join(library, `${a.id}.metadata.json`);
         const json = JSON.parse(await fs.readFile(jsonPath));
-        for (const [key, value] of Object.entries({ identity: null, project: null, scene: '', notes: '', tags: [] })) assert.deepEqual(json[key], value);
+        for (const [key, value] of Object.entries({ identity: null, project: null, scene: '', notes: '', tags: [], group: '', camera: '', rating: null })) assert.deepEqual(json[key], value);
         assert.equal(json.originalFilename, a.filename);
         assert.equal(json.id, a.id);
         assert.equal(json.ingestion.transfer, 'rsync');
@@ -122,7 +122,7 @@ async function until(test, description) {
         ]) await scanner.updateOrganization([a.id], action);
         await queue.revert([a.id]);
         let reverted = scanner.snapshot().shots.find(shot => shot.id === a.id);
-        assert.deepEqual(reverted.organization, { identity: null, project: null, scene: '', notes: '', tags: [], skipped: true });
+        assert.deepEqual(reverted.organization, { identity: null, project: null, scene: '', notes: '', tags: [], group: '', camera: '', rating: null, skipped: true });
         assert.deepEqual(reverted.ingestion, revertReceipt, 'Revert preserves the successful processing record');
         assert.equal(reverted.ingestState, 'synced', 'Restoring Library attributes restores Synced');
         assert.deepEqual(Buffer.from((await scanner.thumbnail(a.id)).split(',')[1],'base64'), aLibraryThumb, 'Revert restores the exact committed thumbnail');
@@ -175,7 +175,7 @@ async function until(test, description) {
         await assert.rejects(queue.revert([b.id]), /not a regular file/);
         await fs.unlink(bJSONPath);
         await fs.writeFile(bJSONPath, bJSON);
-        const externalAttributes = { identity: 'Library Identity', project: 'Library Project', scene: 'Library scene', notes: 'Library notes', tags: ['library/value'] };
+        const externalAttributes = { identity: 'Library Identity', project: 'Library Project', scene: 'Library scene', group:'TH01-T02',camera:'B',rating:'usable',notes: 'Library notes', tags: ['library/value'] };
         await fs.writeFile(bJSONPath, JSON.stringify({ ...JSON.parse(bJSON), ...externalAttributes }));
         const restoredExternal = await queue.revert([b.id]);
         assert.deepEqual(scanner.snapshot().shots.find(shot => shot.id === b.id).organization, { ...externalAttributes, skipped: false }, 'Revert restores current Library values, including nonempty attributes');

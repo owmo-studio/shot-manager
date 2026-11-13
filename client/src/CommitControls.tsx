@@ -69,6 +69,7 @@ export function CommitControls({
     const candidates = scope.filter(
         (shot) => mode === "library" ? shot.ingestState === "changes-pending" : !shot.organization?.skipped && shot.ingestState !== "synced" && !hasPendingCommit(shot),
     );
+    const syncedCandidates = mode === 'import' && !selected ? shots.filter(shot => shot.ingestState === 'synced' && shot.editable && !shot.organization?.skipped) : [];
     const blocked = candidates.filter(
         (shot) => !shot.editable || mode === "import" && (!shot.available || !shot.hasThumbnail || shot.thumbnailStatus !== "ready"),
     ).length;
@@ -79,7 +80,7 @@ export function CommitControls({
         setError(null);
         setErrorTitle("Commit error");
         try {
-            setReview(await api.reviewIngest(candidates.map((shot) => shot.id)));
+            setReview(await api.reviewIngest([...candidates, ...syncedCandidates].map((shot) => shot.id), mode === 'import' && !selected));
         } catch (reason) {
             setError(errorMessage(reason, "Could not prepare the commit."));
         } finally {
@@ -158,10 +159,12 @@ export function CommitControls({
     const hasWork = status.active || !!status.work?.busy;
     const tasks = status.tasks ?? { completed: 0, total: 0, percent: 0, proxiesRemaining: 0, transfersRemaining: 0 };
     const { proxiesRemaining: proxies, transfersRemaining: transfers } = tasks;
+    const syncProgress = (tasks.syncsRemaining ?? 0) > 0 ? tasks.sync : undefined;
     const taskSummary = [
         proxies > 0 ? `${proxies} ${proxies === 1 ? "proxy" : "proxies"}` : null,
         transfers > 0 ? `${transfers} ${transfers === 1 ? "commit" : "commits"}` : null,
     ].filter(Boolean).join(", ");
+    const activityLabel = [taskSummary, syncProgress ? `Sync ${syncProgress.completed}/${syncProgress.total}` : null].filter(Boolean).join(', ');
     return (
         <>
             {refreshTarget &&
@@ -207,23 +210,34 @@ export function CommitControls({
                     </button>,
                     refreshTarget,
                 )}
-            {proxies + transfers > 0 && <div
+            {(proxies + transfers > 0 || syncProgress) && <div
                 data-work-progress
                 data-ingest-progress={status.active ? "" : undefined}
                 role="status"
-                aria-label={taskSummary}
-                className="col-start-2 row-start-1 flex items-center gap-2 px-4 text-xs font-medium text-zinc-200 tabular-nums"
+                aria-label={activityLabel}
+                className="col-start-2 row-start-1 flex items-center gap-3 px-4 text-xs font-medium text-zinc-200 tabular-nums"
             >
+                {taskSummary && <span className="flex items-center gap-2">
                 <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                     strokeLinecap="round" className="size-3.5 shrink-0 text-zinc-400 motion-safe:animate-spin">
                     <circle cx="12" cy="12" r="8" opacity=".25" />
                     <path d="M12 4a8 8 0 0 1 8 8" />
                 </svg>
                 {taskSummary}
+                </span>}
+                {syncProgress && <div className="flex items-center gap-2" data-sync-progress>
+                    <span className="whitespace-nowrap">Sync {syncProgress.completed}/{syncProgress.total}</span>
+                    <div role="progressbar" aria-label="Sync progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={syncProgress.percent}
+                        aria-valuetext={`${syncProgress.completed} of ${syncProgress.total} clips synced`}
+                        className="h-1.5 w-24 overflow-hidden rounded-full bg-white/10">
+                        <div className="h-full rounded-full bg-emerald-400 motion-safe:transition-[width]" style={{ width: `${syncProgress.percent}%` }} />
+                    </div>
+                </div>}
             </div>}
             <div className="col-start-3 row-start-1 flex min-w-0 flex-wrap items-center justify-end gap-x-4 gap-y-2">
                 <span role="status">
                     {candidates.length} {selected ? "selected " : ""}{candidates.length === 1 ? "clip" : "clips"} to commit{mode === "import" ? ` · ${skipped} skipped` : ""}
+                    {syncedCandidates.length > 0 ? ` · ${syncedCandidates.length} synced` : ''}
                     {blocked ? ` · ${blocked} not ready` : ""}
                 </span>
                 <div className="flex shrink-0 items-center gap-3">
@@ -235,7 +249,7 @@ export function CommitControls({
                             refreshing ||
                             !status.libraryPath ||
                             checkingLibrary ||
-                            !candidates.length ||
+                            (!candidates.length && !syncedCandidates.length) ||
                             blocked > 0
                         }
                         title={
@@ -256,7 +270,6 @@ export function CommitControls({
             {review && (
                 <CommitReviewDialog
                     review={review}
-                    shots={shots}
                     busy={busy}
                     error={error}
                     onCancel={() => {
@@ -268,7 +281,7 @@ export function CommitControls({
             )}
             {stopConfirm && (
                 <ModalDialog titleId="ingest-dialog-title" title="Stop All Work?" width="w-[min(420px,90vw)]" busy={busy} onCancel={() => setStopConfirm(false)}>
-                    <p className="mt-3 text-sm leading-6 text-zinc-400">Stop all queued and active Commits, proxy encoding, and thumbnail generation?</p>
+                    <p className="mt-3 text-sm leading-6 text-zinc-400">Stop all queued and active Commits, Syncs, proxy encoding, and thumbnail generation?</p>
                     <p className="mt-2 text-xs text-zinc-500">Completed work is kept.</p>
                     <div className="mt-5 flex justify-end gap-3">
                         <button autoFocus disabled={busy} onClick={() => setStopConfirm(false)} className={button}>
@@ -285,7 +298,7 @@ export function CommitControls({
             )}
             {!review && !stopConfirm && !error && failure && (
                 <ErrorDialog
-                    title="Commit failed"
+                    title={failure.kind === "sync" ? "Sync failed" : "Commit failed"}
                     message={`${failure.filename}: ${failure.message}`}
                     onDismiss={() => {
                         void api

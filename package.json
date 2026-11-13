@@ -23,6 +23,7 @@
     "check:ingestion": "node scripts/check-ingestion.cjs",
     "check:library": "node scripts/check-library.cjs",
     "check:catalogue": "node scripts/check-catalogue.cjs",
+    "check:sync": "node scripts/check-sync.cjs",
     "check:proxy-priority": "node scripts/check-proxy-priority.cjs",
     "check:proxies": "node scripts/check-proxies.cjs",
     "check:ingestion-ui": "npm run build && node scripts/check-ingestion-ui.cjs"

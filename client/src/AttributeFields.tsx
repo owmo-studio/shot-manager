@@ -6,6 +6,7 @@ import { emptyVocabulary, normalizeOption, normalizeScene, normalizeTag, SCENE_M
 import type { OrganizationAction, TagField, TagVocabulary } from '../../shared/organization';
 import { ClearOrganizationButton } from './ClearOrganizationButton';
 import { RevertOrganizationButton } from './RevertOrganizationButton';
+import { ClipGroupingFields } from './ClipGroupingFields';
 
 const labels: Record<TagField, string> = { identity: 'Identity', project: 'Project', tags: 'Tags' };
 
@@ -186,7 +187,7 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
         };
         const cleared = (event: Event) => {
             const ids = (event as CustomEvent<string[]>).detail;
-            if (shots.some(shot => ids.includes(shot.id))) { textGeneration.current++; setNotes(''); setScene(''); setSceneError(null); }
+            if (shots.some(shot => ids.includes(shot.id))) { textGeneration.current++; setNotes(''); setScene(''); setSceneError(null); setFailure(null); }
             reload();
         };
         const retried = () => { setFailure(null); reload(); void refreshRetriedText().catch(() => undefined); };
@@ -212,7 +213,7 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
 
     async function submit(action: OrganizationAction) {
         if (disabled) return;
-        const text = action.field === 'scene' || action.field === 'notes';
+        const text = action.field === 'scene' || action.field === 'notes' || action.field === 'group' || action.field === 'camera';
         if (text) { textGeneration.current++; pendingText.current++; }
         setPending(count => count + 1);
         setFailure(null);
@@ -229,7 +230,7 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
     }
 
     return <div className="attribute-fields flex flex-1 flex-col gap-2">
-        <fieldset disabled={disabled} className={`flex min-w-0 flex-col gap-3 ${disabled ? 'opacity-50' : ''}`}>
+        <fieldset disabled={disabled} className={`flex min-w-0 flex-col gap-2.5 ${disabled ? 'opacity-50' : ''}`}>
             {(['identity', 'project'] as const).map(field => <TagFieldInput key={field} field={field} shots={shots} vocabulary={vocabulary[field]} disabled={disabled} submit={action => void submit(action)} />)}
             <label data-attribute-field="scene" className="block text-xs text-zinc-400">
                 <span className="attribute-label flex items-center justify-between gap-1">Scene <span className="text-[10px] text-zinc-600">{scene.length}/{SCENE_MAX_LENGTH}</span></span>
@@ -251,8 +252,10 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
                     {sceneError ?? 'Up to 80 characters. Letters, numbers, spaces, apostrophes, commas, periods, and hyphens.'}
                 </span>
             </label>
+            <ClipGroupingFields shots={shots} pending={pending} failure={failure} submit={action => void submit(action)} onInvalid={setFailure}
+                flush={() => { void api.flushOrganizationText().catch(() => undefined); }} />
             <label data-attribute-field="notes" className="block text-xs text-zinc-400"><span className="attribute-label">Notes</span>
-                <textarea aria-label="Notes" rows={6} maxLength={10000} value={notes}
+                <textarea aria-label="Notes" rows={3} maxLength={10000} value={notes}
                     onBlur={() => { void api.flushOrganizationText().catch(() => undefined); }}
                     placeholder={mixedNotes ? 'Mixed notes — typing replaces selected values' : shots.length ? 'Optional notes' : ''}
                     onChange={event => { setNotes(event.target.value); void submit({ field: 'notes', operation: 'set', value: event.target.value }); }}

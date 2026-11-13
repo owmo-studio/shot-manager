@@ -6,6 +6,7 @@ import { ProxyQueue } from './proxies';
 import { rsyncFile } from './rsync';
 import { IngestQueue } from './ingestion';
 import { LibraryCatalogue } from './catalogue';
+import { LibrarySync } from './sync';
 import { dirname, join } from 'node:path';
 import Fastify from 'fastify'
 import type { AppConfiguration, BackendHealth } from '../shared/desktop'
@@ -54,6 +55,11 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
   }, ingestion, organizationFile ? join(dirname(organizationFile), 'catalogue.json') : undefined,
   organizationFile ? join(dirname(organizationFile), 'library-thumbnails') : undefined, assertWritable)
   let libraryRevision = 0
+  const sync = new LibrarySync(catalogue, workspace.scanner, ingestion, async () => {
+    const path = (await configuration()).libraryPath
+    if (!path) throw new Error('Library Not Set')
+    return inspectConfigured(path)
+  })
   catalogue.onChange = () => onLibraryChanged?.({ revision: ++libraryRevision, vocabularyRevision: libraryRevision })
   workspace.scanner.organization.onChange = () => { catalogue.changed(); void workspace.scanner.reloadOrganizations().catch(error => server.log.warn(error)) }
   let catalogueQueueState = ''
@@ -62,7 +68,7 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     // Import byte/proxy progress does not change catalogue rows. Notify only for
     // Commit membership/lock transitions; descriptive edits have their own notice.
     const next = JSON.stringify([status.active, status.stopping, status.current?.id, status.total, status.completed, status.waiting, status.tasks?.transfersRemaining])
-    if (next !== catalogueQueueState) {
+    if (next !== catalogueQueueState || (status.current && workspace.scanner.workKind(status.current.id) === 'sync')) {
       catalogueQueueState = next; catalogue.changed()
       void workspace.scanner.reloadOrganizations().catch(error => server.log.warn(error))
     }
@@ -74,6 +80,10 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
   const ids = { type: 'array', minItems: 1, maxItems: 1000, uniqueItems: true, items: { type: 'string', pattern: '^[a-f0-9]{64}$' } }
   const clipIdsBody = { body: { type: 'object', required: ['shotIds'], additionalProperties: false, properties: { shotIds: ids } } }
   const assetParams = { params: { type: 'object', required: ['id'], properties: { id: { type: 'string', pattern: '^[a-f0-9]{64}$' } } } }
+  // Only main calls this authenticated registration route after a native picker.
+  server.post<{ Body: { path: string } }>('/api/sync/destinations', { schema: { body: { type: 'object', required: ['path'], additionalProperties: false, properties: { path: { type: 'string', minLength: 1, maxLength: 4096 } } } } }, request => sync.choose(request.body.path))
+  server.post<{ Body: { shotIds: string[]; destinationToken: string } }>('/api/sync/review', { schema: { body: { type: 'object', required: ['shotIds', 'destinationToken'], additionalProperties: false, properties: { shotIds: ids, destinationToken: { type: 'string', maxLength: 64 } } } } }, request => sync.preview(request.body.shotIds, request.body.destinationToken))
+  server.post<{ Body: { shotIds: string[]; token: string } }>('/api/sync/start', { schema: { body: { type: 'object', required: ['shotIds', 'token'], additionalProperties: false, properties: { shotIds: ids, token: { type: 'string', maxLength: 64 } } } } }, request => sync.submit(request.body.token, request.body.shotIds))
   server.get('/api/library', () => catalogue.snapshot())
   server.post('/api/library/refresh', () => catalogue.refresh())
   server.get('/api/library/vocabulary', () => catalogue.vocabulary())
@@ -85,7 +95,7 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
   server.patch<{ Body: { shotIds: string[]; action: OrganizationAction } }>('/api/library/organization', {
     schema: { body: { type: 'object', required: ['shotIds', 'action'], additionalProperties: false, properties: { shotIds: ids,
       action: { type: 'object', required: ['field', 'operation', 'value'], additionalProperties: false, properties: {
-        field: { type: 'string', enum: ['identity', 'project', 'scene', 'tags', 'notes', 'all'] }, operation: { type: 'string', enum: ['add', 'remove', 'set', 'clear'] }, value: { type: 'string', maxLength: 10000 }
+        field: { type: 'string', enum: ['identity', 'project', 'scene', 'group', 'camera', 'rating', 'tags', 'notes', 'all'] }, operation: { type: 'string', enum: ['add', 'remove', 'set', 'clear'] }, value: { type: 'string', maxLength: 10000 }
       } } } } }
   }, request => catalogue.update(request.body.shotIds, validateOrganizationAction(request.body.action)))
   server.get<{ Params: { id: string } }>('/api/library/:id/thumbnail', { schema: assetParams }, async request => ({ dataUrl: await catalogue.thumbnail(request.params.id) }))
@@ -137,10 +147,10 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
   })
   server.get('/api/ingestion', () => ingestion.status())
   server.post('/api/ingestion/library/refresh', () => { application.invalidate(); return ingestion.refreshLibrary() })
-  server.post<{ Body: { shotIds: string[] } }>('/api/ingestion/review', {
-    schema: { body: { type: 'object', required: ['shotIds'], additionalProperties: false, properties: { shotIds: ids } } }
+  server.post<{ Body: { shotIds: string[]; includeSynced?: boolean } }>('/api/ingestion/review', {
+    schema: { body: { type: 'object', required: ['shotIds'], additionalProperties: false, properties: { shotIds: ids, includeSynced: { type: 'boolean' } } } }
   }, async request => {
-    try { return await ingestion.preview(request.body.shotIds) }
+    try { return await ingestion.preview(request.body.shotIds, request.body.includeSynced) }
     catch (error) { throw Object.assign(error as Error, { statusCode: 409 }) }
   })
   server.post<{ Body: { token: string; shotIds: string[] } }>('/api/ingestion', {
@@ -213,7 +223,7 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     schema: { body: { type: 'object', required: ['shotIds', 'action'], additionalProperties: false, properties: {
       shotIds: { type: 'array', minItems: 1, maxItems: 1000, items: { type: 'string', pattern: '^[a-f0-9]{64}$' } },
       action: { type: 'object', required: ['field', 'operation', 'value'], additionalProperties: false, properties: {
-        field: { type: 'string', enum: ['identity', 'project', 'scene', 'tags', 'notes', 'skip', 'all'] },
+        field: { type: 'string', enum: ['identity', 'project', 'scene', 'group', 'camera', 'rating', 'tags', 'notes', 'skip', 'all'] },
         operation: { type: 'string', enum: ['add', 'remove', 'set', 'clear'] }, value: { type: 'string', maxLength: 10000 }
       } }
     } } }

@@ -55,7 +55,7 @@ function ShotCard({
     const proxyLibrary = shot.proxyState === "ready" && shot.proxyLocation === "library";
     const proxyEncoding = shot.proxyState === "encoding";
     const transferring = shot.ingestState === "processing";
-    const progressLabel = transferring ? "Syncing to Library" : proxyEncoding ? "Generating proxy" : null;
+    const progressLabel = transferring ? shot.workKind === 'sync' ? "Syncing to destination" : "Committing to Library" : proxyEncoding ? "Generating proxy" : null;
     const progressPercent = Math.max(0, Math.min(100, (transferring ? shot.transferPercent : shot.proxyPercent) ?? 0));
     const proxyLabel = proxyLibrary
         ? "Proxy in Library"

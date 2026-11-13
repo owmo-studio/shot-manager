@@ -57,7 +57,7 @@ export class OrganizationStore {
                 for (const [key, record] of Object.entries(state.drafts)) {
                     if (!draftKeyPattern.test(key) || !record || !Number.isFinite(record.lastScannedAt) || !Number.isFinite(record.lastEditedAt)) throw new Error('Invalid draft');
                     if (record.pendingAttributes !== undefined && typeof record.pendingAttributes !== 'boolean') throw new Error('Invalid pending attributes');
-                    if (record.libraryBaseline !== undefined) validateClipAttributes(record.libraryBaseline);
+                    if (record.libraryBaseline !== undefined) record.libraryBaseline = validateClipAttributes(record.libraryBaseline);
                     if (record.thumbnailDraft !== undefined && (!record.thumbnailDraft || !/^[a-f0-9]{64}$/.test(record.thumbnailDraft.digest) || !Number.isFinite(record.thumbnailDraft.revision))) throw new Error('Invalid thumbnail draft');
                     if (record.ingestion?.thumbnailDigest !== undefined && !/^[a-f0-9]{64}$/.test(record.ingestion.thumbnailDigest)) throw new Error('Invalid thumbnail digest');
                     if (record.ingestion !== undefined && (!record.ingestion || typeof record.ingestion.libraryPath !== 'string' || !isAbsolute(record.ingestion.libraryPath) || record.ingestion.libraryPath.includes('\0') ||
@@ -88,6 +88,7 @@ export class OrganizationStore {
                     for (const field of ['tags'] as const) {
                         if (!Array.isArray(data[field]) || data[field].some(value => typeof value !== 'string' || (field === 'tags' ? normalizeTag(value) : normalizeOption(value)) !== value)) throw new Error('Invalid draft');
                     }
+                    record.data = { ...data, ...validateClipAttributes(data) };
                 }
                 const migrated = state.version !== 7 || Object.hasOwn(state.vocabulary, 'colors') || Object.hasOwn(state.vocabulary, 'colorVersion');
                 state.vocabulary = { identity: state.vocabulary.identity, project: state.vocabulary.project, tags: [] };
@@ -207,6 +208,8 @@ export class OrganizationStore {
                 if (action.field === 'skip') record.data.skipped = action.value === 'true';
                 else if (action.field === 'all') { record.data = { ...emptyAttributes(), skipped: record.data.skipped }; delete record.previousProjects; }
                 else if (action.field === 'notes' || action.field === 'scene') record.data[action.field] = action.value;
+                else if (action.field === 'group' || action.field === 'camera') record.data[action.field] = action.value;
+                else if (action.field === 'rating') record.data.rating = action.value === '' ? null : action.value as 'preferred' | 'usable';
                 else if (action.field === 'identity' || action.field === 'project') {
                     if (action.operation === 'add') record.data[action.field] = action.value;
                     else if (record.data[action.field] === action.value) record.data[action.field] = null;
@@ -218,7 +221,7 @@ export class OrganizationStore {
                 record.lastEditedAt = this.now();
                 if (action.field !== 'skip') record.pendingAttributes = !record.libraryBaseline || JSON.stringify(ingestAttributes(record.data)) !== JSON.stringify(record.libraryBaseline);
             }
-            if (action.field !== 'notes' && action.field !== 'scene' && action.field !== 'all' && action.field !== 'skip' && action.operation === 'add') {
+            if ((action.field === 'identity' || action.field === 'project' || action.field === 'tags') && action.operation === 'add') {
                 next.vocabulary[action.field] = [...new Set([...next.vocabulary[action.field], action.value])].sort();
             }
             await this.save(next, validate);
