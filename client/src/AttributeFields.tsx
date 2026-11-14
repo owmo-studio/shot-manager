@@ -101,7 +101,7 @@ function TagFieldInput({ field, shots, vocabulary, disabled, submit }: {
         className={`min-w-20 flex-1 bg-transparent px-1 py-1 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 disabled:opacity-40 ${selectedTag ? 'caret-transparent' : ''}`} />;
 
     return <div data-attribute-field={field} className="relative" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) { setFocused(false); setSelectedTag(null); } }}>
-        <label htmlFor={single ? `${id}-trigger` : id} className="attribute-label block text-xs text-zinc-400">{labels[field]}</label>
+        <span className="attribute-label block text-xs text-zinc-400">{labels[field]}</span>
         {single ? <div className="tag-control mt-1.5 flex min-h-10 items-center rounded-lg border border-white/10 bg-black/10 focus-within:border-blue-400/50">
             <button type="button" id={`${id}-trigger`} disabled={disabled} aria-label={`${labels[field]} selection`}
                 aria-haspopup="listbox" aria-expanded={showSuggestions} aria-controls={`${id}-options`}
@@ -232,7 +232,7 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
     return <div className="attribute-fields flex flex-1 flex-col gap-2">
         <fieldset disabled={disabled} className={`flex min-w-0 flex-col gap-2.5 ${disabled ? 'opacity-50' : ''}`}>
             {(['identity', 'project'] as const).map(field => <TagFieldInput key={field} field={field} shots={shots} vocabulary={vocabulary[field]} disabled={disabled} submit={action => void submit(action)} />)}
-            <label data-attribute-field="scene" className="block text-xs text-zinc-400">
+            <div data-attribute-field="scene" className="block text-xs text-zinc-400">
                 <span className="attribute-label flex items-center justify-between gap-1">Scene <span className="text-[10px] text-zinc-600">{scene.length}/{SCENE_MAX_LENGTH}</span></span>
                 <input aria-label="Scene" type="text" autoComplete="off" maxLength={SCENE_MAX_LENGTH} value={scene}
                     aria-describedby={sceneHintId} aria-invalid={!!sceneError}
@@ -251,16 +251,16 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
                 <span id={sceneHintId} className={sceneError ? 'mt-1 block text-[11px] text-red-300' : 'sr-only'} role={sceneError ? 'alert' : undefined}>
                     {sceneError ?? 'Up to 80 characters. Letters, numbers, spaces, apostrophes, commas, periods, and hyphens.'}
                 </span>
-            </label>
+            </div>
             <ClipGroupingFields shots={shots} pending={pending} failure={failure} submit={action => void submit(action)} onInvalid={setFailure}
                 flush={() => { void api.flushOrganizationText().catch(() => undefined); }} />
-            <label data-attribute-field="notes" className="block text-xs text-zinc-400"><span className="attribute-label">Notes</span>
-                <textarea aria-label="Notes" rows={3} maxLength={10000} value={notes}
+            <div data-attribute-field="notes" className="block text-xs text-zinc-400"><span className="attribute-label">Notes</span>
+                <textarea aria-label="Notes" rows={2} maxLength={10000} value={notes}
                     onBlur={() => { void api.flushOrganizationText().catch(() => undefined); }}
                     placeholder={mixedNotes ? 'Mixed notes — typing replaces selected values' : shots.length ? 'Optional notes' : ''}
                     onChange={event => { setNotes(event.target.value); void submit({ field: 'notes', operation: 'set', value: event.target.value }); }}
                     className="mt-1.5 block w-full resize-none rounded-lg border border-white/10 bg-black/10 px-3 py-2 text-xs text-zinc-200 outline-none focus:border-blue-400/50 placeholder:text-zinc-600" />
-            </label>
+            </div>
             <TagFieldInput field="tags" shots={shots} vocabulary={vocabulary.tags} disabled={disabled} submit={action => void submit(action)} />
         </fieldset>
         {!!shots.length && disabled && !shots.some(shot => !shot.editable) && <p className="text-[11px] text-zinc-500">Saved attributes unavailable. Add the clips again to retry.</p>}

@@ -1,6 +1,4 @@
 import { useClipView } from "./ClipViewContext";
-import { hasPendingCommit } from "./clipState";
-import { StopIcon, EjectIcon } from "./EjectButton";
 import type { MouseEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 import type { ShotCollection, VideoShot } from "../../shared/shots";
@@ -9,14 +7,10 @@ import { orderedShots } from "./shotSelection";
 
 function ShotCard({
     shot,
-    onEject,
-    ejectBusy,
     selected,
     onSelect,
 }: {
     shot: VideoShot;
-    onEject: () => void;
-    ejectBusy: boolean;
     selected: boolean;
     onSelect: (event: MouseEvent<HTMLButtonElement>) => void;
 }) {
@@ -24,9 +18,7 @@ function ShotCard({
     const [thumbnail, setThumbnail] = useState<{ url: string; revision?: number } | null>(null);
     const [failedImage, setFailedImage] = useState(false);
     const card = useRef<HTMLButtonElement>(null);
-    const cancelCommit = hasPendingCommit(shot);
     const skipped = !!shot.organization?.skipped;
-    const ActionIcon = cancelCommit ? StopIcon : EjectIcon;
     const unavailable = !shot.available;
     const inactive = !unavailable && !shot.editable;
     const cardStyle = unavailable
@@ -202,7 +194,7 @@ function ShotCard({
                             role="img"
                             aria-label="Skipped"
                             title="Skipped"
-                            className="pointer-events-none absolute -left-8 top-4 z-10 w-28 -rotate-45 bg-red-950 py-1 text-center text-[11px] font-bold tracking-wider text-red-100 shadow-sm"
+                            className="pointer-events-none absolute -left-8 top-4 z-10 w-28 -rotate-45 bg-black py-1 text-center text-[11px] font-bold tracking-wider text-red-100 shadow-sm"
                         >
                             SKIP
                         </span>
@@ -248,11 +240,6 @@ function ShotCard({
                     <span className="mt-1 block text-xs text-amber-300">Metadata incomplete</span>
                 )}
             </button>
-            {mode === "import" && <button type="button" onClick={event => { event.stopPropagation(); onEject(); }} disabled={ejectBusy}
-                aria-label={`${cancelCommit ? "Stop" : "Eject"} ${shot.filename}`} title={cancelCommit ? "Stop commit; keep in workspace" : "Eject from workspace"}
-                className="shot-card-action absolute top-2 right-2 z-20 grid size-7 place-items-center rounded-md bg-black/70 text-zinc-300 opacity-0 transition group-hover/shot:opacity-100 hover:text-white focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">
-                <ActionIcon />
-            </button>}
         </div>
     );
 }
@@ -260,15 +247,11 @@ function ShotCard({
 export function ShotGrid({
     collection,
     newestFirst,
-    onEject,
-    ejectBusy,
     selectedShotIds,
     onSelect,
 }: {
     collection: ShotCollection;
     newestFirst: boolean;
-    onEject: (id: string) => void;
-    ejectBusy: boolean;
     selectedShotIds: string[];
     onSelect: (id: string, event: MouseEvent<HTMLButtonElement>) => void;
 }) {
@@ -322,8 +305,6 @@ export function ShotGrid({
                             <ShotCard
                                 key={shot.id}
                                 shot={shot}
-                                onEject={() => onEject(shot.id)}
-                                ejectBusy={ejectBusy}
                                 selected={selectedIds.has(shot.id)}
                                 onSelect={(event) => onSelect(shot.id, event)}
                             />

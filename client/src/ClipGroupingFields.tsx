@@ -27,7 +27,7 @@ export function ClipGroupingFields({ shots, pending, failure, submit, onInvalid,
         {(['group', 'camera'] as const).map((field, index) => {
             const value = field === 'group' ? group : camera, set = field === 'group' ? setGroup : setCamera;
             const label = field === 'group' ? 'Group' : 'Camera';
-            return <label key={field} data-attribute-field={field} className="block min-w-0 text-xs text-zinc-400">
+            return <div key={field} data-attribute-field={field} className="block min-w-0 text-xs text-zinc-400">
                 <span className="attribute-label">{label}</span>
                 <input aria-label={label} type="text" autoComplete="off" maxLength={GROUPING_MAX_LENGTH} value={value}
                     placeholder={new Set(initial[index]).size > 1 ? 'Mixed' : ''} className={inputStyle}
@@ -37,9 +37,9 @@ export function ClipGroupingFields({ shots, pending, failure, submit, onInvalid,
                         try { submit({ field, operation: 'set', value: normalizeGroupingText(event.target.value) }); }
                         catch (error) { onInvalid((error as Error).message); }
                     }} />
-            </label>;
+            </div>;
         })}
-        <label data-attribute-field="rating" className="block min-w-0 text-xs text-zinc-400">
+        <div data-attribute-field="rating" className="block min-w-0 text-xs text-zinc-400">
             <span className="attribute-label">Rating</span>
             <select aria-label="Rating" value={rating} className={inputStyle}
                 onChange={event => { setRating(event.target.value); submit({ field: 'rating', operation: 'set', value: event.target.value }); }}>
@@ -48,6 +48,6 @@ export function ClipGroupingFields({ shots, pending, failure, submit, onInvalid,
                 <option value="preferred">Preferred</option>
                 <option value="usable">Usable</option>
             </select>
-        </label>
+        </div>
     </div>;
 }

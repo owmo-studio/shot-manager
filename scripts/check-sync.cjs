@@ -2,6 +2,8 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const { join, resolve } = require('node:path');
+const execute = require('node:util').promisify(require('node:child_process').execFile);
+const parseCSV = async path => JSON.parse((await execute('python3',['-c','import csv,json,sys; print(json.dumps(list(csv.DictReader(open(sys.argv[1], newline="", encoding="utf-8")))))',path])).stdout);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) return; await sleep(10); } throw new Error('Sync timed out'); }
 (async () => {
@@ -9,11 +11,11 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
     let queue, catalogue, scanner;
     try {
         const entry = join(root, 'entry.ts');
-        await fs.writeFile(entry, ['server/sync.ts', 'server/catalogue.ts', 'server/scanner.ts', 'server/ingestion.ts', 'server/library.ts', 'shared/shots.ts', 'server/rsync.ts'].map(file => `export * from ${JSON.stringify(resolve(file))};`).join('\n'));
+        await fs.writeFile(entry, ['server/sync.ts', 'server/catalogue.ts', 'server/scanner.ts', 'server/ingestion.ts', 'server/library.ts', 'shared/shots.ts', 'server/rsync.ts','server/resolveExport.ts','server/exportFiles.ts','shared/library.ts'].map(file => `export * from ${JSON.stringify(resolve(file))};`).join('\n'));
         const bundle = await (await import('vite')).build({ configFile: false, logLevel: 'silent', build: { ssr: true, write: false, rollupOptions: { input: entry, output: { format: 'cjs' } } } });
         const loaded = new (require('node:module'))(__filename, module); loaded.paths = module.paths;
         loaded._compile(bundle.output.find(item => item.type === 'chunk' && item.isEntry).code, __filename);
-        const { LibrarySync, LibraryCatalogue, ShotScanner, IngestQueue, inspectLibrary, emptyVideoMetadata, rsyncFile } = loaded.exports;
+        const { LibrarySync, LibraryCatalogue, ShotScanner, IngestQueue, inspectLibrary, emptyVideoMetadata, rsyncFile, resolveFormatter, validateLibraryMetadata, exportPath } = loaded.exports;
         const library = join(root, 'library'), cache = join(root, 'cache'), destination = join(root, 'destination');
         for (const path of [library, cache, destination]) await fs.mkdir(path);
         const ids = ['a'.repeat(64), 'b'.repeat(64)];
@@ -26,6 +28,8 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
             await fs.writeFile(join(library, `${id}.proxy.mov`), `proxy-${id[0]}`);
             await fs.writeFile(join(library, `${id}.thumb.jpg`), Buffer.from([255, 216, 255, 217]));
         }
+        const outputName=id=>`Camera-${id[0]}__${id.slice(0,8)}`;
+        const manifestNames=()=>fs.readdir(join(destination,'Manifest'));
         const original = new Map(await Promise.all((await fs.readdir(library)).map(async name => [name, await fs.readFile(join(library, name))])));
         const inspect = () => inspectLibrary(library);
         scanner = new ShotScanner(join(cache, 'thumbnails'), undefined, join(cache, 'metadata.json'));
@@ -54,13 +58,23 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         assert.equal((await fs.readdir(destination)).length, 0, 'Rejected selection queues nothing');
         await sync.submit(r.token, [ids[0]]); await idle();
         assert.deepEqual((await queue.status()).tasks.sync, { completed: 1, total: 1, percent: 100 }, 'Completed Sync progress is retained until the next work session');
-        assert.deepEqual((await fs.readdir(destination)).sort(), [`${ids[0]}.proxy.mov`, `${ids[0]}.source.mp4`], 'Only source and proxy copied, filenames unchanged');
-        for (const name of await fs.readdir(destination)) assert.deepEqual(await fs.readFile(join(destination, name)), original.get(name));
+        assert.deepEqual((await fs.readdir(destination)).sort(), [`${outputName(ids[0])}.mp4`, 'Manifest', 'Metadata', 'Proxy'].sort(), 'Source is directly in the chosen folder');
+        assert.deepEqual(await fs.readFile(join(destination,`${outputName(ids[0])}.mp4`)),original.get(`${ids[0]}.source.mp4`));
+        assert.deepEqual(await fs.readFile(join(destination,'Proxy',`${outputName(ids[0])}.mov`)),original.get(`${ids[0]}.proxy.mov`));
+        const exportedMetadata=JSON.parse(await fs.readFile(join(destination,'Metadata',`${outputName(ids[0])}.metadata.json`)));
+        assert.equal(exportedMetadata.originalFilename,'Camera-a.MP4');assert.equal(exportedMetadata.group,'');assert.equal(exportedMetadata.rating,null);
+        let manifests=await manifestNames();assert.equal(manifests.length,1);
+        let rows=await parseCSV(join(destination,'Manifest',manifests[0]));
+        assert.equal(rows.length,1);assert.equal(rows[0]['File Name'],`${outputName(ids[0])}.mp4`);assert.equal(rows[0]['Clip Directory'],destination);
+        for(const field of ['Description','Scene','Camera #','Good Take','Comments','Keywords','OWMO Identity','OWMO Rating']) assert.equal(rows[0][field],'','Optional metadata stays blank');
+        const firstManifest=await fs.readFile(join(destination,'Manifest',manifests[0]));
         r = await review([ids[0]]); assert.equal(r.clips[0].mode, 'replace');
-        const destinationFile = join(destination, `${ids[0]}.source.mp4`);
+        const destinationFile = join(destination, `${outputName(ids[0])}.mp4`);
         const before = await fs.stat(destinationFile);
         await sync.submit(r.token, [ids[0]]); await idle();
         assert.equal((await fs.stat(destinationFile)).ino, before.ino, 'rsync quick check avoids recopying');
+        assert.equal((await manifestNames()).length,2,'Each export gets its own manifest');
+        assert.deepEqual(await fs.readFile(join(destination,'Manifest',manifests[0])),firstManifest,'Later exports preserve earlier CSVs');
         r = await review([ids[0]]);
         await fs.writeFile(destinationFile, 'Changed after review');
         await assert.rejects(sync.submit(r.token, [ids[0]]), /Destination files changed/);
@@ -91,20 +105,62 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         assert.equal((await queue.status()).tasks.sync.total, 2, 'Appending grows Sync progress without counting Commits');
         await queue.cancel([ids[0]]); gate = undefined; await idle();
         assert.equal(aborts, 1); assert.equal((await catalogue.snapshot()).shots.find(s => s.id === ids[0]).editable, true);
-        assert.ok(await fs.stat(join(destination, `${ids[1]}.source.mp4`)), 'Unrelated appended clip completes');
+        assert.ok(await fs.stat(join(destination, `${outputName(ids[1])}.mp4`)), 'Unrelated appended clip completes');
+        const manifestsBeforeStop=await manifestNames();
         let globalStarted; const globalActive = new Promise(resolve => { globalStarted = resolve; }); gate = true; entered = globalStarted;
         await submit(ids); await globalActive; await queue.stop(); gate = undefined; await idle();
         assert.equal(aborts, 2, 'Toolbar Stop aborts the active Sync');
+        assert.deepEqual(await manifestNames(),manifestsBeforeStop,'Cancelled batches publish no CSV');
         assert.ok((await catalogue.snapshot()).shots.every(s => s.editable), 'Toolbar Stop unlocks queued and active exports');
+        const manifestsBeforeFailure=new Set(await manifestNames());
         r = await review(ids); fail = true; await sync.submit(r.token, ids); await idle();
+        const failureManifest=(await manifestNames()).find(name=>!manifestsBeforeFailure.has(name));
+        rows=await parseCSV(join(destination,'Manifest',failureManifest));
+        assert.deepEqual(rows.map(row=>row['File Name']),[`${outputName(ids[1])}.mp4`],'Failed clips never appear in the export CSV');
         status = await queue.status(); assert.equal(status.errors.at(-1).kind, 'sync'); assert.match(status.errors.at(-1).message, /Synthetic transfer failure/);
         assert.ok((await catalogue.snapshot()).shots.every(s => s.editable && !s.ingestState), 'Failures unlock; exports do not create Commit state');
+        // Subfolder replacement, symlinks, and malformed snapshots must not redirect writes.
+        r = await review([ids[0]]);
+        await fs.rename(join(destination,'Proxy'),join(destination,'Proxy-saved'));await fs.mkdir(join(destination,'Proxy'));
+        await assert.rejects(sync.submit(r.token,[ids[0]]),/Export folder changed/);
+        await fs.rmdir(join(destination,'Proxy'));await fs.rename(join(destination,'Proxy-saved'),join(destination,'Proxy'));
+        const outside=join(root,'outside');await fs.mkdir(outside);
+        await fs.rename(join(destination,'Metadata'),join(destination,'Metadata-saved'));await fs.symlink(outside,join(destination,'Metadata'));
+        await assert.rejects(review([ids[0]]),/real directories/);
+        assert.deepEqual(await fs.readdir(outside),[]);await fs.unlink(join(destination,'Metadata'));await fs.rename(join(destination,'Metadata-saved'),join(destination,'Metadata'));
+        const snapshotPath=join(destination,'Metadata',`${outputName(ids[0])}.metadata.json`), savedSnapshot=await fs.readFile(snapshotPath);
+        await fs.writeFile(snapshotPath,'{broken');r=await review([ids[0]]);assert.match(r.clips[0].issue,/unreadable/);
+        assert.equal(await fs.readFile(snapshotPath,'utf8'),'{broken');await fs.writeFile(snapshotPath,savedSnapshot);
+        // A subfolder redirected during rsync must also block subsequent publication.
+        let redirectedStarted; const redirectedActive=new Promise(resolve=>{redirectedStarted=resolve;});gate=true;entered=redirectedStarted;
+        await submit([ids[0]]);await redirectedActive;
+        await fs.rename(join(destination,'Proxy'),join(destination,'Proxy-saved'));await fs.symlink(outside,join(destination,'Proxy'));
+        gate();await idle();
+        assert.match((await queue.status()).errors.at(-1).message,/real directories/);
+        assert.deepEqual(await fs.readdir(outside),[],'Transfer never follows a newly redirected export directory');
+        await fs.unlink(join(destination,'Proxy'));await fs.rename(join(destination,'Proxy-saved'),join(destination,'Proxy'));
+        // Formatting preserves multiline/quoted values and source format, including blank fields.
+        const full=validateLibraryMetadata(JSON.parse(original.get(`${ids[0]}.metadata.json`)),ids[0]);
+        Object.assign(full,{identity:'OWMO',project:'Studio, \"Tour\"',scene:'Synthesizer pan',group:'TH01-T02',camera:'A',rating:'preferred',notes:'First line\nSecond \"quoted\" line',tags:['b-roll','synth']});
+        const formatted=resolveFormatter.clip(full,'mov',8);assert.equal(formatted.source,`${outputName(ids[0])}.mov`);
+        const csvFixture=join(root,'format.csv');await fs.writeFile(csvFixture,resolveFormatter.manifest([formatted],destination));
+        const csvRow=(await parseCSV(csvFixture))[0];assert.equal(csvRow.Description,full.scene);assert.equal(csvRow.Scene,full.group);assert.equal(csvRow['Camera #'],'A');assert.equal(csvRow['Good Take'],'1');assert.equal(csvRow.Comments,full.notes);assert.equal(csvRow['OWMO Project'],full.project);assert.ok(csvRow['Clip Name'].includes('OWMO'));
+        full.rating='usable';assert.equal(resolveFormatter.clip(full,'mov',8).fields['Good Take'],'0');
+        full.originalFilename='bad/name:with?characters.MOV';assert.ok(!/[<>:"/\\|?*]/.test(resolveFormatter.clip(full,'mov',8).source));
+        full.originalFilename='é'.repeat(300)+'.MOV';assert.ok(Buffer.byteLength(resolveFormatter.clip(full,'mov',64).metadata.path.split('/')[1])<=255);
+        assert.throws(()=>exportPath(destination,'../outside'));assert.throws(()=>exportPath(destination,'/absolute'));
+        // A known owner with the same short prefix extends only the new name.
+        const foreign={...JSON.parse(savedSnapshot),id:'a'.repeat(8)+'c'.repeat(56)};foreign.fingerprint={...foreign.fingerprint,value:foreign.id};
+        await fs.writeFile(snapshotPath,JSON.stringify(foreign));r=await review([ids[0]]);
+        assert.equal(r.clips[0].outputFilename,`Camera-a__${ids[0].slice(0,12)}.mp4`);
+        await sync.submit(r.token,[ids[0]]);await idle();r=await review([ids[0]]);assert.equal(r.clips[0].outputFilename,`Camera-a__${ids[0].slice(0,12)}.mp4`,'Expanded names are reused');
+        await fs.writeFile(snapshotPath,savedSnapshot);
         r = await review([ids[0]]); await fs.rename(destination, `${destination}-offline`); await fs.mkdir(destination);
         await assert.rejects(sync.submit(r.token, [ids[0]]), /destination changed/);
         assert.deepEqual(await fs.readdir(destination), [], 'Changed destination root is never written');
         for (const [name, bytes] of original) assert.deepEqual(await fs.readFile(join(library, name)), bytes, 'Library remains unchanged');
         assert.equal(scanner.snapshot().shots.length, 0, 'Export never adds Import workspace clips');
-        console.log('PASS: direct source/proxy copies, unchanged names, exclusions, pending edits, replacements, rsync quick check, stale review and Stop invalidation, symlink/hardlink/root protection, shared queue append/cancel/failure, and read-only Library.');
+        console.log('PASS: Resolve source/proxy naming/layout, optional and escaped CSV metadata, per-batch manifests with successful clips only, stable collision handling, folder/file guards, exclusions, stale reviews, queue append/cancel/Stop/failure, quick-check reuse, and unchanged Library assets.');
     } finally {
         await queue?.close(); await catalogue?.close(); await scanner?.close(); await fs.rm(root, { recursive: true, force: true });
     }

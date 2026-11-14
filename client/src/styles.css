@@ -194,7 +194,3 @@ textarea,
   height: 100%;
   aspect-ratio: auto;
 }
-
-.shot-card-action:enabled:hover svg {
-  fill: currentColor;
-}

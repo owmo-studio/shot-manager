@@ -1129,7 +1129,7 @@ if (!process.versions.electron) {
                 collection.shots.find((shot) => shot.filename === "Clip 4.mp4").organization.notes,
                 "Review the final take",
             );
-            assert.equal(await js(`document.querySelector('[aria-label="Notes"]').rows`), 3);
+            assert.equal(await js(`document.querySelector('[aria-label="Notes"]').rows`), 2);
             await fill("Notes", "First line\nSecond line\nThird line\nFourth line");
             await wait(
                 `!Array.from(document.querySelectorAll('#clip-inspector [role="status"]')).some(node=>node.textContent==='Saving…')`,
@@ -1318,6 +1318,7 @@ if (!process.versions.electron) {
                     notes: "",
                     skipped: true,
                 });
+            assert.equal(await js(`document.querySelectorAll('[data-shot-card] button[aria-label^="Eject "], [data-shot-card] button[aria-label^="Stop "]').length`),0,'Eject and Stop are inspector-only actions');
             // First-stage Cancel leaves cards selected and editable, then offers Eject.
             const readyCards=structuredClone(collection.shots);
             await push(collection.shots.map(shot=>({...shot,editable:false,ingestState:shot.filename==='Clip 4.mp4'?'queued':'processing'})));
@@ -1337,13 +1338,14 @@ if (!process.versions.electron) {
             assert.equal(collection.shots.length,3,'Cancel preserves workspace membership');
             assert.deepEqual(await selected(),[4,5],'Cancel preserves selection');
             assert.ok(collection.shots.filter(shot=>['Clip 4.mp4','Clip 5.mp4'].includes(shot.filename)).every(shot=>shot.editable));
-            await js(`document.querySelector('button[aria-label="Stop Clip 6.mp4"]').click()`);
+            await inspect(6);
+            await click("Stop selected clip");
             await wait(`!!document.querySelector('#stop-title')`);
             await click("Confirm stop clips");
-            await wait(`!!document.querySelector('button[aria-label="Eject Clip 6.mp4"]')`);
-            assert.equal(collection.shots.length,3,'Card Cancel also preserves membership');
+            await wait(`!!document.querySelector('button[aria-label="Eject selected clip"]')`);
+            assert.equal(collection.shots.length,3,'Inspector Stop also preserves membership');
             await push(collection.shots.map(shot=>shot.filename==='Clip 6.mp4'?{...shot,editable:false,ingestState:'queued'}:shot));
-            await inspect(6,{metaKey:true});
+            await inspect(4); await inspect(5,{metaKey:true}); await inspect(6,{metaKey:true});
             await click("Stop selected clip");
             await wait(`!!document.querySelector('#stop-title')`);
             assert.equal(await js(`document.querySelectorAll('dialog ul[aria-label="Affected clips"] li').length`),1,'Mixed Stop lists only the queued clip');
@@ -1353,11 +1355,15 @@ if (!process.versions.electron) {
             await wait(`!!document.querySelector('button[aria-label="Eject selected clips"]')`);
             assert.equal(collection.shots.length,3,'Mixed selection Cancel never ejects already editable clips');
             assert.deepEqual(await selected(),[4,5,6]);
-            await js(`document.querySelector('button[aria-label="Eject Clip 6.mp4"]').click()`);
+            await inspect(6);
+            await wait(`!!document.querySelector('button[aria-label="Eject selected clip"]')`);
+            await click("Eject selected clip");
             await wait(`!!document.querySelector('#eject-title')`);
             await js(`Array.from(document.querySelectorAll('dialog button')).find(button=>button.textContent==='Cancel').click()`);
             assert.equal(collection.shots.length,3,'Cancel button preserves the card');
-            await js(`document.querySelector('button[aria-label="Eject Clip 6.mp4"]').click()`);
+            await wait(`!document.querySelector('#eject-title')`);
+            await wait(`!!document.querySelector('button[aria-label="Eject selected clip"]')`);
+            await click("Eject selected clip");
             await wait(`!!document.querySelector('#eject-title')`);
             await click("Confirm eject clips");
             await wait(`document.querySelectorAll('[data-shot-card]').length===2`);
@@ -1381,7 +1387,7 @@ if (!process.versions.electron) {
             await wait(`document.querySelectorAll('[data-shot-card]').length===0`);
             assert.equal(ejectedSelections.at(-1).length,3,'Eject affected clips removes exactly the directory members');
             console.log(
-                "PASS: four-arrow navigation, responsive Up/Down rows and partial rows, date/filter/sort boundaries, locked-clip skipping, multi-selection, input guards, editing/skip selections, bulk skip, background deselection, blocked Tab, Escape, per-card/bulk Eject, two-stage Cancel/Eject, directory outage warnings, and disabled processing.",
+                "PASS: four-arrow navigation, responsive Up/Down rows and partial rows, date/filter/sort boundaries, locked-clip skipping, multi-selection, input guards, editing/skip selections, bulk skip, background deselection, blocked Tab, Escape, inspector-only single/bulk Eject, two-stage Cancel/Eject, directory outage warnings, and disabled processing.",
             );
             window.destroy();
             await rm(root, { recursive: true, force: true });

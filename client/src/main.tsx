@@ -429,7 +429,7 @@ function App() {
                             {libraryCollection.error && <p role="status" className="px-5 pt-4 text-left text-xs text-red-300">{libraryCollection.error}</p>}
                             {libraryCollection.warnings.length > 0 && <p role="status" title={libraryCollection.warnings.join('\n')} className="px-5 pt-4 text-left text-xs text-amber-300">{libraryCollection.warnings.length} metadata files could not be refreshed.</p>}
                             <ShotGrid key="library-grid" collection={visibleCollection} newestFirst={newestFirst}
-                                onEject={() => undefined} ejectBusy={false} selectedShotIds={selection.editingIds} onSelect={selectShot} />
+                                selectedShotIds={selection.editingIds} onSelect={selectShot} />
                         </div>
                     ) : draggingClips ? (
                         <p className="pointer-events-none text-sm text-blue-300">
@@ -439,8 +439,6 @@ function App() {
                         <ShotGrid
                             key="import-grid" collection={visibleCollection}
                             newestFirst={newestFirst}
-                            onEject={id => requestEject([id])}
-                            ejectBusy={ejectBusy}
                             selectedShotIds={selection.editingIds}
                             onSelect={selectShot}
                         />

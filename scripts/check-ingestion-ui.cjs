@@ -297,9 +297,9 @@ if (!process.versions.electron) {
             const selectCard = (index, additive = false) => js(`document.getElementById(${JSON.stringify(cardIds[index])}).dispatchEvent(new MouseEvent('click',{bubbles:true,metaKey:${additive}}))`);
             const commitDisabled = () => js(`Array.from(document.querySelectorAll('footer button')).find(button=>button.textContent==='Commit').disabled`);
             await selectCard(0);
-            assert.deepEqual(await js(`Array.from(document.querySelectorAll('[data-clip-grouping] label')).map(el=>el.querySelector('.attribute-label').textContent)`),['Group','Camera','Rating']);
+            assert.deepEqual(await js(`Array.from(document.querySelectorAll('[data-clip-grouping] .attribute-label')).map(el=>el.textContent)`),['Group','Camera','Rating']);
             assert.equal(await js(`(()=>{const g=document.querySelector('[aria-label="Group"]').getBoundingClientRect(),c=document.querySelector('[aria-label="Camera"]').getBoundingClientRect(),r=document.querySelector('[aria-label="Rating"]').getBoundingClientRect();return Math.abs(g.width-2*c.width)<3&&Math.abs(c.width-r.width)<2&&g.top===c.top&&c.top===r.top;})()`),true,'Grouping fields share the requested 50/25/25 row');
-            assert.equal(await js(`document.querySelector('[aria-label="Notes"]').rows`),3,'Notes leaves room for grouping');
+            assert.equal(await js(`document.querySelector('[aria-label="Notes"]').rows`),2,'Notes leaves room for grouping');
             await fillAttribute('Group','TH01-T02');await fillAttribute('Camera','A');await fillAttribute('Rating','preferred');
             await js('window.desktop.flushOrganizationText()');
             await until(()=>js(`window.desktop.getShots().then(c=>c.shots.find(s=>s.id===${JSON.stringify(cardIds[0].replace('shot-',''))}).organization.rating==='preferred')`),'Import grouping saves');
@@ -429,9 +429,15 @@ if (!process.versions.electron) {
             await until(()=>js(`!!document.querySelector('dialog [data-sync-included]') && Array.from(document.querySelectorAll('dialog button')).find(el=>el.textContent.trim()==='Sync')?.disabled===false`),'Sync plan ready');
             await fs.promises.writeFile('/tmp/owmo-sync-review.png',(await window.webContents.capturePage()).toPNG());
             await click('Sync');
-            await until(async()=>!(await js('window.desktop.getIngestStatus()')).active && fs.readdirSync(join(root,'destination')).length===2,'Source and proxy Sync completes');
-            assert.deepEqual(fs.readdirSync(join(root,'destination')).sort(),[`${publishedId}.proxy.mov`,`${publishedId}.source.mp4`]);
-            for(const role of ['source.mp4','proxy.mov']) assert.deepEqual(fs.readFileSync(join(root,'destination',`${publishedId}.${role}`)),fs.readFileSync(join(root,'library',`${publishedId}.${role}`)));
+            await until(async()=>!(await js('window.desktop.getIngestStatus()')).active && fs.existsSync(join(root,'destination','Manifest')) && fs.readdirSync(join(root,'destination','Manifest')).length===1,'Resolve Sync completes');
+            const exportedMetadata=JSON.parse(fs.readFileSync(join(root,'library',`${publishedId}.metadata.json`),'utf8'));
+            const exportBase=require('node:path').parse(exportedMetadata.originalFilename).name+'__'+publishedId.slice(0,8);
+            assert.deepEqual(fs.readdirSync(join(root,'destination')).sort(),['Manifest','Metadata','Proxy',`${exportBase}.mp4`].sort());
+            for(const [name,role] of [[`${exportBase}.mp4`,'source.mp4'],[`Proxy/${exportBase}.mov`,'proxy.mov']]) assert.deepEqual(fs.readFileSync(join(root,'destination',name)),fs.readFileSync(join(root,'library',`${publishedId}.${role}`)));
+            assert.deepEqual(JSON.parse(fs.readFileSync(join(root,'destination','Metadata',`${exportBase}.metadata.json`),'utf8')),exportedMetadata);
+            const manifest=fs.readFileSync(join(root,'destination','Manifest',fs.readdirSync(join(root,'destination','Manifest'))[0]),'utf8');
+            assert.ok(manifest.startsWith('"File Name","Clip Directory","Clip Name"'));
+            assert.ok(manifest.includes(`"${exportBase}.mp4"`),'CSV matches exported media filename');
             await js(`window.desktop.updateLibraryOrganization(['${publishedId}'],{field:'scene',operation:'set',value:'Pending Sync test'})`);
             await click('Sync');await click('Choose Destination');
             await until(()=>js(`document.querySelector('dialog[open]')?.textContent.includes('Commit or Revert changes before Sync.')`),'Sync explains pending edits');
@@ -957,11 +963,14 @@ if (!process.versions.electron) {
                 "Re-added source stayed Queued after removing sources and clearing Cache",
             );
             const ejectShot = await js(`window.desktop.getShots().then(value=>value.shots[0])`);
-            await js(`document.querySelector('button[aria-label="Eject ${ejectShot.filename}"]').click()`);
-            await until(()=>js(`!!document.querySelector('#eject-title')`),'Card Eject confirmation missing');
+            assert.equal(await js(`document.querySelectorAll('[data-shot-card] button[aria-label^="Eject "], [data-shot-card] button[aria-label^="Stop "]').length`),0,'Thumbnail actions are inspection only');
+            await js(`document.getElementById('shot-${ejectShot.id}').click()`);
+            await until(()=>js(`!!document.querySelector('#clip-inspector button[aria-label="Eject selected clip"]:not(:disabled)')`),'Inspector Eject is ready');
+            await js(`document.querySelector('#clip-inspector button[aria-label="Eject selected clip"]').click()`);
+            await until(()=>js(`!!document.querySelector('#eject-title')`),'Inspector Eject confirmation missing');
             assert.equal(await js(`document.querySelectorAll('[data-shot-card]').length`),2,'Card remains before Eject confirmation');
             await js(`document.querySelector('button[aria-label="Confirm eject clips"]').click()`);
-            await until(() => js(`document.querySelectorAll('[data-shot-card]').length===1`), 'Card Eject did not remove one clip');
+            await until(() => js(`document.querySelectorAll('[data-shot-card]').length===1`), 'Inspector Eject did not remove one clip');
             assert.equal(fs.readdirSync(join(root,'source')).length,2,'Eject preserves original media');
             assert.deepEqual(fs.readdirSync(join(root,'library')),libraryBeforeClear,'Eject preserves Library assets');
             const draftsAfterEject=JSON.parse(fs.readFileSync(join(root,'profile','Shot Manager Cache','metadata.json'),'utf8'));
@@ -987,7 +996,7 @@ if (!process.versions.electron) {
             await fs.promises.writeFile(join(root, "validated"), "passed");
             clearTimeout(timer);
             console.log(
-                "PASS: native Library Sync destination/review/exclusion/copy, pending-edit protection and multi-selection, inspector button order and disabled Delete, Library Thumb capture/Commit/Revert, media preservation, browsing/playback, independent filters, shared Commit, Import retirement/rediscovery, Cache/configuration, ingestion, notifications and unified Stop.",
+                "PASS: native Resolve Sync layout/JSON/CSV, destination/review/exclusion, pending-edit protection and multi-selection, inspector button order and disabled Delete, Library Thumb capture/Commit/Revert, media preservation, browsing/playback, independent filters, shared Commit, Import retirement/rediscovery, Cache/configuration, ingestion, notifications and unified Stop.",
             );
             app.quit();
         } catch (error) {

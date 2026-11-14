@@ -3,11 +3,11 @@ import type { VideoShot } from '../../shared/shots';
 import type { SyncReview } from '../../shared/sync';
 import { errorMessage } from '../../shared/errors';
 import { ModalDialog } from './ModalDialog';
-import { primaryButton, secondaryButton, inspectorButton } from './buttonStyles';
+import { primaryButton, secondaryButton, inspectorButton, inspectorDangerButton } from './buttonStyles';
 
 const sizeLabel = (bytes: number) => bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.ceil(bytes / 1000)} KB`;
 export function DeletePlaceholder() {
-    return <button disabled title="Delete is not available yet" className={inspectorButton}>
+    return <button disabled title="Delete is not available yet" className={inspectorDangerButton}>
         <svg aria-hidden="true" className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></svg>Delete
     </button>;
 }
@@ -57,9 +57,11 @@ export function SyncButton({ shots }: { shots: VideoShot[] }) {
             <div aria-label="Sync clips" className="mt-4 max-h-[40vh] overflow-auto rounded-lg border border-white/10">
                 {display.map(clip => { const removed = excluded.includes(clip.id); return <div key={clip.id} data-sync-included={!removed} className="flex items-start gap-3 border-b border-white/8 p-3 last:border-0">
                     <div className={`min-w-0 flex-1 ${removed ? 'opacity-40' : ''}`}>
-                        <div className="flex items-start gap-3">
-                            {review && <span className="shrink-0 rounded bg-blue-400/10 px-2 py-0.5 text-xs text-blue-300">{clip.mode === 'replace' ? 'Update' : 'New'}</span>}
-                            <p className="min-w-0 break-all text-sm">{clip.filename}</p>
+                        <div className="flex min-h-7 items-center gap-3">
+                            <span className={`min-w-16 shrink-0 rounded px-2 py-0.5 text-center text-xs ${review ? 'bg-blue-400/10 text-blue-300' : 'bg-white/5 text-zinc-500'}`}>
+                                {review ? clip.mode === 'replace' ? 'Update' : 'New' : 'Pending'}
+                            </span>
+                            <p className="min-w-0 break-all text-sm" title={'outputFilename' in clip ? clip.outputFilename : undefined}>{clip.filename}</p>
                         </div>
                         {clip.issue && <p className="mt-1 text-xs text-amber-300">{clip.issue}</p>}
                     </div>
