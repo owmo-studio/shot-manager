@@ -30,6 +30,9 @@
         "check:ingestion-ui": "npm run build && node scripts/check-ingestion-ui.cjs",
         "package": "npm run package:mac",
         "package:mac": "npm run build && node scripts/package-mac.cjs",
+        "deploy": "npm run deploy:mac",
+        "deploy:mac": "node scripts/deploy-mac.cjs",
+        "check:deploy": "node scripts/check-deploy.cjs",
         "check:packaged": "node scripts/check-packaged.cjs"
     },
     "engines": {

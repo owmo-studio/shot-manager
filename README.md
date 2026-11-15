@@ -9,10 +9,11 @@ Development requires macOS, Node.js 22.12+, and npm. FFmpeg/FFprobe must be inst
 ```sh
 npm ci                   # Install dependencies
 npm run dev              # Development app
-npm run package:mac      # Build the .app for this Mac
+npm run package          # Build the .app for this Mac
+npm run deploy           # Copy the existing build to /Applications
 ```
 
-Copy `release/mac-arm64/OWMO Shot Manager.app` to Applications, replacing the previous copy after quitting it. Intel builds use `release/mac/`. The app includes its runtime, dependencies, icon, and [viewing LUTs](resources/luts/README.md); Node/npm are only needed for development. The version beside the title comes from `package.json`.
+`npm run deploy` installs the existing `release/mac-arm64/OWMO Shot Manager.app` into `/Applications` (Intel builds use `release/mac/`). Quit the installed app first. Deployment stages and verifies the new bundle before replacing the previous copy; it does not rebuild or launch the app. The app includes its runtime, dependencies, icon, and [viewing LUTs](resources/luts/README.md); Node/npm are only needed for development. The version beside the title comes from `package.json`.
 
 `npm run build` produces `out/`; `npm start` opens that build. Generated `out/` and `release/` files are excluded from Git.
 
