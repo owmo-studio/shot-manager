@@ -28,6 +28,7 @@
         "check:proxy-priority": "node scripts/check-proxy-priority.cjs",
         "check:proxies": "node scripts/check-proxies.cjs",
         "check:ingestion-ui": "npm run build && node scripts/check-ingestion-ui.cjs",
+        "package": "npm run package:mac",
         "package:mac": "npm run build && node scripts/package-mac.cjs",
         "check:packaged": "node scripts/check-packaged.cjs"
     },
