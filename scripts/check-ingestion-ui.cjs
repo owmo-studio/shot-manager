@@ -219,7 +219,7 @@ if (!process.versions.electron) {
                 );
             };
             await openConfiguration();
-            await until(() => js(`document.querySelector('[aria-label="Cache summary"]')?.textContent.includes('Metadata:') && document.querySelector('[aria-label="Cache summary"]')?.textContent.includes('Proxies:')`), 'Cache Summary did not load');
+            await until(() => js(`document.querySelector('[aria-label="Cache summary"]')?.textContent.includes(' used') && document.querySelector('[aria-label="Cache summary"]')?.textContent.includes('Proxies:')`), 'Cache Summary did not load');
             assert.ok(await js(`document.querySelector('#cache-summary-title + p + p')?.textContent.includes('90 days')`), 'Cache retention note missing');
             if(process.env.SHOT_MANAGER_UX_SCREENSHOTS) { await new Promise(resolve=>setTimeout(resolve,150)); await fs.promises.writeFile('/tmp/owmo-ux-configuration.png',(await window.webContents.capturePage()).toPNG()); }
             assert.equal(

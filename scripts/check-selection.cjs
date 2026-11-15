@@ -535,8 +535,8 @@ if (!process.versions.electron) {
             await click("Configuration");
             await wait(`!!document.querySelector('[aria-label="Identity options"]')`);
             assert.equal(await js(`!!document.querySelector('[aria-label="Tags options"]')`), false);
-            await wait(`document.querySelector('[aria-label="Cache summary"]')?.textContent.includes('Metadata: 6 clips')`);
-            assert.ok(await js(`document.querySelector('[aria-label="Cache summary"]').textContent.includes('Proxies: 1 (4.0 KB)')`));
+            await wait(`document.querySelector('[aria-label="Cache summary"]')?.textContent.includes('6.8 KB used')`);
+            assert.ok(await js(`document.querySelector('[aria-label="Cache summary"]').textContent.includes('Proxies: 4.0 KB')`));
             assert.ok(await js(`document.querySelector('#cache-summary-title + p + p').textContent.includes('90 days')`));
             if (process.env.SHOT_MANAGER_CONFIGURATION_SCREENSHOT) {
                 await new Promise((resolve) => setTimeout(resolve, 150));

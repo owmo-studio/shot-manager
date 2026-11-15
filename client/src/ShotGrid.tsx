@@ -199,12 +199,6 @@ function ShotCard({
                     </span>
                     {unavailable && (
                         <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-red-950/30">
-                            <span
-                                aria-hidden="true"
-                                className="absolute top-2 left-2 grid size-6 place-items-center rounded-full bg-red-400 font-bold text-[#1b2029]"
-                            >
-                                !
-                            </span>
                             <span className="rounded-md bg-[#111318]/80 px-3 py-1.5 text-center text-xs font-medium text-red-300">
                                 source unavailable
                             </span>

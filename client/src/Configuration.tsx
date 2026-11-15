@@ -28,7 +28,6 @@ export function Configuration({ workControlRef }: { workControlRef?: Ref<HTMLDiv
     const [optionsError, setOptionsError] = useState<string | null>(null);
     const [vocabularyError, setVocabularyError] = useState<string | null>(null);
     const [cacheInventory, setCacheInventory] = useState<CacheInventory | null>(null);
-    const [cacheRecords, setCacheRecords] = useState<number | null>(null);
     const [cacheSummaryError, setCacheSummaryError] = useState<string | null>(null);
     const dialog = useRef<HTMLDialogElement>(null);
     const mutation = useRef(false);
@@ -101,14 +100,10 @@ export function Configuration({ workControlRef }: { workControlRef?: Ref<HTMLDiv
         if (!open) return;
         let disposed = false;
         setCacheInventory(null);
-        setCacheRecords(null);
         setCacheSummaryError(null);
-        void Promise.allSettled([window.desktop.getCacheInventory(), window.desktop.getLocalDataSummary()]).then(([files, records]) => {
-            if (disposed) return;
-            if (files.status === "fulfilled") setCacheInventory(files.value);
-            else setCacheSummaryError(errorMessage(files.reason, "Cache summary unavailable."));
-            if (records.status === "fulfilled") setCacheRecords(records.value.records);
-        });
+        void window.desktop.getCacheInventory()
+            .then(value => { if (!disposed) setCacheInventory(value); })
+            .catch(reason => { if (!disposed) setCacheSummaryError(errorMessage(reason, "Cache summary unavailable.")); });
         return () => { disposed = true; };
     }, [open]);
 
@@ -348,10 +343,11 @@ export function Configuration({ workControlRef }: { workControlRef?: Ref<HTMLDiv
                         <h3 id="cache-summary-title" className="text-xs font-medium text-zinc-400">Cache Summary</h3>
                         <p aria-label="Cache summary" className="mt-2 text-xs leading-5 text-zinc-300">
                             {cacheSummaryError ?? (cacheInventory
-                                ? `Catalogue: ${sizeLabel(cacheInventory.catalogue?.bytes ?? 0)} · Metadata: ${cacheRecords === null ? "—" : cacheRecords} clips (${sizeLabel(cacheInventory.metadata.bytes)}) · Thumbnails: ${cacheInventory.thumbnails.files} (${sizeLabel(cacheInventory.thumbnails.bytes)}) · Fingerprints: ${cacheInventory.fingerprints.files} (${sizeLabel(cacheInventory.fingerprints.bytes)}) · Proxies: ${cacheInventory.proxies.files} (${sizeLabel(cacheInventory.proxies.bytes)}) · Total: ${sizeLabel(cacheInventory.total.bytes)}`
+                                ? <><span className="block text-base font-medium text-zinc-200">{sizeLabel(cacheInventory.total.bytes)} used</span>
+                                    <span className="mt-1 block text-zinc-500">Proxies: {sizeLabel(cacheInventory.proxies.bytes)} · Thumbnails: {sizeLabel(cacheInventory.thumbnails.bytes)} · Metadata: {sizeLabel((cacheInventory.catalogue?.bytes ?? 0) + cacheInventory.metadata.bytes + cacheInventory.fingerprints.bytes)}</span></>
                                 : "Loading…")}
                         </p>
-                        <p className="mt-1 text-[11px] leading-5 text-zinc-500">Unused clip data expires after 90 days when the app closes. Saved Identity/Project options stay until Clear Cache.</p>
+                        <p className="mt-1 text-[11px] leading-5 text-zinc-500">Unused clip data clears after 90 days.</p>
                     </section>
                     {(optionsError || vocabularyError) && (
                         <p role="alert" className="mt-4 text-xs text-red-300">
