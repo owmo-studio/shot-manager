@@ -113,7 +113,7 @@ export class IngestQueue {
                 return { location, ...listing };
             } catch (error) {
                 if (current()) {
-                    this.scanner.setLibraryPresence(path, null);
+                    this.scanner.setLibraryPresence(path, null, error instanceof Error ? error.message : String(error));
                     this.state.libraryScan = { state: 'unavailable', error: error instanceof Error ? error.message : String(error) };
                     this.publish();
                 }

@@ -1,5 +1,6 @@
 import { secondaryButton, primaryButton } from "./buttonStyles";
 import { useEffect, useRef, useState } from "react";
+import type { Ref } from 'react';
 import type { AppConfiguration, CacheInventory, LocationChoice } from "../../shared/desktop";
 import { errorMessage } from "../../shared/errors";
 import type { OptionRemovalPlan, TagField, TagVocabulary } from "../../shared/organization";
@@ -14,7 +15,7 @@ function sizeLabel(bytes: number) {
     return `${(bytes / 1024 ** unit).toFixed(1)} ${["B", "KB", "MB", "GB", "TB"][unit] ?? "TB"}`;
 }
 
-export function Configuration() {
+export function Configuration({ workControlRef }: { workControlRef?: Ref<HTMLDivElement> }) {
     const [configuration, setConfiguration] = useState<AppConfiguration | null>(null);
     const [libraryChoice, setLibraryChoice] = useState<LocationChoice | null>(null);
     const [clearLibrary, setClearLibrary] = useState(false);
@@ -217,6 +218,7 @@ export function Configuration() {
                           ? "configuration unavailable"
                           : "Loading…"}
                 </span>
+                <div ref={workControlRef} className="flex shrink-0 items-center" />
                 <button
                     aria-label="Configuration"
                     title="Configuration"

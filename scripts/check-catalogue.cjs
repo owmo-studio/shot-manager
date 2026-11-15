@@ -41,6 +41,7 @@ async function until(test, label) {
         let view=await catalogue.refresh();
         assert.equal(view.error,undefined); assert.equal(view.shots.length,2);
         assert.ok(view.shots.every(shot=>!shot.ingestState&&shot.editable),'Library cards have neutral base state');
+        assert.ok(view.shots.every(shot=>shot.mediaReadiness.state==='committed'),'Complete verified Library assets are committed despite neutral cards');
         assert.equal(scanner.snapshot().shots.length,0,'Cataloguing never discovers media into Import or queues proxies');
         assert.equal(view.shots[0].organization.notes,'Remote note');
         const originalSource=await fs.readFile(join(library,`${id}.source.mp4`));
@@ -51,6 +52,7 @@ async function until(test, label) {
         const originalURL='data:image/jpeg;base64,'+originalThumb.toString('base64');
         await catalogue.setThumbnail(id,thumbURL);
         assert.equal((await catalogue.snapshot()).shots.find(shot=>shot.id===id).ingestState,'changes-pending');
+        assert.equal((await catalogue.snapshot()).shots.find(shot=>shot.id===id).mediaReadiness.state,'ready','A local thumbnail change needs Commit even when the Library proxy exists');
         assert.equal(await catalogue.thumbnail(id),thumbURL,'Library previews its local thumbnail draft');
         assert.deepEqual(await fs.readFile(join(library,`${id}.thumb.jpg`)),originalThumb,'Thumb does not write remotely before Commit');
         await catalogue.refresh();assert.equal(await catalogue.thumbnail(id),thumbURL,'Refresh preserves the thumbnail draft');
@@ -82,6 +84,7 @@ async function until(test, label) {
         const metadataBeforeThumb=await fs.readFile(join(library,`${id}.metadata.json`));
         let thumbnailTransfers=0;
         catalogue.transfer=async(...args)=>{
+            assert.equal((await catalogue.snapshot()).shots.find(shot=>shot.id===id).mediaReadiness.state,'ready','Commit locks do not overwrite pending readiness');
             thumbnailTransfers++;assert.ok(args[1].endsWith('.thumb.jpg'),'Library never transfers the source or proxy');
             assert.deepEqual(await fs.readFile(join(library,`${id}.metadata.json`)),metadataBeforeThumb,'JSON stays unpublished until the thumbnail transfer succeeds');
             return transfer(...args);
@@ -91,6 +94,7 @@ async function until(test, label) {
         assert.equal(thumbnailTransfers,1);assert.deepEqual((await queue.status()).errors,[]);
         assert.deepEqual(await fs.readFile(join(library,`${id}.thumb.jpg`)),thumb);
         assert.equal((await catalogue.snapshot()).shots.find(shot=>shot.id===id).ingestState,undefined);
+        assert.equal((await catalogue.snapshot()).shots.find(shot=>shot.id===id).mediaReadiness.state,'committed','Thumbnail publication restores committed readiness');
         assert.deepEqual(await fs.readFile(join(library,`${id}.source.mp4`)),originalSource);
         assert.deepEqual(await fs.readFile(join(library,`${id}.proxy.mov`)),originalProxy);
         catalogue.transfer=transfer;
@@ -134,6 +138,7 @@ async function until(test, label) {
         assert.deepEqual(await fs.readdir(unsafe),[],'A symlink Cache folder is never written through');
         await fs.unlink(thumbs);await fs.rename(thumbs+'-saved',thumbs);
         offline=true;view=await catalogue.refresh();assert.match(view.error,/offline/);assert.equal(view.shots.length,2,'Offline is never an empty Library');
+        assert.ok(view.shots.every(shot=>shot.mediaReadiness.state==='unavailable'),'Cached asset flags do not report committed while offline');
         assert.ok((await catalogue.thumbnail(id)).startsWith('data:image/jpeg;'),'Previously viewed thumbnails work offline');
         await catalogue.update([id],{field:'notes',operation:'set',value:'Offline edit'});
         await assert.rejects(catalogue.preview([id]),/offline/);
@@ -152,6 +157,7 @@ async function until(test, label) {
         const retained=await fs.readFile(join(library,`${id}.metadata.json`));
         await fs.writeFile(join(library,`${id}.metadata.json`),'{broken');
         view=await catalogue.refresh();assert.equal(view.shots.length,2);assert.equal(view.warnings.length,1);
+        assert.equal(view.shots.find(shot=>shot.id===id).mediaReadiness.state,'unavailable','Unreadable remote metadata cannot reuse a committed indicator');
         await assert.rejects(catalogue.revert([id]),/invalid|could not/i);
         await fs.writeFile(join(library,`${id}.metadata.json`),retained);
         await catalogue.revert([id]);
@@ -182,6 +188,7 @@ async function until(test, label) {
         scanner=new ShotScanner(join(cache,"thumbnails"),undefined,draftFile);queue=new IngestQueue(scanner,async()=>library,inspect);
         catalogue=new LibraryCatalogue(scanner,async()=>library,inspect,queue,catalogFile,join(cache,'library-thumbnails'));
         view=await catalogue.snapshot();assert.equal(view.shots.find(shot=>shot.id===id).organization.notes,'Newer edit');
+        assert.ok(view.shots.every(shot=>shot.mediaReadiness.state==='unchecked'),'Cached rows start unchecked after restart');
         assert.equal(await catalogue.thumbnail(id),thumbURL,'Thumbnail drafts survive restart');
         assert.equal(view.shots.find(shot=>shot.id===id).ingestState,'changes-pending');
         // Keeping only the catalogue still permits offline editing after pending drafts are cleared.

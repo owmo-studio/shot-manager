@@ -13,7 +13,7 @@ export function useWorkStatus(connected: boolean) {
         setStatus(current => ({ ...current, errors: current.errors.filter(error => error.eventId !== eventId) }));
     }, []);
     useEffect(() => {
-        if (!connected) return;
+        if (!connected || !window.desktop.getIngestStatus) return;
         let disposed = false;
         const receive = (next: IngestStatus) => { if (!disposed) receiveStatus(next); };
         // Subscribe first; revisions reject an initial read that arrives after a newer event.

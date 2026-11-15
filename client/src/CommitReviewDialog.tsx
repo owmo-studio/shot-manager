@@ -26,19 +26,13 @@ export function CommitReviewDialog({
     const [ids, setIds] = useState(review.clips.map((clip) => clip.id));
     const includedIds = new Set(ids);
     const clips = review.clips.filter((clip) => includedIds.has(clip.id));
-    const replacements = clips.filter((clip) => clip.mode === "replace").length;
     const retiring = clips.filter(clip => clip.mode === 'synced').length;
     const transfers = clips.length - retiring;
-    const thumbnailEdits = clips.some(clip => clip.files.some(file => file.to.endsWith('.thumb.jpg')));
     return (
         <ModalDialog titleId="ingest-dialog-title" title="Ready to Commit?" busy={busy} onCancel={onCancel}>
             <p className="mt-3 text-sm text-zinc-400">
-                {clips.length} {clips.length === 1 ? "clip" : "clips"} ·{" "}
-                {retiring > 0 && !transfers ? 'Remove from workspace' :
-                    review.libraryEdits ? thumbnailEdits ? 'Metadata and thumbnails' : 'Metadata only' : bytes(clips.reduce((sum, clip) => sum + clip.bytes, 0))}
-                {review.proxyPreparation && transfers > 0 && (
-                    <span className="ml-1 text-xs text-zinc-500">excl. proxies</span>
-                )}
+                {clips.length} {clips.length === 1 ? "clip" : "clips"}
+                {transfers > 0 && <> · {bytes(clips.reduce((sum, clip) => sum + clip.bytes, 0))}</>}
             </p>
             {retiring > 0 && transfers > 0 && <p className="mt-2 text-xs text-zinc-400">{transfers} to commit · {retiring} synced to remove from workspace.</p>}
             <p className="mt-2 break-all text-sm text-zinc-500">{review.libraryPath}</p>
@@ -55,7 +49,7 @@ export function CommitReviewDialog({
                             <div
                                 className={`mt-0.5 flex shrink-0 flex-col items-start gap-1 ${included ? "" : "opacity-40"}`}
                             >
-                                <span className={`rounded px-2 py-0.5 text-xs ${clip.mode === 'synced' ? 'bg-emerald-400/10 text-emerald-300' : 'bg-blue-400/10 text-blue-300'}`}>
+                                <span className={`rounded px-2 py-0.5 text-xs ${clip.mode === 'replace' ? 'bg-yellow-400/10 text-yellow-300' : 'bg-blue-400/10 text-blue-300'}`}>
                                     {clip.mode === 'synced' ? 'Synced' : clip.mode === "replace" ? "↻ Update" : "New"}
                                 </span>
                             </div>
@@ -63,15 +57,7 @@ export function CommitReviewDialog({
                                 <p className="break-all">
                                     {clip.filename} {clip.mode !== 'synced' && <span className="text-xs text-zinc-500">{bytes(clip.bytes)}</span>}
                                 </p>
-                                {clip.mode === 'synced' ? <p className="mt-1 text-xs text-zinc-500">Remove from workspace.</p> : <details className="mt-1 text-xs text-zinc-500">
-                                    <summary className="cursor-pointer">File destinations</summary>
-                                    {clip.files.map((file) => (
-                                        <p key={file.to} className="mt-2 break-all text-sm">
-                                            {file.from}
-                                            <br />→ {file.to}
-                                        </p>
-                                    ))}
-                                </details>}
+                                {clip.mode === 'synced' && <p className="mt-1 text-xs text-zinc-500">Remove from workspace.</p>}
                             </div>
                             <button
                                 disabled={busy}
@@ -92,11 +78,6 @@ export function CommitReviewDialog({
                     );
                 })}
             </div>
-            {replacements > 0 && (
-                <p className="mt-3 text-sm text-amber-300">
-                    Updates {replacements} existing Library {replacements === 1 ? "clip" : "clips"}.
-                </p>
-            )}
             {error && (
                 <p role="alert" className="mt-3 text-sm text-red-300">
                     {error}

@@ -69,8 +69,12 @@ body {
   background: #facc15;
 }
 
-.shot-work-progress[data-work-type="sync"]::-webkit-progress-value {
+.shot-work-progress[data-work-type="export"]::-webkit-progress-value {
   background: #34d399;
+}
+
+.shot-work-progress[data-work-type="commit"]::-webkit-progress-value {
+  background: var(--color-blue-500);
 }
 
 .ingest-card-needs-sync {
@@ -79,7 +83,7 @@ body {
 }
 
 .ingest-card-synced {
-  background-color: rgb(16 185 129 / 18%);
+  background-color: color-mix(in srgb, var(--color-blue-500) 18%, transparent);
   box-shadow: none;
 }
 
@@ -99,7 +103,7 @@ body {
 
 /* Keep editing selection visible in the card's status color. */
 .ingest-card-synced[aria-pressed="true"] {
-  box-shadow: 0 0 0 2px rgb(52 211 153 / 80%);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-blue-400) 80%, transparent);
 }
 
 .ingest-card-needs-sync[aria-pressed="true"] {
@@ -107,7 +111,7 @@ body {
 }
 
 .ingest-card-synced:focus-visible {
-  outline-color: #34d399;
+  outline-color: var(--color-blue-400);
 }
 
 .ingest-card-needs-sync:focus-visible {

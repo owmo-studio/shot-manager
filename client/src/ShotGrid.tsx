@@ -5,6 +5,13 @@ import type { ShotCollection, VideoShot } from "../../shared/shots";
 import { cardDuration, deviceLabel } from "./mediaInfo";
 import { orderedShots } from "./shotSelection";
 
+const readinessLabels = {
+    unchecked: 'Unchecked', preparing: 'Preparing', ready: 'Ready to Commit', committed: 'Committed', unavailable: 'Unavailable',
+};
+const readinessColors = {
+    unchecked: 'border border-white/25', preparing: 'border border-white/65', ready: 'bg-yellow-400', committed: 'bg-blue-500', unavailable: 'bg-red-500',
+};
+
 function ShotCard({
     shot,
     selected,
@@ -46,6 +53,8 @@ function ShotCard({
     const proxyLocal = shot.proxyState === "ready" && shot.proxyLocation === "cache";
     const proxyLibrary = shot.proxyState === "ready" && shot.proxyLocation === "library";
     const proxyEncoding = shot.proxyState === "encoding";
+    const readiness = shot.mediaReadiness ?? { state: 'unchecked' as const };
+    const readinessLabel = `Media readiness: ${readinessLabels[readiness.state]}${readiness.detail ? ` — ${readiness.detail}` : ''}`;
     const transferring = shot.ingestState === "processing";
     const progressLabel = transferring ? shot.workKind === 'sync' ? "Exporting to destination" : "Committing to Library" : proxyEncoding ? "Generating proxy" : null;
     const progressPercent = Math.max(0, Math.min(100, (transferring ? shot.transferPercent : shot.proxyPercent) ?? 0));
@@ -119,7 +128,7 @@ function ShotCard({
                 type="button"
                 onClick={onSelect}
                 aria-label={`Inspect ${shot.filename}`}
-                aria-description={`${skipped ? "Skipped. " : ""}${activity}. ${proxyLabel}`}
+                aria-description={`${skipped ? "Skipped. " : ""}${activity}. ${readinessLabel}`}
                 aria-pressed={selected}
                 aria-controls="clip-inspector"
                 data-editable={shot.editable}
@@ -142,12 +151,13 @@ function ShotCard({
                     className={`relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg ring-1 ring-inset transition-opacity duration-150 ${unavailable ? "ring-red-500/30 bg-red-500/5" : skipped ? "ring-white/5 bg-black" : "ring-white/8 bg-white/4"}`}
                 >
                     <span
+                        data-media-readiness={readiness.state}
                         data-proxy-state={shot.proxyState}
                         data-proxy-location={shot.proxyLocation}
                         role="img"
-                        aria-label={proxyLabel}
-                        title={proxyLabel}
-                        className={`absolute left-1.5 top-1.5 z-10 size-2.5 rounded-full ${proxyLibrary ? "bg-emerald-400" : proxyLocal ? "bg-yellow-400" : "border border-white/65"}`}
+                        aria-label={readinessLabel}
+                        title={readinessLabel}
+                        className={`absolute left-1.5 top-1.5 z-10 size-2.5 rounded-full ${readinessColors[readiness.state]}`}
                     />
                     {(transferring || proxyEncoding) && (
                         <span
@@ -161,7 +171,7 @@ function ShotCard({
                             <span className="grid size-12 place-items-center rounded-full">
                                 <span
                                     aria-hidden="true"
-                                    className={`size-8 rounded-full border-[6px] motion-safe:animate-spin ${transferring ? "border-emerald-300/25 border-t-emerald-300" : "border-yellow-300/25 border-t-yellow-300"}`}
+                                    className={`size-8 rounded-full border-[6px] motion-safe:animate-spin ${transferring ? shot.workKind === 'sync' ? "border-emerald-300/25 border-t-emerald-300" : "border-blue-400/25 border-t-blue-400" : "border-yellow-300/25 border-t-yellow-300"}`}
                                 />
                             </span>
                         </span>
@@ -203,7 +213,7 @@ function ShotCard({
                     {progressLabel && (
                         <progress
                             data-shot-progress
-                            data-work-type={transferring ? "sync" : "proxy"}
+                            data-work-type={transferring ? shot.workKind === 'sync' ? "export" : "commit" : "proxy"}
                             aria-label={progressLabel}
                             title={progressLabel}
                             max={100}

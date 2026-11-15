@@ -16,6 +16,7 @@ import { VideoFingerprintStore, videoFileVersion } from "./fingerprints";
 import type { LibraryPresence } from "./library";
 import { OrganizationStore } from "./organization";
 import { ThumbnailQueue } from "./thumbnails";
+import { mediaReadiness } from '../shared/mediaReadiness';
 
 interface ScanJob {
     request: DiscoveryRequest;
@@ -56,6 +57,7 @@ export class ShotScanner {
     private ingestLocks = new Map<string, "queued" | "processing">();
     private ingestLibrary: string | null = null;
     private libraryPresence: LibraryPresence | null = null;
+    private libraryPresenceError?: string;
     requireProxy = false;
     workPaused = false;
     private proxies = new Map<
@@ -120,11 +122,13 @@ export class ShotScanner {
         this.assertNoIngestion();
         this.ingestLibrary = path;
         this.libraryPresence = null;
+        this.libraryPresenceError = undefined;
         this.publish();
     }
 
-    setLibraryPresence(path: string, presence: LibraryPresence | null) {
+    setLibraryPresence(path: string, presence: LibraryPresence | null, error?: string) {
         if (path !== this.ingestLibrary) return;
+        this.libraryPresenceError = error;
         this.libraryPresence = presence
             ? {
                   existing: new Set(presence.existing),
@@ -709,6 +713,10 @@ export class ShotScanner {
     private ingestState(shot: VideoShot): IngestState | undefined {
         const locked = this.ingestLocks.get(shot.id);
         if (locked) return locked;
+        return this.savedIngestState(shot);
+    }
+
+    private savedIngestState(shot: VideoShot): IngestState | undefined {
         const receipt = shot.ingestion?.libraryPath === this.ingestLibrary ? shot.ingestion : undefined;
         if (!this.libraryPresence) return receipt ? "unverified" : undefined;
         // Presence determines New versus Update, even without a local receipt.
@@ -733,6 +741,7 @@ export class ShotScanner {
                 editable: !this.ingestLocks.has(clip.result.shot.id) && !this.ejecting.has(clip.result.shot.id) &&
                     (!this.thumbnailQueue || this.prepared.has(clip.result.shot.id) || clip.result.shot.hasThumbnail),
                 ingestState: this.ingestState(clip.result.shot),
+                mediaReadiness: this.readiness(clip.result.shot),
                 ...this.proxies.get(clip.result.shot.id),
                 transferPercent: this.transferProgress.get(clip.result.shot.id),
                 workKind: this.workKinds.get(clip.result.shot.id),
@@ -752,6 +761,23 @@ export class ShotScanner {
         const clip = this.clips.get(id);
         if (!clip) throw Object.assign(new Error("Clip is no longer available."), { statusCode: 404 });
         return { clip, result: clip.result };
+    }
+
+    private readiness(shot: VideoShot) {
+        const proxy = this.proxies.get(shot.id);
+        const proxyReady = !!this.libraryPresence?.proxies.has(shot.id) || proxy?.proxyState === 'ready' && !!proxy.proxyLocation;
+        const committed = this.savedIngestState(shot) === 'synced' && !!this.libraryPresence?.proxies.has(shot.id);
+        return mediaReadiness({
+            checked: !!this.libraryPresence,
+            committed,
+            source: shot.available,
+            thumbnail: shot.hasThumbnail && shot.thumbnailStatus === 'ready',
+            metadata: !!shot.fingerprint && !!shot.organization,
+            proxy: proxyReady,
+            error: this.libraryPresenceError ?? (committed ? undefined : !shot.available ? 'Source unavailable.' :
+                shot.thumbnailStatus === 'failed' ? 'Thumbnail unavailable.' :
+                !proxyReady && proxy?.proxyState === 'failed' ? proxy.proxyError ?? 'Proxy generation failed.' : undefined),
+        });
     }
 
     directoryAvailability() {

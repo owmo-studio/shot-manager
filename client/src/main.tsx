@@ -37,6 +37,7 @@ function App() {
         ...current, [tab]: typeof change === 'function' ? change(current[tab]) : change,
     }));
     const newestFirst = true;
+    const [workControlTarget, setWorkControlTarget] = useState<HTMLDivElement | null>(null);
     const [inspectorWidth, setInspectorWidth] = useState(MIN_INSPECTOR_WIDTH);
     const [importCollection, setShotCollection] = useState<ShotCollection>({ revision: 0, shots: [], scans: [] });
     const [libraryCollection, setLibraryCollection] = useState<LibraryCollection>({ revision: 0, shots: [], scans: [], libraryPath: null, refreshing: false, warnings: [] });
@@ -371,7 +372,7 @@ function App() {
                         {view === 'import' ? 'Import' : 'Library'}
                     </button>)}
                 </nav>
-                <Configuration />
+                <Configuration workControlRef={setWorkControlTarget} />
             </header>
             <main className="flex min-h-0 flex-1">
                 <aside className="w-60 shrink-0 overflow-y-auto border-r border-white/8 bg-white/1.5 p-3">
@@ -484,7 +485,7 @@ function App() {
                 onEject={ids => { setUnavailableDirectories([]); requestEject(ids); }} />}
             <footer className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-5 border-t border-white/8 px-5 py-2.5 text-xs text-zinc-500">
                 <ApplicationIndicator backend={status} communicationError={communicationError} />
-                <CommitControls key={tab} status={workStatus.status} receiveStatus={workStatus.receiveStatus} dismissError={workStatus.dismissError} selectedShotIds={selectedShots.map(shot => shot.id)} shots={shotCollection.shots} catalogueRefreshing={tab === 'library' && libraryCollection.refreshing} connected={status.state === 'connected'} onRefresh={async () => receiveView(await (tab === 'library' ? window.desktop.getLibrary() : window.desktop.getShots()))} />
+                <CommitControls key={tab} workControlTarget={workControlTarget} status={workStatus.status} receiveStatus={workStatus.receiveStatus} dismissError={workStatus.dismissError} selectedShotIds={selectedShots.map(shot => shot.id)} shots={shotCollection.shots} catalogueRefreshing={tab === 'library' && libraryCollection.refreshing} connected={status.state === 'connected'} onRefresh={async () => receiveView(await (tab === 'library' ? window.desktop.getLibrary() : window.desktop.getShots()))} />
             </footer>
         </div></ClipViewProvider>
     );

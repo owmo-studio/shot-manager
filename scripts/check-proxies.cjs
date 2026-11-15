@@ -58,6 +58,8 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         await until(() => scanner.snapshot().shots.length === 3 && scanner.snapshot().shots.every(shot => shot.thumbnailStatus === 'ready'), 'thumbnails ready');
         await until(() => encodingHeld && scanner.snapshot().shots.some(shot => shot.proxyState === 'ready'), 'first proxy ready, second encoding');
         const shots = scanner.snapshot().shots;
+        assert.equal(shots.find(shot=>shot.proxyState==='ready').mediaReadiness.state,'ready','A complete local asset set is ready with all optional attributes blank');
+        assert.equal(shots.find(shot=>shot.proxyState==='encoding').mediaReadiness.state,'preparing','Encoding media is not ready to Commit');
         const backgroundProgress = (await queue.status()).tasks;
         assert.equal((await queue.status()).work.current.percent,50,'Footer proxy progress belongs to the current encode, not completed queue work');
         assert.deepEqual({ total: backgroundProgress.total, completed: backgroundProgress.completed, proxies: backgroundProgress.proxiesRemaining, transfers: backgroundProgress.transfersRemaining },
@@ -80,6 +82,7 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         assert.equal(overlap, true, 'Encoder and rsync worker can run concurrently');
         assert.ok(scanner.snapshot().shots.every(shot => !shot.editable), 'Submitted clips are locked, including those waiting for a proxy');
         assert.ok(scanner.snapshot().shots.some(shot => shot.ingestState === 'processing'));
+        assert.equal(scanner.snapshot().shots.find(shot=>shot.ingestState==='processing').mediaReadiness.state,'ready','Active Commit keeps its underlying readiness until publication');
         await assert.rejects(scanner.updateOrganization([pending.id], { field: 'notes', operation: 'set', value: 'locked' }), /locked/);
         holdEncoding = false; releaseEncode();
         await until(() => scanner.snapshot().shots.every(shot => shot.proxyState === 'ready'), 'remaining proxies finish while transfer waits');
@@ -91,6 +94,7 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         assert.deepEqual((await queue.status()).tasks, { completed: 6, total: 6, percent: 100, proxiesRemaining: 0, transfersRemaining: 0, syncsRemaining: 0, sync: {completed:0,total:0,percent:0} }, 'Both kinds of work must finish for overall 100%');
         assert.equal((await queue.status()).work.current,undefined,'Completed encodes leave no stale active progress');
         assert.ok(scanner.snapshot().shots.every(shot => shot.proxyLocation === 'library'), 'Published proxies are identified as Library assets');
+        assert.ok(scanner.snapshot().shots.every(shot=>shot.mediaReadiness.state==='committed'),'Only complete matching Library publications report committed');
         assert.equal(maxEncoders, 1);
         const scratchDirectory = join(scratch, scratchFolder, 'proxies');
         assert.deepEqual(await fs.readdir(scratchDirectory), [], 'Scratch copies removed after successful publication');
@@ -108,6 +112,7 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         assert.equal(JSON.parse(await fs.readFile(join(library, `${pending.id}.metadata.json`))).notes, 'Edited during encoding');
         const first = shots[0], proxyPath = join(library, `${first.id}.proxy.mov`), before = await fs.stat(proxyPath), count = encodeCount;
         await scanner.updateOrganization([first.id], { field: 'notes', operation: 'set', value: 'Metadata-only update' });
+        assert.equal(scanner.snapshot().shots.find(shot=>shot.id===first.id).mediaReadiness.state,'ready','A Library proxy alone cannot keep edited metadata committed');
         let plan = await queue.preview([first.id]); await queue.submit(plan.token, [first.id]);
         await until(async () => !(await queue.status()).active, 'metadata-only update');
         assert.equal((await fs.stat(proxyPath)).ino, before.ino, 'Existing Library proxy is not overwritten');

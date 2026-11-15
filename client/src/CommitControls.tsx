@@ -18,6 +18,7 @@ export function CommitControls({
     receiveStatus,
     dismissError,
     onRefresh,
+    workControlTarget,
     catalogueRefreshing = false,
 }: {
     shots: VideoShot[];
@@ -27,6 +28,7 @@ export function CommitControls({
     receiveStatus: (status: IngestStatus) => void;
     dismissError: (eventId: string) => void;
     onRefresh: () => Promise<void>;
+    workControlTarget: HTMLDivElement | null;
     catalogueRefreshing?: boolean;
 }) {
     const { api, mode } = useClipView();
@@ -40,11 +42,11 @@ export function CommitControls({
     const selected = selectedShotIds.length > 0;
     const selectedIds = new Set(selectedShotIds);
     const scope = selected ? shots.filter(shot => selectedIds.has(shot.id)) : shots;
-    const skipped = scope.filter((shot) => shot.organization?.skipped).length;
+    const skipped = mode === 'import' ? scope.filter((shot) => shot.organization?.skipped).length : 0;
     const candidates = scope.filter(
         (shot) => mode === "library" ? shot.ingestState === "changes-pending" : !shot.organization?.skipped && shot.ingestState !== "synced" && !hasPendingCommit(shot),
     );
-    const syncedCandidates = mode === 'import' && !selected ? shots.filter(shot => shot.ingestState === 'synced' && shot.editable && !shot.organization?.skipped) : [];
+    const syncedCandidates = mode === 'import' ? scope.filter(shot => shot.ingestState === 'synced' && shot.editable && !shot.organization?.skipped) : [];
     const blocked = candidates.filter(
         (shot) => !shot.editable || mode === "import" && (!shot.available || !shot.hasThumbnail || shot.thumbnailStatus !== "ready"),
     ).length;
@@ -55,7 +57,7 @@ export function CommitControls({
         setError(null);
         setErrorTitle("Commit error");
         try {
-            setReview(await api.reviewIngest([...candidates, ...syncedCandidates].map((shot) => shot.id), mode === 'import' && !selected));
+            setReview(await api.reviewIngest([...candidates, ...syncedCandidates].map((shot) => shot.id), mode === 'import'));
         } catch (reason) {
             setError(errorMessage(reason, "Could not prepare the commit."));
         } finally {
@@ -133,13 +135,12 @@ export function CommitControls({
     const failure = status.errors[0];
     return (
         <>
-            <WorkActivity status={status} disabled={busy || !connected} checking={checkingLibrary || refreshing}
+            <WorkActivity status={status} controlTarget={workControlTarget} disabled={busy || !connected} checking={checkingLibrary || refreshing}
                 onRefresh={() => void refreshLibrary()} onStop={() => setStopConfirm(true)} />
             <div className="col-start-3 row-start-1 flex min-w-0 flex-wrap items-center justify-end gap-x-4 gap-y-2">
-                <span role="status">
-                    {candidates.length} {selected ? "selected " : ""}{candidates.length === 1 ? "clip" : "clips"} to commit{mode === "import" ? ` · ${skipped} skipped` : ""}
-                    {syncedCandidates.length > 0 ? ` · ${syncedCandidates.length} synced` : ''}
-                    {blocked ? ` · ${blocked} not ready` : ""}
+                <span role="status" aria-label="Clip selection summary">
+                    {scope.length} {scope.length === 1 ? "clip" : "clips"} {selected ? "selected" : "total"}
+                    {skipped > 0 ? ` (${skipped} skipped)` : ""}
                 </span>
                 <div className="flex shrink-0 items-center gap-3">
                     <button
@@ -158,7 +159,7 @@ export function CommitControls({
                                 ? "Set a Library location in Configuration"
                                 : blocked
                                   ? "Each clip needs an available source and a ready thumbnail"
-                                  : selected && !candidates.length
+                                  : selected && !candidates.length && !syncedCandidates.length
                                     ? "No selected clips need committing"
                                     : selected ? "Commit eligible selected clips" : "Commit all eligible clips"
                         }

@@ -1,7 +1,9 @@
 import type { IngestStatus } from '../../shared/ingestion';
+import { createPortal } from 'react-dom';
 
-export function WorkActivity({ status, disabled, checking, onRefresh, onStop }: {
+export function WorkActivity({ status, disabled, checking, onRefresh, onStop, controlTarget }: {
     status: IngestStatus; disabled: boolean; checking: boolean; onRefresh: () => void; onStop: () => void;
+    controlTarget: HTMLDivElement | null;
 }) {
     const hasWork = status.active || !!status.work?.encoding || !!(status.work && !status.work.paused && status.work.queued > 0);
     const proxies = status.tasks?.proxiesRemaining ?? 0;
@@ -43,11 +45,11 @@ export function WorkActivity({ status, disabled, checking, onRefresh, onStop }: 
                 <div role="progressbar" aria-label={transferLabel} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent(transfer?.percent)}
                     aria-valuetext={transfer ? `${exporting ? 'Exporting' : 'Committing'} ${transfer.filename}: ${percent(transfer.percent)}%` : commits + exports > 0 ? 'Waiting to transfer' : 'No transfers queued'}
                     className="h-1.5 overflow-hidden rounded-full bg-white/8">
-                    <div key={transfer?.id ?? 'idle'} className="h-full rounded-full bg-emerald-400 motion-safe:transition-[width]" style={{ width: `${percent(transfer?.percent)}%` }} />
+                    <div key={transfer?.id ?? 'idle'} className={`h-full rounded-full motion-safe:transition-[width] ${exporting ? 'bg-emerald-400' : 'bg-blue-500'}`} style={{ width: `${percent(transfer?.percent)}%` }} />
                 </div>
             </div>
         </div>
-        <button type="button" aria-label={hasWork ? 'Stop processing' : 'Refresh assets'}
+        {controlTarget && createPortal(<button type="button" aria-label={hasWork ? 'Stop processing' : 'Refresh assets'}
             aria-busy={checking || status.stopping}
             title={hasWork ? 'Stop processing' : checking ? 'Checking assets…' : 'Refresh assets and resume background work'}
             disabled={disabled || status.stopping || (!hasWork && (!status.libraryPath || checking))}
@@ -66,6 +68,6 @@ export function WorkActivity({ status, disabled, checking, onRefresh, onStop }: 
                 className={`size-5 ${checking ? 'motion-safe:animate-spin' : ''}`}>
                 <path d="M3 11a9 9 0 0 1 15.36-6.36L21 7M21 3v4h-4M21 13a9 9 0 0 1-15.36 6.36L3 17M7 17H3v4" />
             </svg>}
-        </button>
+        </button>, controlTarget)}
     </div>;
 }

@@ -1,5 +1,6 @@
 import type { IngestionReceipt, IngestState, ProxyState } from './ingestion';
 import type { ShotOrganization } from './organization';
+import type { MediaReadiness } from './mediaReadiness';
 
 export interface DiscoveryRequest { id: string; path: string }
 
@@ -71,6 +72,7 @@ export interface VideoShot {
     proxyPercent?: number;
     proxyError?: string;
     transferPercent?: number;
+    mediaReadiness?: MediaReadiness;
 }
 
 export interface DiscoveryScan {

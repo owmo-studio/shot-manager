@@ -17,6 +17,7 @@ import { ingestionSignature } from './scanner';
 import type { IngestQueue } from './ingestion';
 import { isJpeg } from './thumbnails';
 import { rsyncFile } from './rsync';
+import { mediaReadiness } from '../shared/mediaReadiness';
 
 interface CatalogueEntry { metadata: LibraryMetadata; source: string | null; thumbnail: boolean; proxy: boolean; thumbnailRevision?: number; thumbnailDigest?: string }
 interface CatalogueState { path: string | null; refreshedAt?: string; entries: CatalogueEntry[] }
@@ -30,6 +31,7 @@ export class LibraryCatalogue {
     private revision = 0;
     private error?: string;
     private warnings: string[] = [];
+    private verified = new Map<string, { path: string; error?: string }>();
     private review?: { token: string; location: LibraryLocation; generation: number; created: number; entries: { id: string; attributes: ReturnType<typeof ingestAttributes>; thumbnailDigest?: string }[] };
     private transfer = rsyncFile;
     onChange?: () => void;
@@ -107,6 +109,9 @@ export class LibraryCatalogue {
             const baselineDigest = entry.thumbnailDigest ?? (draft?.ingestion?.libraryPath === path ? draft.ingestion.thumbnailDigest : undefined);
             const pendingThumbnail = !!draft?.thumbnailDraft && (!entry.thumbnail || draft.thumbnailDraft.digest !== baselineDigest);
             const changed = JSON.stringify(ingestAttributes(organization)) !== JSON.stringify(ingestAttributes(m)) || pendingThumbnail;
+            const verification = this.verified.get(m.id);
+            const checked = verification?.path === path;
+            const thumbnailReady = entry.thumbnail || !!draft?.thumbnailDraft;
             return {
                 id: m.id, filePath: entry.source && path ? join(path, entry.source) : '', filename: m.originalFilename,
                 relativePath: entry.source ?? '', bytes: m.bytes, timestamp: m.recordedAt, dateSource: m.dateSource,
@@ -120,6 +125,12 @@ export class LibraryCatalogue {
                 ingestState: lock ?? (changed ? 'changes-pending' : undefined),
                 workKind: this.scanner.workKind(m.id), transferPercent: this.scanner.transferPercent(m.id),
                 proxyState: entry.proxy ? 'ready' : 'missing', proxyLocation: entry.proxy ? 'library' : undefined,
+                mediaReadiness: mediaReadiness({
+                    checked, committed: !changed && !!entry.source && entry.thumbnail && entry.proxy,
+                    source: !!entry.source, thumbnail: thumbnailReady, metadata: true, proxy: entry.proxy,
+                    error: this.error ?? (checked ? verification?.error ?? (!entry.source ? 'Library source unavailable.' :
+                        !thumbnailReady ? 'Library thumbnail unavailable.' : !entry.proxy ? 'Library proxy unavailable.' : undefined) : undefined),
+                }),
             };
         });
         return { revision: this.revision, shots, scans: [], libraryPath: path, refreshing: this.refreshing,
@@ -135,6 +146,7 @@ export class LibraryCatalogue {
                 const listing = await listLibrary(location);
                 const ids = [...listing.assets.keys()].filter(id => listing.assets.get(id)!.includes(libraryAssetName(id, 'metadata', 'json')));
                 const entries = new Map<string, CatalogueEntry>();
+                const verified = new Map<string, { path: string; error?: string }>();
                 const old = new Map(this.state.path === location.path ? this.state.entries.map(entry => [entry.metadata.id, entry] as const) : []);
                 const warnings: string[] = [];
                 let next = 0;
@@ -146,11 +158,13 @@ export class LibraryCatalogue {
                             const { metadata } = await readLibraryMetadata(location, id);
                             const names = listing.assets.get(id)!;
                             const sources = names.filter(name => parseLibraryAssetName(name)?.role === 'source');
-                            entries.set(id, { metadata, source: sources.length === 1 ? sources[0] : null,
-                                thumbnail: names.includes(libraryAssetName(id, 'thumb', 'jpg')), proxy: listing.proxies.has(id), thumbnailRevision: Date.now(),
+                            entries.set(id, { metadata, source: sources.length === 1 && listing.regularAssets.has(sources[0]) ? sources[0] : null,
+                                thumbnail: listing.regularAssets.has(libraryAssetName(id, 'thumb', 'jpg')), proxy: listing.proxies.has(id), thumbnailRevision: Date.now(),
                                 thumbnailDigest: old.get(id)?.thumbnailDigest });
+                            verified.set(id, { path: location.path });
                         } catch (error) {
                             if (old.has(id)) entries.set(id, old.get(id)!);
+                            verified.set(id, { path: location.path, error: error instanceof Error ? error.message : String(error) });
                             if (warnings.length < 100) warnings.push(`${id.slice(0, 12)}: ${error instanceof Error ? error.message : String(error)}`);
                         }
                     }
@@ -160,6 +174,7 @@ export class LibraryCatalogue {
                 const unlocked = state.entries.filter(entry => !this.scanner.commitLock(entry.metadata.id)).map(entry => entry.metadata);
                 await this.scanner.organization.syncLibrary(unlocked, () => unlocked.every(entry => !this.scanner.commitLock(entry.id)), location.path);
                 await this.save(state);
+                this.verified = verified;
                 this.error = undefined; this.warnings = warnings;
                 await this.scanner.reloadOrganizations();
             } catch (error) { this.error = error instanceof Error ? error.message : String(error); }
@@ -181,6 +196,7 @@ export class LibraryCatalogue {
             const entries = this.state.path === location.path ? this.state.entries.filter(entry => entry.metadata.id !== metadata.id) : [];
             entries.push({ metadata, source: names[0], thumbnail: true, proxy: names.length > 3, thumbnailRevision: Date.now() });
             await this.save({ path: location.path, refreshedAt: new Date().toISOString(), entries });
+            this.verified.set(metadata.id, { path: location.path });
         });
     }
     async update(ids: string[], action: OrganizationAction) {

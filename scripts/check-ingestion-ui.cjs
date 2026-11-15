@@ -311,24 +311,24 @@ if (!process.versions.electron) {
             await js(`window.desktop.updateOrganization([${JSON.stringify(cardIds[0].replace('shot-',''))}],{field:'all',operation:'clear',value:''})`);
             await until(()=>js(`document.querySelector('[aria-label="Group"]').value===''&&document.querySelector('[aria-label="Camera"]').value===''&&document.querySelector('[aria-label="Quality"]').value===''`),'Clear resets grouping controls');
             assert.equal(await js(`Array.from(document.querySelectorAll('#clip-inspector header button, #clip-inspector header input')).map(el=>el.getAttribute('aria-label')).join(',')`),'Set current frame as thumbnail,Skip selected clips,Eject selected clip','Import icon button order');
-            await until(() => js(`document.querySelector('footer').textContent.includes('1 selected clip to commit')`), 'Footer identifies selected Commit scope');
+            await until(() => js(`document.querySelector('footer').textContent.includes('1 clip selected')`), 'Footer identifies selected Commit scope');
             await click('Commit');
             await until(() => js(`document.querySelectorAll('dialog [data-review-included]').length===1`), 'Only selected clip enters review');
             await click('Cancel');
             await js(`document.querySelector('input[aria-label="Skip selected clips"]').click()`);
             await until(commitDisabled, 'Skipped-only selection disables Commit without falling back');
             await selectCard(1, true);
-            await until(() => js(`document.querySelector('footer').textContent.includes('1 selected clip to commit')`), 'Mixed selection excludes skipped clip');
+            await until(() => js(`document.querySelector('footer').textContent.includes('2 clips selected (1 skipped)')`), 'Mixed selection excludes skipped clip');
             await click('Commit');
             await until(() => js(`document.querySelectorAll('dialog [data-review-included]').length===1`), 'Skipped selected clip excluded from review');
             await click('Cancel');
             await js(`document.querySelector('input[aria-label="Skip selected clips"]').click()`);
-            await until(() => js(`document.querySelector('footer').textContent.includes('2 selected clips to commit')`), 'Unskipping restores selected eligibility');
+            await until(() => js(`document.querySelector('[aria-label="Clip selection summary"]').textContent.trim()==='2 clips selected'`), 'Unskipping restores selected eligibility');
             await click('Commit');
             await until(() => js(`document.querySelectorAll('dialog [data-review-included]').length===2`), 'Bulk selection reviews eligible selected clips');
             await click('Cancel');
             await selectCard(0); await selectCard(0);
-            await until(() => js(`document.querySelector('footer').textContent.includes('2 clips to commit')&&!document.querySelector('footer').textContent.includes('selected clips to commit')`), 'No selection restores all-workspace Commit scope');
+            await until(() => js(`document.querySelector('footer').textContent.includes('2 clips total')`), 'No selection restores all-workspace Commit scope');
             const idleReads = ingestReads;
             await new Promise((resolve) => setTimeout(resolve, 1200));
             assert.equal(ingestReads, idleReads, "Idle footer does not poll ingestion status");
@@ -385,8 +385,8 @@ if (!process.versions.electron) {
             assert.notEqual(pendingLibraryThumb,'data:image/jpeg;base64,'+committedLibraryThumb.toString('base64'));
             assert.deepEqual(fs.readFileSync(join(root,'library',`${publishedId}.thumb.jpg`)),committedLibraryThumb,'Thumb stays local until Commit');
             assert.deepEqual(fs.readFileSync(join(root,'library',`${publishedId}.metadata.json`)),committedLibraryJSON);
-            await click('Commit');await until(()=>js(`document.querySelector('dialog[open]')?.textContent.includes('Metadata and thumbnails')`),'Thumbnail Commit review identifies its assets');
-            assert.equal(await js(`document.querySelectorAll('dialog details p').length`),2,'Review includes thumbnail and metadata only');
+            await click('Commit');await until(()=>js(`!!document.querySelector('dialog[open] [data-review-mode="replace"]')`),'Thumbnail Update enters Commit review');
+            assert.equal(await js(`document.querySelectorAll('dialog details').length`),0,'Commit review omits per-file destinations');
             await click('Cancel');await click('Revert');await js(`document.querySelector('[aria-label="Confirm revert clip attributes"]').click()`);
             await until(()=>js(`!document.querySelector('dialog[open]') && !document.querySelector('[data-shot-status="changes-pending"]')`),'Revert clears the thumbnail draft');
             assert.equal(await js(`window.desktop.getLibraryThumbnail('${publishedId}')`),'data:image/jpeg;base64,'+committedLibraryThumb.toString('base64'));
@@ -468,7 +468,7 @@ if (!process.versions.electron) {
             assert.equal(await js(`document.querySelector('[aria-label^="Filter clips by device:"]').getAttribute('aria-pressed')`),'true','Library filters survive Import filter changes');
             await click('Import');
             await js('window.desktop.chooseClips()');
-            await until(()=>js(`!!document.querySelector('[data-shot-status="synced"]')`),'Re-adding a committed clip shows green in Import');
+            await until(()=>js(`!!document.querySelector('[data-shot-status="synced"]')`),'Re-adding a committed clip shows blue in Import');
             assert.equal(
                 fs.readdirSync(join(root, "library")).filter((name) => name.endsWith(".metadata.json")).length,
                 1,
@@ -485,14 +485,28 @@ if (!process.versions.electron) {
                 `window.desktop.getShots().then(collection=>collection.shots.find(shot=>shot.ingestState==='synced'))`,
             );
             await js(`document.querySelector('[data-shot-status="synced"]').click()`);
-            await until(commitDisabled, 'Synced-only selection cannot Commit unrelated eligible clips');
-            assert.ok(await js(`document.querySelector('footer').textContent.includes('0 selected clips to commit')`));
-            await js(`document.querySelector('[data-shot-status="synced"]').click()`);
+            await until(async()=>!(await commitDisabled()),'Selected synced clip can open Commit review');
+            await click('Commit');
+            await until(()=>js(`document.querySelectorAll('[data-review-included]').length===1 && !!document.querySelector('[data-review-mode="synced"]')`),'Selected synced clip reviews only its own workspace removal');
+            await click('Cancel');
+            assert.equal(await js(`!!document.getElementById('shot-${ingested.id}')`),true,'Cancel preserves the selected synced clip');
+            const selectedSyncedMedia=fs.readdirSync(join(root,'library')).map(name=>[name,fs.readFileSync(join(root,'library',name))]);
+            const selectedSyncedTransfers=(await js('window.desktop.getIngestStatus()')).total;
+            await click('Commit');
+            await until(()=>js(`!!document.querySelector('[data-review-mode="synced"]')`),'Selected synced review reopens');
+            await click('Commit');
+            await until(()=>js(`!document.querySelector('dialog[open]') && !document.getElementById('shot-${ingested.id}')`),'Selected Synced confirmation removes that workspace card');
+            const selectedSyncedStatus=await js('window.desktop.getIngestStatus()');
+            assert.equal(selectedSyncedStatus.active,false);assert.equal(selectedSyncedStatus.total,selectedSyncedTransfers,'Synced confirmation adds no transfers');
+            assert.equal(await js(`document.querySelectorAll('[data-shot-card]').length`),1,'Unselected new clip stays in Import');
+            for(const [name,bytes] of selectedSyncedMedia)assert.deepEqual(fs.readFileSync(join(root,'library',name)),bytes,'Selected Synced removal leaves Library files unchanged');
+            await js('window.desktop.chooseClips()');
+            await until(()=>js(`!!document.getElementById('shot-${ingested.id}')`),'Rediscovery restores the removed synced clip');
             const retained = await js(`window.desktop.cancelClips([${JSON.stringify(ingested.id)}])`);
             assert.ok(retained.shots.some(shot=>shot.id===ingested.id&&shot.ingestState==='synced'), 'Cancel IPC leaves completed clips and receipts in the workspace');
             await click('Commit');
-            await until(()=>js(`!!document.querySelector('[data-review-mode="synced"]') && !!document.getElementById('shot-${ingested.id}')`),'Unselected Commit reviews green cards without removing them');
-            assert.equal(await js(`document.querySelector('[data-review-mode="synced"] span').textContent==='Synced' && document.querySelector('[data-review-mode="synced"] span').classList.contains('text-emerald-300')`),true,'Synced tag is green');
+            await until(()=>js(`!!document.querySelector('[data-review-mode="synced"]') && !!document.getElementById('shot-${ingested.id}')`),'Unselected Commit reviews synced cards without removing them');
+            assert.equal(await js(`document.querySelector('[data-review-mode="synced"] span').textContent==='Synced' && document.querySelector('[data-review-mode="synced"] span').classList.contains('text-blue-300')`),true,'Synced tag is blue');
             await js(`document.querySelector('[data-review-mode="synced"] button').click()`);
             assert.equal(await js(`document.querySelector('[data-review-mode="synced"]').getAttribute('data-review-included')`),'false');
             await click('Cancel');
@@ -501,22 +515,22 @@ if (!process.versions.electron) {
             await js(`window.desktop.ejectClips(['${newId}'])`);
             await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===1 && Array.from(document.querySelectorAll('footer button')).find(button=>button.textContent==='Commit')?.disabled===false`),'Commit remains available when only synced rows need review');
             await click('Commit');
-            await until(()=>js(`document.querySelectorAll('[data-review-included]').length===1 && !!document.querySelector('[data-review-mode="synced"]')`),'Only-green workspace opens a removal review');
+            await until(()=>js(`document.querySelectorAll('[data-review-included]').length===1 && !!document.querySelector('[data-review-mode="synced"]')`),'Only-synced workspace opens a removal review');
             await click('Cancel');
             await js('window.desktop.chooseClips()');
             await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===2 && !!document.getElementById('shot-${newId}')?.querySelector('[data-shot-image]')`),'Restore the excluded new fixture clip');
             await js(`document.getElementById('shot-${newId}').click()`);await click('Commit');
             await until(()=>js(`document.querySelectorAll('[data-review-included]').length===1`),'Selected-only review targets selected new clip');
-            assert.equal(await js(`!!document.querySelector('[data-review-mode="synced"]')`),false,'Selected-only Commit excludes all green cards');
+            assert.equal(await js(`!!document.querySelector('[data-review-mode="synced"]')`),false,'Selected-only Commit excludes all synced cards');
             await click('Cancel');await js(`document.getElementById('shot-${newId}').click()`);
-            await click('Commit');await until(()=>js(`!!document.querySelector('[data-review-mode="synced"]')`),'Review green card for confirmation');
+            await click('Commit');await until(()=>js(`!!document.querySelector('[data-review-mode="synced"]')`),'Review blue card for confirmation');
             await js(`document.querySelector('[data-review-mode="new"] button').click()`);
             await click('Commit');
             await until(()=>js(`!document.querySelector('dialog[open]')&&!document.getElementById('shot-${ingested.id}')`),'Confirming the included Synced row removes only that card');
             assert.equal(await js(`!!document.getElementById('shot-${newId}')`),true,'Excluded new clip remains');
             assert.equal((await js('window.desktop.getIngestStatus()')).active,false,'Synced-only confirmation queues no transfers');
             await js('window.desktop.chooseClips()');
-            await until(()=>js(`!!document.querySelector('[data-shot-status="synced"]')`),'Explicit discovery can restore a green card with its receipt intact');
+            await until(()=>js(`!!document.querySelector('[data-shot-status="synced"]')`),'Explicit discovery can restore a blue card with its receipt intact');
             await window.loadFile(join(__dirname, "../out/renderer/index.html"));
             await until(
                 () => js(`!!document.querySelector('[data-shot-status="synced"]')`),
@@ -524,7 +538,7 @@ if (!process.versions.electron) {
             );
             // A missing configured folder is a critical Library issue, not a raw filesystem failure.
             fs.renameSync(join(root, "library"), join(root, "library-offline"));
-            await js(`document.querySelector('footer button[aria-label="Refresh assets"]').click()`);
+            await js(`document.querySelector('header button[aria-label="Refresh assets"]').click()`);
             await until(
                 () => js(`document.querySelector('dialog[open] h2')?.textContent==='Library unavailable'`),
                 "Missing Library did not show a focused refresh error",
@@ -536,7 +550,7 @@ if (!process.versions.electron) {
             );
             await click("Dismiss");
             fs.renameSync(join(root, "library-offline"), join(root, "library"));
-            await js(`document.querySelector('footer button[aria-label="Refresh assets"]').click()`);
+            await js(`document.querySelector('header button[aria-label="Refresh assets"]').click()`);
             await until(
                 () => js(`document.querySelector('[data-application-level="ready"]')?.textContent==='Ready'`),
                 "Restored Library did not recover app status",
@@ -544,7 +558,7 @@ if (!process.versions.electron) {
             // Externally deleted dummy Library files must become New on an explicit refresh.
             for (const suffix of ["source.mp4", "thumb.jpg", "metadata.json"])
                 fs.unlinkSync(join(root, "library", `${ingested.id}.${suffix}`));
-            await js(`document.querySelector('footer button[aria-label="Refresh assets"]').click()`);
+            await js(`document.querySelector('header button[aria-label="Refresh assets"]').click()`);
             await until(
                 () =>
                     js(
@@ -681,7 +695,7 @@ if (!process.versions.electron) {
                 join(root, "library", `${unprocessed.id}.thumb.jpg`),
             );
             await fs.promises.writeFile(join(root, "library", `${unprocessed.id}.metadata.json`), "{}");
-            await js(`document.querySelector('footer button[aria-label="Refresh assets"]').click()`);
+            await js(`document.querySelector('header button[aria-label="Refresh assets"]').click()`);
             await until(
                 () =>
                     js(
@@ -715,6 +729,7 @@ if (!process.versions.electron) {
                     proxyState: index === 0 ? "ready" : "encoding",
                     proxyLocation: index === 0 ? "library" : undefined,
                     proxyPercent: index === 0 ? undefined : 38,
+                    mediaReadiness: {state:index===0?'committed':'preparing'},
                 })),
             };
             backend.emit("message", {
@@ -733,7 +748,7 @@ if (!process.versions.electron) {
                 "1",
                 "Proxy readiness indicator stays undimmed",
             );
-            assert.equal(await js(`document.querySelector('[data-proxy-location="library"]').classList.contains('bg-emerald-400') && document.querySelector('[data-proxy-spinner] > span > span').classList.contains('border-t-yellow-300')`), true, "Library proxy is green and central encoding wheel is yellow");
+            assert.equal(await js(`document.querySelector('[data-proxy-location="library"]').classList.contains('bg-blue-500') && document.querySelector('[data-proxy-spinner] > span > span').classList.contains('border-t-yellow-300')`), true, "Library proxy is blue and central encoding wheel is yellow");
             assert.equal(
                 await js(`(() => { const dot=document.querySelector('[data-proxy-state="encoding"]'); const proxy=document.querySelector('[data-proxy-spinner] > span'); const transfer=document.querySelector('[data-transfer-spinner] > span'); return dot.classList.contains('border-white/65') && !dot.querySelector('svg') && proxy.getBoundingClientRect().width===transfer.getBoundingClientRect().width && proxy.getBoundingClientRect().width===48; })()`),
                 true,
@@ -744,7 +759,7 @@ if (!process.versions.electron) {
                 42,
                 "Transfer progress is shown on its thumbnail",
             );
-            assert.equal(await js(`document.querySelector('[data-shot-status="processing"] [data-shot-progress]').dataset.workType`), "sync", "Transfer uses the green progress style");
+            assert.equal(await js(`document.querySelector('[data-shot-status="processing"] [data-shot-progress]').dataset.workType`), "commit", "Commit uses the blue progress style");
             assert.equal(await js(`(() => { const preview=document.querySelector('[data-shot-status="queued"] [data-shot-preview]'); const style=getComputedStyle(preview); return style.opacity==='0.45'&&style.filter.includes('grayscale(0.8)')&&getComputedStyle(preview,'::after').backgroundColor==='rgba(0, 0, 0, 0.2)'; })()`), true, 'Queued proxy encoding retains locked thumbnail styling');
             assert.equal(
                 await js(
@@ -761,7 +776,7 @@ if (!process.versions.electron) {
                 "Card progress uses the larger height",
             );
             shotsOverride = { ...shotsOverride, revision: shotsOverride.revision + 1, shots: shotsOverride.shots.map((shot, index) => ({
-                ...shot, proxyState: index === 0 ? "missing" : "ready", proxyLocation: index === 0 ? undefined : "cache",
+                ...shot, proxyState: index === 0 ? "missing" : "ready", proxyLocation: index === 0 ? undefined : "cache", mediaReadiness:{state:index===0?"preparing":"ready"},
             })) };
             backend.emit("message", { type: "shots:changed", change: { revision: shotsOverride.revision, vocabularyRevision: shotsOverride.revision } });
             await until(() => js(`!!document.querySelector('[data-proxy-location="cache"]')`), "Local proxy indicator missing");
@@ -863,11 +878,11 @@ if (!process.versions.electron) {
                 (await window.webContents.capturePage()).toPNG(),
             );
             assert.ok(
-                await js(`!!document.querySelector('footer [aria-label="Stop processing"]')`),
+                await js(`!!document.querySelector('header [aria-label="Stop processing"]')`),
                 "Footer offers Stop during transfers",
             );
-            assert.ok(await js(`!!document.querySelector('[data-work-progress] button[aria-label="Stop processing"]')`), 'Work control is beside footer task counts');
-            await js(`document.querySelector('footer [aria-label="Stop processing"]').click()`);
+            assert.equal(await js(`!!document.querySelector('[data-work-progress] button')`),false,'Work control is in the toolbar, not the footer');
+            await js(`document.querySelector('header [aria-label="Stop processing"]').click()`);
             await until(
                 () =>
                     js(
@@ -876,13 +891,13 @@ if (!process.versions.electron) {
                 "Stop-all confirmation missing",
             );
             await click("Cancel");
-            assert.equal(await js(`document.querySelector('dialog[open]')===null && !!document.querySelector('footer [aria-label="Stop processing"]')`), true, 'Cancel preserves active work');
-            await js(`document.querySelector('footer [aria-label="Stop processing"]').click()`);
+            assert.equal(await js(`document.querySelector('dialog[open]')===null && !!document.querySelector('header [aria-label="Stop processing"]')`), true, 'Cancel preserves active work');
+            await js(`document.querySelector('header [aria-label="Stop processing"]').click()`);
             await click("Stop");
             await until(
                 () =>
                     js(
-                        `!document.querySelector('dialog[open]') && !!document.querySelector('footer [aria-label="Refresh assets"]')`,
+                        `!document.querySelector('dialog[open]') && !!document.querySelector('header [aria-label="Refresh assets"]')`,
                     ),
                 "Footer did not return to Refresh after stopping",
             );
@@ -893,10 +908,10 @@ if (!process.versions.electron) {
             );
             statusOverride={...statusOverride,revision:statusOverride.revision+1,work:{...statusOverride.work,busy:true,encoding:false,queued:0}};
             backend.emit('message',{type:'ingestion:changed',status:statusOverride});
-            await until(()=>js(`!!document.querySelector('footer [aria-label="Refresh assets"]') && !document.querySelector('footer [aria-label="Stop processing"]')`),'Thumbnail-only activity cannot be stopped from the footer');
-            await js(`document.querySelector('footer [aria-label="Refresh assets"]').click()`);
+            await until(()=>js(`!!document.querySelector('header [aria-label="Refresh assets"]') && !document.querySelector('header [aria-label="Stop processing"]')`),'Thumbnail-only activity cannot be stopped from the footer');
+            await js(`document.querySelector('header [aria-label="Refresh assets"]').click()`);
             await until(
-                () => js(`!document.querySelector('footer [aria-label="Refresh assets"]').disabled`),
+                () => js(`!document.querySelector('header [aria-label="Refresh assets"]').disabled`),
                 "Refresh did not finish",
             );
             assert.equal(

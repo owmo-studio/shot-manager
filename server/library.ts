@@ -13,7 +13,7 @@ const execute = promisify(execFile);
 export interface LibraryLocation { path: string; identity: string; mount: string }
 export interface LibraryPresence { existing: Set<string>; complete: Set<string>; proxies: Set<string> }
 
-export interface LibraryListing extends LibraryPresence { assets: Map<string, string[]> }
+export interface LibraryListing extends LibraryPresence { assets: Map<string, string[]>; regularAssets: Set<string> }
 
 // Stream one flat listing and index by clip, rather than retaining all Dirents or
 // searching the full Library once per reviewed clip. No asset contents are opened.
@@ -25,6 +25,7 @@ export async function indexLibraryEntries(entries: AsyncIterable<Pick<Dirent, 'n
     const assets = new Map<string, string[]>();
     const core = new Map<string, { sources: number; thumbnail: boolean; metadata: boolean }>();
     const proxies = new Set<string>();
+    const regularAssets = new Set<string>();
     for await (const entry of entries) {
         const match = parseLibraryAssetName(entry.name);
         if (!match) continue;
@@ -32,6 +33,7 @@ export async function indexLibraryEntries(entries: AsyncIterable<Pick<Dirent, 'n
         names.push(entry.name); assets.set(match.id, names);
         // Non-files still participate in conflict detection, but never prove presence.
         if (!entry.isFile()) continue;
+        regularAssets.add(entry.name);
         if (match.role === 'proxy' && match.extension === 'mov') { proxies.add(match.id); continue; }
         if (match.role !== 'source' && !(match.role === 'thumb' && match.extension === 'jpg') &&
             !(match.role === 'metadata' && match.extension === 'json')) continue;
@@ -43,7 +45,7 @@ export async function indexLibraryEntries(entries: AsyncIterable<Pick<Dirent, 'n
     }
     const complete = new Set<string>();
     for (const [id, asset] of core) if (asset.sources === 1 && asset.thumbnail && asset.metadata) complete.add(id);
-    return { assets, proxies, existing: new Set(core.keys()), complete };
+    return { assets, proxies, existing: new Set(core.keys()), complete, regularAssets };
 }
 
 export function within(parent: string, child: string) {

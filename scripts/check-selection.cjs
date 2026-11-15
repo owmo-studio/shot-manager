@@ -612,7 +612,7 @@ if (!process.versions.electron) {
             assert.equal(await js(`document.querySelector('button[aria-label="Reverse order"]')`), null);
             assert.equal(await js(`document.querySelector('main > section header')`), null);
             assert.ok(
-                await js(`document.querySelector('footer').textContent.includes('6 clips to commit · 0 skipped')`),
+                await js(`document.querySelector('footer').textContent.includes('6 clips total')`),
             );
             assert.equal(await js(`document.querySelectorAll('[data-shot-card] button[aria-label^="Inspect "]').length`), 6);
             assert.equal(await js(`document.querySelectorAll('button[aria-label^="Skip Clip "]').length`), 0);
@@ -705,7 +705,7 @@ if (!process.versions.electron) {
                 await js(
                     `document.querySelector('#clip-inspector header input[aria-label="Skip selected clips"]').closest('label').textContent.trim()`,
                 ),
-                "Skip",
+                "",
             );
             assert.equal(
                 await js(
@@ -754,7 +754,7 @@ if (!process.versions.electron) {
             assert.equal(await js(`document.querySelector('button[aria-label="Inspect Clip 1.mp4"]').disabled`), false);
             assert.equal(await js(`document.querySelectorAll('button[aria-label^="Skip Clip "]').length`), 0);
             assert.ok(
-                await js(`document.querySelector('footer').textContent.includes('1 selected clip to commit · 1 skipped')`),
+                await js(`document.querySelector('footer').textContent.includes('2 clips selected (1 skipped)')`),
             );
 
             assert.equal(
@@ -809,7 +809,7 @@ if (!process.versions.electron) {
                 await js(`document.querySelector('[aria-label="Total clips"]').textContent.trim()`),
                 "6",
             );
-            assert.ok(await js(`document.querySelector('footer').textContent.includes('1 skipped')`));
+            assert.ok(await js(`document.querySelector('[aria-label="Clip selection summary"]').textContent.includes('6 clips total (1 skipped)')`));
             await inspect(5);
             await arrow("Down");
             assert.deepEqual(await selected(), [5]);
@@ -879,7 +879,7 @@ if (!process.versions.electron) {
             await push(collection.shots.map((shot) => ({ ...shot, editable: true })));
             assert.deepEqual(await skipped(), [1]);
             await push(collection.shots.filter((shot) => shot.filename !== "Clip 1.mp4"));
-            await wait(`document.querySelector('footer').textContent.includes('0 skipped')`);
+            await wait(`document.querySelector('[aria-label="Clip selection summary"]').textContent.trim()==='5 clips total'`);
             assert.deepEqual(await selected(), []);
             await inspect(2);
             await check(2);
@@ -900,7 +900,7 @@ if (!process.versions.electron) {
                 await js(`document.querySelector('[aria-label="Total clips"]').textContent.trim()`),
                 "3",
             );
-            await wait(`document.querySelector('footer').textContent.includes('0 skipped')`);
+            await wait(`document.querySelector('[aria-label="Clip selection summary"]').textContent.trim()==='3 clips total'`);
             assert.deepEqual(await selected(), []);
             assert.equal(
                 await js(
