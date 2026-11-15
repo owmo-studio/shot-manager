@@ -22,6 +22,12 @@
 
 body {
   margin: 0;
+}
+
+/* Apply directly to modal/top-layer content as well as the main window. */
+*,
+*::before,
+*::after {
   user-select: none;
   -webkit-user-select: none;
 }
@@ -170,8 +176,11 @@ body {
 input,
 textarea,
 [contenteditable=""],
+[contenteditable=""] *,
 [contenteditable="true"],
-[contenteditable="plaintext-only"] {
+[contenteditable="true"] *,
+[contenteditable="plaintext-only"],
+[contenteditable="plaintext-only"] * {
   user-select: text;
   -webkit-user-select: text;
 }

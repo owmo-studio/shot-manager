@@ -273,7 +273,7 @@ export function Configuration({ workControlRef }: { workControlRef?: Ref<HTMLDiv
                             <p
                                 aria-label="Configured Library location"
                                 role={libraryError ? "alert" : undefined}
-                                className={`min-w-0 flex-1 break-all select-text text-sm leading-5 ${draftLibraryPath && !libraryError ? "text-zinc-400" : "text-red-400"}`}
+                                className={`min-w-0 flex-1 break-all text-sm leading-5 ${draftLibraryPath && !libraryError ? "text-zinc-400" : "text-red-400"}`}
                             >
                                 {libraryError ??
                                     draftLibraryPath ??
