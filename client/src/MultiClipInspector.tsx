@@ -3,14 +3,15 @@ import { hasPendingCommit } from "./clipState";
 import { AttributeFields } from "./AttributeFields";
 import { EjectButton } from "./EjectButton";
 import { SkipSelection } from "./SkipSelection";
-import { SyncButton, DeletePlaceholder } from './SyncButton';
+import { SyncButton } from './SyncButton';
+import { DeleteButton } from './DeleteButton';
 import { inspectorButton } from './buttonStyles';
 import { ThumbnailIcon } from './ThumbnailIcon';
 import { ResizableInspector } from "./ResizableInspector";
 import type { ShotCollection, VideoShot } from "../../shared/shots";
 
-export function MultiClipInspector({ shots, onEject, ejectBusy, skippedCount, disabled, width, onResize, onSkipChange, onOrganizationUpdated }: {
-    shots: VideoShot[]; onEject: () => void; ejectBusy: boolean; skippedCount: number; disabled: boolean; width: number; onResize: (width: number) => void;
+export function MultiClipInspector({ shots, onEject, onDelete, ejectBusy, skippedCount, disabled, width, onResize, onSkipChange, onOrganizationUpdated }: {
+    shots: VideoShot[]; onEject: () => void; onDelete: () => void; ejectBusy: boolean; skippedCount: number; disabled: boolean; width: number; onResize: (width: number) => void;
     onSkipChange: (skipped: boolean) => void;
     onOrganizationUpdated: (collection: ShotCollection) => void;
 }) {
@@ -27,7 +28,7 @@ export function MultiClipInspector({ shots, onEject, ejectBusy, skippedCount, di
                 {mode === 'import' ? <>
                     <SkipSelection count={count} skippedCount={skippedCount} disabled={disabled} onChange={onSkipChange} />
                     <EjectButton cancel={cancelCount > 0} count={cancelCount || count} busy={ejectBusy} onClick={onEject} />
-                </> : <><SyncButton shots={shots} /><DeletePlaceholder /></>}
+                </> : <><SyncButton shots={shots} /><DeleteButton shots={shots} onClick={onDelete} /></>}
             </div>
         </header>
         <ul aria-label="Selected clips" className="mb-4 max-h-40 overflow-y-auto rounded-lg border border-white/8 bg-black/10 py-1 text-xs text-zinc-400 divide-y divide-white/5">

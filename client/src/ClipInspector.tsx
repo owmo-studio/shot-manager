@@ -12,7 +12,8 @@ import type { PreviewHandle } from "./PreviewPlayer";
 import { AttributeFields } from "./AttributeFields";
 import { EjectButton } from "./EjectButton";
 import { SkipSelection } from "./SkipSelection";
-import { SyncButton, DeletePlaceholder } from './SyncButton';
+import { SyncButton } from './SyncButton';
+import { DeleteButton } from './DeleteButton';
 import { inspectorButton } from './buttonStyles';
 import { ThumbnailIcon } from './ThumbnailIcon';
 
@@ -48,6 +49,7 @@ const emptyShot: VideoShot = {
 export function ClipInspector({
     shot: selectedShot,
     onEject,
+    onDelete,
     ejectBusy,
     width,
     onResize,
@@ -56,6 +58,7 @@ export function ClipInspector({
 }: {
     shot?: VideoShot;
     onEject: () => void;
+    onDelete: () => void;
     ejectBusy: boolean;
     width: number;
     onResize: (width: number) => void;
@@ -176,7 +179,7 @@ export function ClipInspector({
                             <SkipSelection count={empty ? 0 : 1} skippedCount={skipped ? 1 : 0} disabled={empty || locked} onChange={onSkipChange} />
                             <EjectButton cancel={hasPendingCommit(shot)} count={empty ? 0 : 1} busy={ejectBusy} onClick={onEject} />
                         </>}
-                        {mode === 'library' && <><SyncButton shots={empty ? [] : [shot]} /><DeletePlaceholder /></>}
+                        {mode === 'library' && <><SyncButton shots={empty ? [] : [shot]} /><DeleteButton shots={empty ? [] : [shot]} onClick={onDelete} /></>}
                     </div>
                 </header>
                 {thumbnailError && (

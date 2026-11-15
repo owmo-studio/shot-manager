@@ -3,14 +3,9 @@ import type { VideoShot } from '../../shared/shots';
 import type { SyncReview } from '../../shared/sync';
 import { errorMessage } from '../../shared/errors';
 import { ModalDialog } from './ModalDialog';
-import { primaryButton, secondaryButton, inspectorButton, inspectorDangerButton } from './buttonStyles';
+import { primaryButton, secondaryButton, inspectorButton } from './buttonStyles';
 
 const sizeLabel = (bytes: number) => bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.ceil(bytes / 1000)} KB`;
-export function DeletePlaceholder() {
-    return <button disabled aria-label="Delete" title="Delete is not available yet" className={inspectorDangerButton}>
-        <svg aria-hidden="true" className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></svg>
-    </button>;
-}
 export function SyncButton({ shots }: { shots: VideoShot[] }) {
     const [selection, setSelection] = useState<VideoShot[] | null>(null);
     const [review, setReview] = useState<SyncReview | null>(null);

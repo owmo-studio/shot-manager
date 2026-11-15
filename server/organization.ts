@@ -270,6 +270,14 @@ export class OrganizationStore {
         });
     }
 
+    forget(fingerprints: VideoFingerprint[]) {
+        return this.serialize(async () => {
+            const next = await this.nextState();
+            for (const fingerprint of fingerprints) delete next.drafts[organizationKey(fingerprint)];
+            await this.save(next);
+        });
+    }
+
     matchesDrafts(expected: Record<string, ShotOrganization>, thumbnails?: Record<string, ThumbnailDraft | undefined>) {
         return Object.entries(expected).every(([key, data]) => JSON.stringify(this.state?.drafts[key]?.data) === JSON.stringify(data)) &&
             (!thumbnails || Object.entries(thumbnails).every(([key, draft]) => JSON.stringify(this.state?.drafts[key]?.thumbnailDraft) === JSON.stringify(draft)));

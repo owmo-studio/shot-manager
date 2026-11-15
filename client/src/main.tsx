@@ -23,6 +23,7 @@ import { ShotGrid } from "./ShotGrid";
 import { scrollShotIntoView } from "./scrollShotIntoView";
 import { ErrorDialog } from "./ErrorDialog";
 import { ClipActionDialog } from "./ClipActionDialog";
+import { LibraryDeleteDialog } from "./DeleteButton";
 import { DirectoryUnavailableDialog } from "./DirectoryUnavailableDialog";
 import "./styles.css";
 
@@ -161,6 +162,7 @@ function App() {
     const [workspaceError, setWorkspaceError] = useState<string | null>(null);
     const refreshFailed = useRef(false);
     const [communicationError, setCommunicationError] = useState(false);
+    const [deleteTargets, setDeleteTargets] = useState<VideoShot[] | null>(null);
     const [ejectTargets, setEjectTargets] = useState<VideoShot[] | null>(null);
     const [ejectAction, setEjectAction] = useState<"eject" | "stop">("eject");
     const [ejectError, setEjectError] = useState<string | null>(null);
@@ -461,12 +463,14 @@ function App() {
                 </section>
                     {selectedShots.length > 1 ? <MultiClipInspector key={tab}
                         onOrganizationUpdated={receiveView}
+                        onDelete={() => setDeleteTargets([...selectedShots])}
                         onEject={() => requestEject(selectedShots.map(shot => shot.id))} ejectBusy={ejectBusy}
                         shots={orderedShots(selectedShots, newestFirst)} skippedCount={selectedSkippedCount} disabled={selectedLocked}
                         width={inspectorWidth} onResize={setInspectorWidth}
                         onSkipChange={(skipped) => changeSkip(selectedShots.map((shot) => shot.id), skipped)}
                     /> : <ClipInspector
                         onOrganizationUpdated={receiveView}
+                        onDelete={() => setDeleteTargets([...selectedShots])}
                         onEject={() => requestEject(selectedShots.map(shot => shot.id))} ejectBusy={ejectBusy}
                         key={`${tab}:${inspectedShot?.id ?? "empty"}`}
                         shot={inspectedShot}
@@ -475,6 +479,7 @@ function App() {
                         onSkipChange={(skipped) => changeSkip(selectedShots.map((shot) => shot.id), skipped)}
                     />}
             </main>
+            {deleteTargets && <LibraryDeleteDialog shots={deleteTargets} onClose={() => setDeleteTargets(null)} />}
             {ejectTargets && <ClipActionDialog key={ejectAction} action={ejectAction} shots={ejectTargets} busy={ejectBusy} error={ejectError}
                 onCancel={() => { if (!ejectBusy) setEjectTargets(null); }}
                 onConfirm={() => void confirmClipAction()} />}

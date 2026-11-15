@@ -95,6 +95,10 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     schema: { body: { type: 'object', required: ['token', 'shotIds'], additionalProperties: false, properties: { shotIds: ids, token: { type: 'string', maxLength: 64 } } } }
   }, request => catalogue.submit(request.body.token, request.body.shotIds))
   server.post<{ Body: { shotIds: string[] } }>('/api/library/revert', { schema: clipIdsBody }, request => catalogue.revert(request.body.shotIds))
+  server.post<{ Body: { shotIds: string[] } }>('/api/library/delete/review', { schema: clipIdsBody }, request => catalogue.previewDelete(request.body.shotIds))
+  server.post<{ Body: { token: string; shotIds: string[] } }>('/api/library/delete', {
+    schema: { body: { type: 'object', required: ['token', 'shotIds'], additionalProperties: false, properties: { shotIds: ids, token: { type: 'string', minLength: 1, maxLength: 64 } } } }
+  }, request => catalogue.deleteClips(request.body.token, request.body.shotIds))
   server.patch<{ Body: { shotIds: string[]; action: OrganizationAction } }>('/api/library/organization', {
     schema: { body: { type: 'object', required: ['shotIds', 'action'], additionalProperties: false, properties: { shotIds: ids,
       action: { type: 'object', required: ['field', 'operation', 'value'], additionalProperties: false, properties: {

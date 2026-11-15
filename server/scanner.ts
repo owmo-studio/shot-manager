@@ -7,8 +7,8 @@ import type { IngestionReceipt, IngestState, ProxyState } from "../shared/ingest
 import { ingestionSignature } from './processingState';
 export { ingestionSignature } from './processingState';
 import type { ClipAttributes, OrganizationAction, TagVocabulary } from "../shared/organization";
-import { organizationKey } from "../shared/organization";
-import type { ShotChange, ShotCollection, ShotDetails, DiscoveryScan, VideoShot, VideoMetadata } from "../shared/shots";
+import { emptyOrganization, organizationKey } from "../shared/organization";
+import type { ShotChange, ShotCollection, ShotDetails, DiscoveryScan, VideoShot, VideoMetadata, VideoFingerprint } from "../shared/shots";
 import type { WorkspaceRestore } from "../shared/shots";
 import type { DiscoveredShot } from "./discovery";
 import { discoverShots } from "./discovery";
@@ -213,6 +213,26 @@ export class ShotScanner {
             }
         }
         if (changed) this.publish();
+    }
+
+    async forgetLibraryMetadata(fingerprints: VideoFingerprint[]) {
+        await this.organization.forget(fingerprints);
+        for (const { value: id } of fingerprints) {
+            const shot = this.clips.get(id)?.result.shot;
+            if (shot) { shot.organization = emptyOrganization(); shot.ingestion = undefined; }
+        }
+        this.publish();
+    }
+
+    removeLibraryPresence(path: string, ids: string[]) {
+        if (this.ingestLibrary !== path) return;
+        for (const id of ids) {
+            this.libraryPresence?.existing.delete(id);
+            this.libraryPresence?.complete.delete(id);
+            this.libraryPresence?.proxies.delete(id);
+            if (this.proxies.get(id)?.proxyLocation === 'library') this.proxies.delete(id);
+        }
+        this.publish();
     }
 
     retireCommitted(id: string) {

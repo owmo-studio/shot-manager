@@ -419,7 +419,7 @@ if (!process.versions.electron) {
             await until(async()=>!(await js('window.desktop.getIngestStatus()')).active,'Library reset Commit');
             await until(()=>js(`!document.querySelector('[data-shot-status="changes-pending"]')`),'Reset Library draft settles');
             assert.equal(await js(`Array.from(document.querySelectorAll('#clip-inspector header button')).map(el=>el.getAttribute('aria-label')).join(',')`),'Set current frame as thumbnail,Export,Delete','Library icon button order');
-            assert.equal(await js(`document.querySelector('#clip-inspector button[aria-label="Delete"]').disabled`),true,'Delete is only a disabled placeholder');
+            assert.equal(await js(`document.querySelector('#clip-inspector button[aria-label="Delete"]').disabled`),false,'Delete is enabled for editable Library clips');
             await click('Export');
             await until(()=>js(`document.querySelectorAll('[data-sync-included]').length===1 && document.querySelector('dialog[open]').textContent.includes(${JSON.stringify(join(root,'destination'))})`),'Export reviews selected Library clip and native-picked destination');
             assert.equal(await js(`document.querySelector('dialog[open]').textContent.includes('Direct Copy')`),false,'No redundant Export format note');
@@ -1024,10 +1024,55 @@ if (!process.versions.electron) {
             await until(()=>js(`!!document.querySelector('#eject-title')`),'Bulk Eject confirmation missing');
             await js(`document.querySelector('button[aria-label="Confirm eject clips"]').click()`);
             await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===0`),'Bulk Eject did not clear selected cards');
+            // Delete uses real IPC/backend operations against this temporary Library only.
+            // Repair the deliberately malformed second JSON used earlier, giving
+            // the deletion check two valid, independently selected Library rows.
+            const deleteFixture=JSON.parse(fs.readFileSync(join(root,'library',`${publishedId}.metadata.json`),'utf8'));
+            fs.writeFileSync(join(root,'library',`${unprocessed.id}.metadata.json`),JSON.stringify({...deleteFixture,
+                id:unprocessed.id,fingerprint:unprocessed.fingerprint,originalFilename:unprocessed.filename,bytes:unprocessed.bytes,metadata:unprocessed.metadata}));
+            fs.copyFileSync(join(root,'library',`${publishedId}.proxy.mov`),join(root,'library',`${unprocessed.id}.proxy.mov`));
+            await click('Library');
+            await js('window.desktop.refreshCatalogue()');
+            await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===2`),'Library clips available for Delete');
+            const deleteIds=await js(`window.desktop.getLibrary().then(value=>value.shots.map(shot=>shot.id))`);
+            const originalCount=fs.readdirSync(join(root,'source')).length;
+            await js(`document.getElementById('shot-${deleteIds[0]}').click()`);
+            await until(()=>js(`!!document.querySelector('#clip-inspector button[aria-label="Delete"]:not(:disabled)')`),'Delete action is ready');
+            await click('Delete');
+            await until(()=>js(`!!document.querySelector('#delete-title') && !!document.querySelector('[aria-label="Confirm delete clips"]:not(:disabled)')`),'Delete confirmation reviews selected clip');
+            assert.equal(await js(`document.querySelector('[aria-label="Affected clips"]').children.length`),1,'Delete lists the selected clip');
+            await click('Cancel');
+            assert.ok(fs.existsSync(join(root,'library',`${deleteIds[0]}.metadata.json`)),'Cancelling Delete keeps Library files');
+            await js(`document.getElementById('shot-${deleteIds[1]}').dispatchEvent(new MouseEvent('click',{bubbles:true,metaKey:true}))`);
+            await until(()=>js(`!!document.querySelector('.multi-clip-inspector button[aria-label="Delete"]:not(:disabled)')`),'Multi-selection Delete is ready');
+            await click('Delete');
+            await until(()=>js(`!!document.querySelector('[aria-label="Confirm delete clips"]:not(:disabled)')`),'Bulk Delete confirmation ready');
+            assert.equal(await js(`document.querySelector('[aria-label="Affected clips"]').children.length`),deleteIds.length,'Delete lists every selected clip');
+            assert.equal(await js(`Array.from(document.querySelectorAll('[data-delete-included] span')).every(tag=>tag.textContent==='Delete'&&tag.classList.contains('text-red-300'))`),true,'Delete rows have red action tags');
+            await js(`Array.from(document.querySelectorAll('[data-delete-included] button')).forEach(button=>button.click())`);
+            assert.equal(await js(`document.querySelector('[aria-label="Confirm delete clips"]').disabled`),true,'Excluding every row disables Delete');
+            assert.equal(await js(`document.querySelectorAll('[data-delete-included="false"]').length`),2,'Excluded rows stay visible');
+            await js(`document.querySelector('[aria-label="Affected clips"] button').click()`);
+            assert.equal(await js(`document.querySelector('[aria-label="Confirm delete clips"]').disabled`),false,'Restoring a row enables Delete');
+            const deletedFirst=await js(`document.querySelector('[data-delete-included="true"] p').textContent`);
+            await js(`document.querySelector('[aria-label="Confirm delete clips"]').click()`);
+            await until(()=>js(`!document.querySelector('dialog[open]') && document.querySelectorAll('[data-shot-card]').length===1`),'Delete submits only included clips');
+            const kept=await js(`window.desktop.getLibrary().then(value=>value.shots[0])`);
+            assert.notEqual(kept.filename,deletedFirst);
+            assert.ok(fs.existsSync(join(root,'library',kept.relativePath)),'Excluded clip retains Library files');
+            assert.ok(Object.keys(JSON.parse(fs.readFileSync(join(root,'profile','Shot Manager Cache','metadata.json'),'utf8')).drafts).some(key=>key.endsWith(kept.id)),'Excluded clip retains local metadata');
+            await click('Delete');
+            await until(()=>js(`!!document.querySelector('[aria-label="Confirm delete clips"]:not(:disabled)')`),'Remaining clip can be reviewed again');
+            await js(`document.querySelector('[aria-label="Confirm delete clips"]').click()`);
+            await until(()=>js(`!document.querySelector('dialog[open]') && document.querySelectorAll('[data-shot-card]').length===0`),'Confirmed Delete removes Library cards');
+            for(const id of deleteIds) assert.ok(!fs.readdirSync(join(root,'library')).some(name=>name.startsWith(id+'.')),'Delete removes associated Library assets');
+            const remainingDrafts=JSON.parse(fs.readFileSync(join(root,'profile','Shot Manager Cache','metadata.json'),'utf8')).drafts;
+            assert.ok(Object.keys(remainingDrafts).every(key=>!deleteIds.some(id=>key.endsWith(id))),'Delete clears selected local metadata');
+            assert.equal(fs.readdirSync(join(root,'source')).length,originalCount,'Delete preserves original source files');
             await fs.promises.writeFile(join(root, "validated"), "passed");
             clearTimeout(timer);
             console.log(
-                "PASS: native Resolve Export layout/JSON/CSV, destination/review/exclusion, pending-edit protection and multi-selection, inspector button order and disabled Delete, Library Thumb capture/Commit/Revert, media preservation, browsing/playback, independent filters, shared Commit, Import retirement/rediscovery, Cache/configuration, ingestion, notifications and unified Stop.",
+                "PASS: native Resolve Export layout/JSON/CSV, destination/review/exclusion, pending-edit protection and multi-selection, inspector button order and confirmed multi-clip Delete, Library Thumb capture/Commit/Revert, media preservation, browsing/playback, independent filters, shared Commit, Import retirement/rediscovery, Cache/configuration, ingestion, notifications and unified Stop.",
             );
             app.quit();
         } catch (error) {

@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, mkdtemp, open, readFile, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { LibraryCollection, LibraryMetadata } from '../shared/library';
+import type { LibraryCollection, LibraryMetadata, LibraryDeleteReview, LibraryDeleteResult } from '../shared/library';
 import { libraryAssetName, parseLibraryAssetName, validateLibraryMetadata } from '../shared/library';
 import type { IngestReview } from '../shared/ingestion';
 import { ingestAttributes } from '../shared/ingestion';
@@ -18,6 +18,8 @@ import type { IngestQueue } from './ingestion';
 import { isJpeg } from './thumbnails';
 import { rsyncFile } from './rsync';
 import { mediaReadiness } from '../shared/mediaReadiness';
+import { listDeleteAssets } from './libraryDeletion';
+import type { DeleteAsset } from './libraryDeletion';
 
 interface CatalogueEntry { metadata: LibraryMetadata; source: string | null; thumbnail: boolean; proxy: boolean; thumbnailRevision?: number; thumbnailDigest?: string }
 interface CatalogueState { path: string | null; refreshedAt?: string; entries: CatalogueEntry[] }
@@ -34,6 +36,9 @@ export class LibraryCatalogue {
     private verified = new Map<string, { path: string; error?: string }>();
     private review?: { token: string; location: LibraryLocation; generation: number; created: number; entries: { id: string; attributes: ReturnType<typeof ingestAttributes>; thumbnailDigest?: string }[] };
     private transfer = rsyncFile;
+    private removeAsset = unlink;
+    private deleteReview?: { token: string; location: LibraryLocation; generation: number; created: number;
+        entries: { metadata: LibraryMetadata; assets: DeleteAsset[] }[] };
     onChange?: () => void;
     constructor(private scanner: ShotScanner, private configured: () => Promise<string | null>,
         private inspect: () => Promise<LibraryLocation>, private queue: IngestQueue, private file?: string,
@@ -188,6 +193,82 @@ export class LibraryCatalogue {
     private async validateLocation(expected: LibraryLocation) {
         const current = await this.inspect();
         if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('The Library folder or mounted volume changed.');
+    }
+
+    previewDelete(ids: string[]): Promise<LibraryDeleteReview> {
+        return this.serialize(async () => {
+            await this.load();
+            if (!ids.length || new Set(ids).size !== ids.length || ids.some(id => !/^[a-f0-9]{64}$/.test(id))) throw new Error('Invalid Delete selection.');
+            const entries = this.selected(ids);
+            if (!this.scanner.canEditLibrary(ids)) throw new Error('Stop work on these clips before deleting them.');
+            const generation = this.queue.workRevision;
+            const location = await this.inspect();
+            if (this.state.path !== location.path) throw new Error('Library changed. Refresh before deleting clips.');
+            const assets = await listDeleteAssets(location, ids);
+            await this.validateLocation(location);
+            if (!this.scanner.canEditLibrary(ids) || generation !== this.queue.workRevision) throw new Error('Clips changed. Review Delete again.');
+            this.deleteReview = { token: randomUUID(), location, generation, created: Date.now(),
+                entries: entries.map(entry => ({ metadata: entry.metadata, assets: assets.get(entry.metadata.id)! })) };
+            return { token: this.deleteReview.token, clips: entries.map(({ metadata }) => ({ id: metadata.id, filename: metadata.originalFilename })) };
+        });
+    }
+
+    deleteClips(token: string, ids: string[]): Promise<LibraryDeleteResult> {
+        return this.serialize(async () => {
+            await this.load();
+            const review = this.deleteReview;
+            if (!review || review.token !== token || Date.now() - review.created > 30 * 60_000 || review.generation !== this.queue.workRevision) throw new Error('Review Delete again.');
+            if (!ids.length || new Set(ids).size !== ids.length || ids.some(id => !review.entries.some(entry => entry.metadata.id === id))) throw new Error('Invalid reviewed Delete selection.');
+            const entries = review.entries.filter(entry => ids.includes(entry.metadata.id));
+            if (!this.scanner.canEditLibrary(ids)) throw new Error('Stop work on these clips before deleting them.');
+            this.scanner.lockLibraryCommit(ids);
+            try {
+                await this.validateLocation(review.location);
+                const current = await listDeleteAssets(review.location, ids);
+                // Preflight the whole selection before deleting any files.
+                if (this.state.path !== review.location.path || entries.some(entry => JSON.stringify(entry.assets) !== JSON.stringify(current.get(entry.metadata.id)))) throw new Error('Library files changed. Review Delete again.');
+                await this.assertWritable?.(); // Local metadata must be writable too.
+                this.deleteReview = undefined;
+                const complete: typeof review.entries = [];
+                const result: LibraryDeleteResult = { deleted: [], errors: [] };
+                for (const entry of entries) {
+                    const { id, originalFilename: filename } = entry.metadata;
+                    try {
+                        // Keep the catalogue's publication marker until media deletion succeeds.
+                        const files = [...entry.assets].sort((a, b) => Number(a.name === `${id}.metadata.json`) - Number(b.name === `${id}.metadata.json`));
+                        for (const asset of files) {
+                            await this.validateLocation(review.location);
+                            const path = join(review.location.path, asset.name);
+                            if (await libraryFileIdentity(path) !== asset.identity) throw new Error('Library file changed. Review Delete again.');
+                            await this.removeAsset(path);
+                        }
+                        complete.push(entry);
+                    } catch (error) {
+                        const message = error instanceof Error ? error.message : String(error);
+                        this.verified.set(id, { path: review.location.path, error: `Delete incomplete: ${message}` });
+                        result.errors.push({ id, filename, message });
+                    }
+                }
+                if (complete.length) {
+                    const deleted = complete.map(entry => entry.metadata.id);
+                    try {
+                        await this.scanner.forgetLibraryMetadata(complete.map(entry => entry.metadata.fingerprint));
+                        await this.save({ ...this.state, entries: this.state.entries.filter(entry => !deleted.includes(entry.metadata.id)) });
+                        for (const id of deleted) this.verified.delete(id);
+                        result.deleted = deleted;
+                    } catch (error) {
+                        for (const entry of complete) {
+                            const message = `Library files were deleted, but local metadata could not be cleared: ${error instanceof Error ? error.message : String(error)}`;
+                            this.verified.set(entry.metadata.id, { path: review.location.path, error: message });
+                            result.errors.push({ id: entry.metadata.id, filename: entry.metadata.originalFilename, message });
+                        }
+                    }
+                    this.queue.libraryDeleted(review.location.path, deleted);
+                }
+                this.changed();
+                return result;
+            } finally { this.scanner.unlockIngest(ids); this.changed(); }
+        });
     }
     async published(metadata: LibraryMetadata, location: LibraryLocation, names: string[]) {
         return this.serialize(async () => {

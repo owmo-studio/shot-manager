@@ -232,6 +232,18 @@ if (!app.requestSingleInstanceLock()) {
       await flushDrafts()
       return backendRequest('/api/library/commit', { method: 'POST', body: JSON.stringify({ token: reviewToken, shotIds }) })
     })
+    handle('library:delete-review', async (event, value: unknown) => {
+      requireMainWindow(event); const shotIds = validateIngestIds(value)
+      await flushDrafts()
+      return organizationWrites.run(() => backendRequest('/api/library/delete/review', { method: 'POST', body: JSON.stringify({ shotIds }) }))
+    })
+    handle('library:delete', async (event, token: unknown, value: unknown) => {
+      requireMainWindow(event); const shotIds = validateIngestIds(value)
+      if (typeof token !== 'string' || !token || token.length > 64) throw new Error('Invalid Delete review')
+      await flushDrafts()
+      // Serialize with Cache clearing and location changes, as well as draft writes.
+      return organizationWrites.run(() => backendRequest('/api/library/delete', { method: 'POST', body: JSON.stringify({ token, shotIds }) }))
+    })
     handle('library:update', (event, value: unknown, action: OrganizationAction) => {
       requireMainWindow(event); const shotIds = validateIngestIds(value); const normalized = validateOrganizationAction(action)
       if (normalized.field === 'skip') throw new Error('Skip is only available in Import')

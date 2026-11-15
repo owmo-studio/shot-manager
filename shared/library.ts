@@ -43,6 +43,15 @@ export interface LibraryCollection extends ShotCollection {
     warnings: string[];
 }
 
+export interface LibraryDeleteReview {
+    token: string;
+    clips: { id: string; filename: string }[];
+}
+export interface LibraryDeleteResult {
+    deleted: string[];
+    errors: { id: string; filename: string; message: string }[];
+}
+
 export function validateLibraryMetadata(value: unknown, id: string): LibraryMetadata {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid Library metadata.');
     const data = value as LibraryMetadata;

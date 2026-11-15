@@ -46,7 +46,7 @@ export class IngestQueue {
     private progressTimer?: ReturnType<typeof setTimeout>;
     private libraryScanVersion = 0;
     private workGeneration = 0;
-    private libraryRefresh?: { path: string; promise: Promise<LibrarySnapshot | undefined>; published: Map<string, Entry['names']> };
+    private libraryRefresh?: { path: string; promise: Promise<LibrarySnapshot | undefined>; published: Map<string, Entry['names']>; deleted: Set<string> };
     onChange?: (status: IngestStatus) => void;
     private state: IngestStatus = { revision: 0, libraryPath: null, active: false, stopping: false, position: 0, total: 0, errors: [] };
 
@@ -62,6 +62,13 @@ export class IngestQueue {
     }
 
     backgroundChanged() { this.wakeWorker?.(); this.state.work = this.proxies?.status(); this.publish(); }
+    libraryDeleted(path: string, ids: string[]) {
+        if (this.libraryRefresh?.path === path) for (const id of ids) {
+            this.libraryRefresh.published.delete(id); this.libraryRefresh.deleted.add(id);
+        }
+        this.scanner.removeLibraryPresence(path, ids);
+        this.proxies?.refresh(); this.publish();
+    }
     resume() {
         if (this.closing || this.state.stopping) throw new Error('Wait for work to stop before resuming.');
         this.scanner.resumeBackground(); this.proxies?.resume(); this.backgroundChanged(); return structuredClone(this.state);
@@ -91,7 +98,7 @@ export class IngestQueue {
         this.state.libraryScan = { state: 'checking' };
         this.scanner.setLibraryPresence(path, null);
         this.publish();
-        const refresh = { path, promise: Promise.resolve(undefined) as Promise<LibrarySnapshot | undefined>, published: new Map<string, Entry['names']>() };
+        const refresh = { path, promise: Promise.resolve(undefined) as Promise<LibrarySnapshot | undefined>, published: new Map<string, Entry['names']>(), deleted: new Set<string>() };
         this.libraryRefresh = refresh;
         refresh.promise = (async () => {
             try {
@@ -107,6 +114,10 @@ export class IngestQueue {
                     if (names[3]) listing.proxies.add(id);
                     listing.assets.set(id, [...new Set([...(listing.assets.get(id) ?? []), ...names])]);
                 }
+                for (const id of refresh.deleted) {
+                    listing.existing.delete(id); listing.complete.delete(id); listing.proxies.delete(id); listing.assets.delete(id);
+                }
+                for (const name of listing.regularAssets) if (refresh.deleted.has(name.slice(0, 64))) listing.regularAssets.delete(name);
                 this.scanner.setLibraryPresence(path, listing);
                 this.proxies?.refresh();
                 this.state.libraryScan = { state: 'ready', scannedAt: new Date().toISOString() };
@@ -595,7 +606,9 @@ export class IngestQueue {
             await rename(temporaryJSON, metadataPath);
             // Publication is the completion boundary. A concurrent Stop must preserve this success.
             await this.scanner.markIngested(shot.id, { libraryPath: location.path, signature, thumbnailDigest: shot.thumbnailDigest, ingestedAt });
-            if (this.libraryRefresh?.path === location.path) this.libraryRefresh.published.set(shot.id, entry.names);
+            if (this.libraryRefresh?.path === location.path) {
+                this.libraryRefresh.deleted.delete(shot.id); this.libraryRefresh.published.set(shot.id, entry.names);
+            }
             await this.proxies?.published(shot.id, proxy, location.path);
             await this.onPublished?.(metadata, location, entry.names);
         } finally {
