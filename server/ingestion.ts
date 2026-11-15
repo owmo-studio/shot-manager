@@ -581,7 +581,7 @@ export class IngestQueue {
             let transferred = 0;
             for (const file of transfers) {
                 await validate();
-                if (proxy && file.from === proxy.path && await libraryFileIdentity(proxy.path) !== proxy.identity) throw new Error('Scratch proxy changed before transfer.');
+                if (proxy && file.from === proxy.path && await libraryFileIdentity(proxy.path) !== proxy.identity) throw new Error('Cached proxy changed before transfer.');
                 const target = join(location.path, file.name);
                 if (await libraryFileIdentity(target) !== entry.existing[file.name]) throw new Error('Destination changed after review.');
                 await this.transfer(file.from, target, signal, percent => update(transferred + file.bytes * percent / 100), file.force);

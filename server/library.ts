@@ -74,7 +74,7 @@ export async function inspectLibrary(configured: string, sources: string[] = [])
         throw error;
     }
     if (path !== chosen) throw new Error('The Library location changed. Choose the actual folder in Configuration.');
-    if (sources.some(source => resolve(source) === path)) throw new Error('Choose different folders for Library, Scratch, and sources.');
+    if (sources.some(source => resolve(source) === path)) throw new Error('Choose different folders for the Library, Cache, and sources.');
     let info: Awaited<ReturnType<typeof stat>>;
     try { info = await stat(path); }
     catch (error) {

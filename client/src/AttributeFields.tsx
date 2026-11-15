@@ -144,7 +144,7 @@ export function AttributeFields({ shots = [], onUpdated }: { shots?: VideoShot[]
 }
 
 function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: (collection: ShotCollection) => void }) {
-    const { api, mode } = useClipView();
+    const { api } = useClipView();
     const [vocabulary, setVocabulary] = useState<TagVocabulary>(emptyVocabulary);
     const [pending, setPending] = useState(0);
     const [failure, setFailure] = useState<string | null>(null);

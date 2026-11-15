@@ -898,7 +898,7 @@ export class ShotScanner {
     }
 
     async details(id: string): Promise<ShotDetails> {
-        const { clip, result } = this.findShot(id);
+        const { result } = this.findShot(id);
         const details: ShotDetails = {
             file: { filename: result.shot.filename, path: result.original, bytes: result.shot.bytes },
             metadata: result.shot.metadata,

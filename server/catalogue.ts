@@ -1,6 +1,6 @@
 import { constants } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, open, readFile, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, open, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { LibraryCollection, LibraryMetadata, LibraryDeleteReview, LibraryDeleteResult } from '../shared/library';
