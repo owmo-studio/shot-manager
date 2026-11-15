@@ -1,5 +1,4 @@
 import { secondaryButton, primaryButton } from "./buttonStyles";
-import type { Ref } from "react";
 import { useEffect, useRef, useState } from "react";
 import type { AppConfiguration, CacheInventory, LocationChoice } from "../../shared/desktop";
 import { errorMessage } from "../../shared/errors";
@@ -15,7 +14,7 @@ function sizeLabel(bytes: number) {
     return `${(bytes / 1024 ** unit).toFixed(1)} ${["B", "KB", "MB", "GB", "TB"][unit] ?? "TB"}`;
 }
 
-export function Configuration({ libraryActionsRef }: { libraryActionsRef?: Ref<HTMLDivElement> }) {
+export function Configuration() {
     const [configuration, setConfiguration] = useState<AppConfiguration | null>(null);
     const [libraryChoice, setLibraryChoice] = useState<LocationChoice | null>(null);
     const [clearLibrary, setClearLibrary] = useState(false);
@@ -218,7 +217,6 @@ export function Configuration({ libraryActionsRef }: { libraryActionsRef?: Ref<H
                           ? "configuration unavailable"
                           : "Loading…"}
                 </span>
-                <div ref={libraryActionsRef} className="flex shrink-0 items-center" />
                 <button
                     aria-label="Configuration"
                     title="Configuration"
@@ -278,7 +276,7 @@ export function Configuration({ libraryActionsRef }: { libraryActionsRef?: Ref<H
                             <p
                                 aria-label="Configured Library location"
                                 role={libraryError ? "alert" : undefined}
-                                className={`min-w-0 flex-1 break-all select-text text-xs leading-5 ${draftLibraryPath && !libraryError ? "text-zinc-400" : "text-red-400"}`}
+                                className={`min-w-0 flex-1 break-all select-text text-sm leading-5 ${draftLibraryPath && !libraryError ? "text-zinc-400" : "text-red-400"}`}
                             >
                                 {libraryError ??
                                     draftLibraryPath ??

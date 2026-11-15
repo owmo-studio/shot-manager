@@ -15,7 +15,7 @@ import type { LibraryLocation } from './library';
 import { rsyncFile } from './rsync';
 
 interface FileCopy { from: string; to: string; sourceIdentity: string; targetIdentity: string | null; bytes: number }
-interface Capture { id: string; filename: string; files: FileCopy[]; metadataIdentity: string; plan?: ExportClipPlan; metadataTargetIdentity?: string | null; issue?: string }
+interface Capture { id: string; filename: string; files: FileCopy[]; metadataIdentity: string; plan?: ExportClipPlan; issue?: string }
 interface Review { view: SyncReview; library: LibraryLocation; destination: LibraryLocation; captures: Capture[]; directories: ExportDirectories; generation: number; created: number }
 const lifetime = 30 * 60 * 1000;
 const sameLocation = (a: LibraryLocation, b: LibraryLocation) => a.path === b.path && a.identity === b.identity && a.mount === b.mount;
@@ -26,6 +26,7 @@ export class LibrarySync {
     private destinations = new Map<string, { location: LibraryLocation; created: number }>();
     private reviews = new Map<string, Review>();
     private busy = false;
+    private exportOwners = new Map<string, string>();
     constructor(private catalogue: LibraryCatalogue, private scanner: ShotScanner, private queue: IngestQueue,
         private libraryLocation: () => Promise<LibraryLocation>, private transfer = rsyncFile, private formatter: ExportFormatter = resolveFormatter) {}
 
@@ -37,7 +38,7 @@ export class LibrarySync {
     }
     private async inspectDestination(path: string) {
         try { return await inspectLibrary(path); }
-        catch { throw new Error('Sync destination is unavailable. Choose an accessible folder on a mounted volume.'); }
+        catch { throw new Error('Export destination is unavailable. Choose an accessible folder on a mounted volume.'); }
     }
     private expire() {
         for (const [key, value] of this.destinations) if (Date.now() - value.created > lifetime) this.destinations.delete(key);
@@ -46,39 +47,48 @@ export class LibrarySync {
         while (this.reviews.size >= 32) this.reviews.delete(this.reviews.keys().next().value!);
     }
     private async locations(library: LibraryLocation, destination: LibraryLocation) {
-        if (!sameLocation(library, await this.libraryLocation())) throw new Error('Library changed. Review Sync again.');
-        if (!sameLocation(destination, await this.inspectDestination(destination.path))) throw new Error('Sync destination changed or is unavailable. Choose it again.');
-        if (within(library.path, destination.path)) throw new Error('Choose a Sync destination outside the Library.');
+        if (!sameLocation(library, await this.libraryLocation())) throw new Error('Library changed. Review Export again.');
+        if (!sameLocation(destination, await this.inspectDestination(destination.path))) throw new Error('Export destination changed or is unavailable. Choose it again.');
+        if (within(library.path, destination.path)) throw new Error('Choose a Export destination outside the Library.');
     }
     private protectOriginal(path: string, identity: string | null, source: string) {
-        if (this.scanner.snapshot().shots.some(shot => shot.filePath === path)) throw new Error('Sync would overwrite original footage. Choose another destination.');
-        if (identity && identity.split(':').slice(0, 2).join(':') === source.split(':').slice(0, 2).join(':')) throw new Error('Sync destination aliases a Library asset. Choose another destination.');
+        if (this.scanner.snapshot().shots.some(shot => shot.filePath === path)) throw new Error('Export would overwrite original footage. Choose another destination.');
+        if (identity && identity.split(':').slice(0, 2).join(':') === source.split(':').slice(0, 2).join(':')) throw new Error('Export destination aliases a Library asset. Choose another destination.');
     }
     private async plan(metadata: Awaited<ReturnType<typeof readLibraryMetadata>>['metadata'], extension: string, destination: string, reserved: Set<string>) {
         let available: ExportClipPlan | undefined;
         for (let length = 8; length <= 64; length += 4) {
             const plan = this.formatter.clip(metadata, extension, length);
-            const names = [plan.source, plan.proxy, plan.metadata.path];
+            const names = [plan.source, plan.proxy];
             names.forEach(name => exportPath(destination, name));
             if (names.some(name => reserved.has(name.normalize('NFC').toLowerCase()))) continue;
-            const metadataPath = exportPath(destination, plan.metadata.path);
-            const existing = await exportFileIdentity(metadataPath);
+            const sourcePath = exportPath(destination, plan.source);
+            const existing = await exportFileIdentity(sourcePath);
             if (existing) {
-                if (await readExportOwner(metadataPath) === metadata.id) return plan;
+                let owner = this.exportOwners.get(existing);
+                if (!owner) {
+                    owner = await readExportOwner(sourcePath);
+                    if (await exportFileIdentity(sourcePath) !== existing) throw new Error('Exported source changed during review. Review Export again.');
+                    this.exportOwners.set(existing, owner);
+                    if (this.exportOwners.size > 1024) this.exportOwners.delete(this.exportOwners.keys().next().value!);
+                }
+                if (owner === metadata.id) return plan;
                 continue; // A different clip already owns this shorter prefix.
             }
+            // An orphaned proxy cannot identify the clip that owns this name.
+            if (await exportFileIdentity(exportPath(destination, plan.proxy))) continue;
             available ??= plan;
         }
         if (!available) throw new Error('Export filenames conflict. Choose another destination.');
         return available;
     }
     async preview(ids: string[], destinationToken: string): Promise<SyncReview> {
-        if (this.busy) throw new Error('Wait for the current Sync review.');
+        if (this.busy) throw new Error('Wait for the current Export review.');
         this.busy = true;
         try {
             this.expire();
             const choice = this.destinations.get(destinationToken);
-            if (!choice) throw new Error('Choose a Sync destination again.');
+            if (!choice) throw new Error('Choose a Export destination again.');
             const generation = this.queue.workRevision;
             const library = await this.libraryLocation(), destination = choice.location;
             await this.locations(library, destination);
@@ -92,15 +102,14 @@ export class LibrarySync {
                 try {
                     if (!shot) throw new Error('Clip is no longer in the Library.');
                     if (!shot.editable) throw new Error('Clip is already queued.');
-                    if (shot.ingestState === 'changes-pending') throw new Error('Commit or Revert changes before Sync.');
+                    if (shot.ingestState === 'changes-pending') throw new Error('Commit or Revert changes before Export.');
                     const source = parseLibraryAssetName(shot.relativePath);
                     if (!source || source.id !== id || source.role !== 'source') throw new Error('Source unavailable.');
                     const current = await readLibraryMetadata(library, id);
-                    if (!shot.organization || JSON.stringify(ingestAttributes(current.metadata)) !== JSON.stringify(ingestAttributes(shot.organization))) throw new Error('Library metadata changed. Refresh and review Sync again.');
+                    if (!shot.organization || JSON.stringify(ingestAttributes(current.metadata)) !== JSON.stringify(ingestAttributes(shot.organization))) throw new Error('Library metadata changed. Refresh and review Export again.');
                     capture.metadataIdentity = current.identity;
                     const plan = await this.plan(current.metadata, source.extension, destination.path, reserved);
                     capture.plan = plan;
-                    capture.metadataTargetIdentity = await exportFileIdentity(exportPath(destination.path, plan.metadata.path));
                     for (const [name, output] of [[shot.relativePath, plan.source], [libraryAssetName(id, 'proxy', 'mov'), plan.proxy]]) {
                         const from = join(library.path, name), to = exportPath(destination.path, output);
                         const sourceIdentity = await libraryFileIdentity(from);
@@ -109,53 +118,53 @@ export class LibrarySync {
                         this.protectOriginal(to, targetIdentity, sourceIdentity);
                         capture.files.push({ from, to, sourceIdentity, targetIdentity, bytes: Number(sourceIdentity.split(':')[2]) });
                     }
-                    for (const name of [plan.source, plan.proxy, plan.metadata.path]) reserved.add(name.normalize('NFC').toLowerCase());
+                    for (const name of [plan.source, plan.proxy]) reserved.add(name.normalize('NFC').toLowerCase());
                 } catch (error) { capture.issue = error instanceof Error ? error.message : String(error); }
                 captures.push(capture);
             }
             await this.locations(library, destination);
-            if (generation !== this.queue.workRevision) throw new Error('Work was stopped. Review Sync again.');
+            if (generation !== this.queue.workRevision) throw new Error('Work was stopped. Review Export again.');
             const view: SyncReview = { token: randomUUID(), destinationPath: destination.path, format: this.formatter.id, clips: captures.map(c => ({
                 id: c.id, filename: c.filename, bytes: c.files.reduce((sum, file) => sum + file.bytes, 0),
-                mode: c.metadataTargetIdentity || c.files.some(file => file.targetIdentity) ? 'replace' : 'new', issue: c.issue, outputFilename: c.plan?.source,
+                mode: c.files.some(file => file.targetIdentity) ? 'replace' : 'new', issue: c.issue, outputFilename: c.plan?.source,
             })) };
             this.reviews.set(view.token, { view, library, destination, captures, directories, generation, created: Date.now() });
             return structuredClone(view);
         } finally { this.busy = false; }
     }
-    private async validate(capture: Capture, library: LibraryLocation, destinationPath: string) {
-        if (await libraryFileIdentity(join(library.path, libraryAssetName(capture.id, 'metadata', 'json'))) !== capture.metadataIdentity) throw new Error('Library metadata changed. Review Sync again.');
-        if (!capture.plan || await exportFileIdentity(exportPath(destinationPath, capture.plan.metadata.path)) !== capture.metadataTargetIdentity) throw new Error('Destination metadata changed. Review Sync again.');
+    private async validate(capture: Capture, library: LibraryLocation) {
+        if (await libraryFileIdentity(join(library.path, libraryAssetName(capture.id, 'metadata', 'json'))) !== capture.metadataIdentity) throw new Error('Library metadata changed. Review Export again.');
+        if (!capture.plan) throw new Error('Review Export again.');
         for (const file of capture.files) {
-            if (await libraryFileIdentity(file.from) !== file.sourceIdentity) throw new Error('Library media changed or is unavailable. Review Sync again.');
+            if (await libraryFileIdentity(file.from) !== file.sourceIdentity) throw new Error('Library media changed or is unavailable. Review Export again.');
             const target = await exportFileIdentity(file.to);
             this.protectOriginal(file.to, target, file.sourceIdentity);
-            if (target !== file.targetIdentity) throw new Error('Destination files changed. Review Sync again to approve replacement.');
+            if (target !== file.targetIdentity) throw new Error('Destination files changed. Review Export again to approve replacement.');
         }
     }
     async submit(token: string, ids: string[]) {
-        if (this.busy) throw new Error('Wait for the current Sync review.');
+        if (this.busy) throw new Error('Wait for the current Export review.');
         this.busy = true;
         try {
             this.expire();
             const review = this.reviews.get(token);
-            if (!review || review.generation !== this.queue.workRevision) throw new Error('Review Sync again.');
+            if (!review || review.generation !== this.queue.workRevision) throw new Error('Review Export again.');
             const captures = ids.map(id => review.captures.find(c => c.id === id));
-            if (!ids.length || new Set(ids).size !== ids.length || captures.some(c => !c || c.issue)) throw new Error('Exclude unavailable clips before Sync.');
+            if (!ids.length || new Set(ids).size !== ids.length || captures.some(c => !c || c.issue)) throw new Error('Exclude unavailable clips before Export.');
             await this.locations(review.library, review.destination);
             const directories = { ...review.directories };
             await checkExportDirectories(review.destination.path, directories);
             const collection = await this.catalogue.snapshot();
             for (const capture of captures as Capture[]) {
                 const shot = collection.shots.find(s => s.id === capture.id);
-                if (!shot?.editable || shot.ingestState === 'changes-pending') throw new Error('Clips changed. Commit or Revert, then review Sync again.');
-                await this.validate(capture, review.library, review.destination.path);
+                if (!shot?.editable || shot.ingestState === 'changes-pending') throw new Error('Clips changed. Commit or Revert, then review Export again.');
+                await this.validate(capture, review.library);
             }
             // Re-read drafts after filesystem awaits. A save racing the subsequent
             // synchronous lock is rejected by the organization's own lock guard.
             const latest = await this.catalogue.snapshot();
-            if (captures.some(c => { const shot = latest.shots.find(s => s.id === c!.id); return !shot?.editable || shot.ingestState === 'changes-pending'; })) throw new Error('Clips changed. Commit or Revert, then review Sync again.');
-            if (review.generation !== this.queue.workRevision) throw new Error('Work was stopped. Review Sync again.');
+            if (captures.some(c => { const shot = latest.shots.find(s => s.id === c!.id); return !shot?.editable || shot.ingestState === 'changes-pending'; })) throw new Error('Clips changed. Commit or Revert, then review Export again.');
+            if (review.generation !== this.queue.workRevision) throw new Error('Work was stopped. Review Export again.');
             const batch = { filename: exportBatchFilename(), identity: null as string | null, completed: [] as ExportClipPlan[] };
             const guard = async () => {
                 await this.locations(review.library, review.destination);
@@ -165,20 +174,19 @@ export class LibrarySync {
                 execute: async (signal, progress) => {
                     await this.locations(review.library, review.destination);
                     await checkExportDirectories(review.destination.path, directories, true, () => this.locations(review.library, review.destination));
-                    await this.validate(capture, review.library, review.destination.path);
+                    await this.validate(capture, review.library);
                     const total = capture.files.reduce((sum, file) => sum + file.bytes, 0) || 1;
                     let completed = 0;
                     for (const file of capture.files) {
                         signal.throwIfAborted(); await guard();
-                        if (await libraryFileIdentity(file.from) !== file.sourceIdentity || await exportFileIdentity(file.to) !== file.targetIdentity) throw new Error('Sync files changed after review. Review Sync again.');
+                        if (await libraryFileIdentity(file.from) !== file.sourceIdentity || await exportFileIdentity(file.to) !== file.targetIdentity) throw new Error('Export files changed after review. Review Export again.');
                         this.protectOriginal(file.to, file.targetIdentity, file.sourceIdentity);
                         await this.transfer(file.from, file.to, signal, percent => progress((completed + file.bytes * percent / 100) / total * 99));
                         completed += file.bytes;
                     }
-                    // JSON and the per-export CSV advertise completed media only.
-                    if (await libraryFileIdentity(join(review.library.path, libraryAssetName(capture.id, 'metadata', 'json'))) !== capture.metadataIdentity) throw new Error('Library metadata changed during Sync. Review Sync again.');
+                    // The per-export CSV advertises completed media only.
+                    if (await libraryFileIdentity(join(review.library.path, libraryAssetName(capture.id, 'metadata', 'json'))) !== capture.metadataIdentity) throw new Error('Library metadata changed during Export. Review Export again.');
                     const plan = capture.plan!;
-                    await publishExportFile(review.destination.path, plan.metadata.path, plan.metadata.content, capture.metadataTargetIdentity!, signal, guard);
                     const completedPlans = [...batch.completed, plan];
                     batch.identity = await publishExportFile(review.destination.path, batch.filename,
                         this.formatter.manifest(completedPlans, review.destination.path), batch.identity, signal, guard);

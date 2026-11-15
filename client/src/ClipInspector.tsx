@@ -13,6 +13,8 @@ import { AttributeFields } from "./AttributeFields";
 import { EjectButton } from "./EjectButton";
 import { SkipSelection } from "./SkipSelection";
 import { SyncButton, DeletePlaceholder } from './SyncButton';
+import { inspectorButton } from './buttonStyles';
+import { ThumbnailIcon } from './ThumbnailIcon';
 
 function bytesLabel(bytes: number) {
     if (!bytes) return "0 B";
@@ -165,23 +167,10 @@ export function ClipInspector({
                             disabled={thumbnailBusy || unavailable || locked || scrubbing || !frameReady || !thumbnailReady}
                             aria-label="Set current frame as thumbnail"
                             title="Set current frame as thumbnail"
-                            className="flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-white/15 bg-white/8 px-2 text-[10px] font-medium text-zinc-200 transition duration-75 hover:border-white/25 hover:bg-white/15 hover:text-white focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40"
+                            aria-busy={thumbnailBusy}
+                            className={inspectorButton}
                         >
-                            <svg
-                                viewBox="0 0 24 24"
-                                fill="none"
-                                stroke="currentColor"
-                                strokeWidth="1.5"
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                aria-hidden="true"
-                                className="size-4"
-                            >
-                                <rect x="3" y="3" width="18" height="18" rx="2" />
-                                <circle cx="8" cy="8" r="1.5" />
-                                <path d="m21 15-5-5L5 21" />
-                            </svg>
-                            <span>{thumbnailBusy ? "Saving…" : "Thumb"}</span>
+                            <ThumbnailIcon />
                         </button>
                         {mode === 'import' && <>
                             <SkipSelection count={empty ? 0 : 1} skippedCount={skipped ? 1 : 0} disabled={empty || locked} onChange={onSkipChange} />
@@ -216,7 +205,7 @@ export function ClipInspector({
                             {unavailable
                                 ? "source unavailable"
                                 : hasPendingCommit(shot)
-                                  ? `Locked during ${shot.workKind === 'sync' ? 'Sync' : 'Commit'}.`
+                                  ? `Locked during ${shot.workKind === 'sync' ? 'Export' : 'Commit'}.`
                                   : "Preparing clip…"}
                         </div>
                     ) : (

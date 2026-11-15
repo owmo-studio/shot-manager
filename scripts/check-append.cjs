@@ -8,7 +8,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(test, label) { for (let i = 0; i < 750; i++) { if (await test()) return; await sleep(20); } throw new Error(`Timed out: ${label}`); }
 (async () => {
     const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'owmo-append-')));
-    let manager, queue, release, releaseCapture;
+    let manager, queue, release, releaseCapture, releaseExport;
     try {
         const entry = join(root, 'entry.ts');
         await fs.writeFile(entry, ['server/workspace.ts', 'server/ingestion.ts', 'server/library.ts', 'server/rsync.ts']
@@ -139,10 +139,36 @@ async function until(test, label) { for (let i = 0; i < 750; i++) { if (await te
         assert.ok(scanner.snapshot().shots.every(shot => shot.editable));
         const metadata = JSON.parse(await fs.readFile(join(library, `${b.id}.metadata.json`), 'utf8'));
         assert.equal(metadata.scene, '', 'Stopped append does not publish its updated metadata');
+        // An active Import finishes; queued Exports then precede both kinds of Commit.
+        const order = [];
+        queue.onChange = next => { if (next.current && order.at(-1) !== next.current.id) order.push(next.current.id); };
+        hold = true; entered = false;
+        plan = await queue.preview([a.id,b.id]); await queue.submit(plan.token,[a.id,b.id]);
+        await until(()=>entered,'active Commit before Export priority');
+        const metadataId='1'.repeat(64), exportId='2'.repeat(64), secondExportId='3'.repeat(64);
+        queue.enqueueLibrary([{id:metadataId,filename:'Metadata fixture',execute:async()=>{}}]);
+        queue.enqueueLibrary([{id:exportId,filename:'First export fixture',kind:'sync',execute:async(signal,progress)=>{
+            progress(37);
+            await new Promise((resolve,reject)=>{
+                const abort=()=>reject(new Error('Stopped fixture Export'));
+                signal.addEventListener('abort',abort,{once:true});
+                releaseExport=()=>{signal.removeEventListener('abort',abort);resolve();};
+            });
+        }}]);
+        queue.enqueueLibrary([{id:secondExportId,filename:'Second export fixture',kind:'sync',execute:async()=>{}}]);
+        assert.equal((await queue.status()).current.id,a.id,'Export never interrupts an active Commit');
+        release(); await until(()=>!!releaseExport,'Export gets next transfer slot');
+        status=await queue.status();
+        assert.equal(status.current.id,exportId);assert.equal(status.current.kind,'sync');assert.equal(status.current.percent,37);
+        assert.equal(status.current.percent,scanner.transferPercent(exportId),'Footer and card use the same active transfer percentage');
+        assert.equal(status.tasks.transfersRemaining,2);assert.equal(status.tasks.syncsRemaining,2,'Remaining counts include active and queued clips');
+        releaseExport(); await until(async()=>!(await queue.status()).active,'priority queue drains');
+        assert.deepEqual(order,[a.id,exportId,secondExportId,b.id,metadataId],'Exports retain their order ahead of queued Import and metadata Commits');
+        assert.deepEqual((await queue.status()).errors,[]);
         for (const [name, bytes] of originals) assert.deepEqual(await fs.readFile(join(input, name)), bytes);
         console.log('PASS: active Commit append, immutable reviews/conflicts, duplicate exclusion, stable progress totals, per-clip Eject, worker drain during validation, Stop races, and original preservation.');
     } finally {
-        release?.(); releaseCapture?.(); await queue?.close(); await manager?.close();
+        release?.(); releaseCapture?.(); releaseExport?.(); await queue?.close(); await manager?.close();
         await fs.rm(root, { recursive: true, force: true });
     }
 })().catch(error => { console.error(error); process.exitCode = 1; });

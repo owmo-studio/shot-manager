@@ -208,7 +208,7 @@ if (!app.requestSingleInstanceLock()) {
     handle('library:list', event => { requireMainWindow(event); return backendRequest('/api/library') })
     handle('sync:choose-destination', async event => {
       const owner = requireMainWindow(event)
-      const result = await dialog.showOpenDialog(owner, { title: 'Choose Sync Destination', buttonLabel: 'Choose Destination', properties: ['openDirectory'] })
+      const result = await dialog.showOpenDialog(owner, { title: 'Choose Export Destination', buttonLabel: 'Choose Destination', properties: ['openDirectory'] })
       if (result.canceled || !result.filePaths[0]) return null
       return backendRequest('/api/sync/destinations', { method: 'POST', body: JSON.stringify({ path: await realpath(result.filePaths[0]) }) })
     })
@@ -216,7 +216,7 @@ if (!app.requestSingleInstanceLock()) {
       requireMainWindow(event)
       const shotIds = validateIngestIds(action === 'review' ? first : second)
       const token = action === 'review' ? second : first
-      if (typeof token !== 'string' || !/^[a-f0-9-]{36}$/.test(token)) throw new Error('Invalid Sync review or destination')
+      if (typeof token !== 'string' || !/^[a-f0-9-]{36}$/.test(token)) throw new Error('Invalid Export review or destination')
       await flushDrafts()
       return organizationWrites.run(() => backendRequest(`/api/sync/${action}`, { method: 'POST', body: JSON.stringify(action === 'review' ? { shotIds, destinationToken: token } : { shotIds, token }) }))
     })

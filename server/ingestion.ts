@@ -406,9 +406,13 @@ export class IngestQueue {
                     await this.waitForWork(signal);
                     continue;
                 }
-                // Keep acceptance order across job types, bypassing only Imports still encoding.
-                const nextJob = this.libraryPending[0];
-                const libraryJob = nextJob && (index < 0 || this.queuedIds.indexOf(nextJob.id) < this.queuedIds.indexOf(this.pending[index].entry.capture.shot.id)) ? this.libraryPending.shift() : undefined;
+                // Exports get the next transfer slot. Keep acceptance order within
+                // each priority, bypassing Imports that are still encoding.
+                const exportIndex = this.libraryPending.findIndex(job => job.kind === 'sync');
+                const jobIndex = Math.max(0, exportIndex);
+                const nextJob = this.libraryPending[jobIndex];
+                const libraryJob = nextJob && (exportIndex >= 0 || index < 0 || this.queuedIds.indexOf(nextJob.id) < this.queuedIds.indexOf(this.pending[index].entry.capture.shot.id))
+                    ? this.libraryPending.splice(jobIndex, 1)[0] : undefined;
                 const item = libraryJob ? undefined : this.pending.splice(index, 1)[0];
                 const shot = libraryJob ?? item!.entry.capture.shot;
                 const controller = new AbortController();
@@ -418,7 +422,7 @@ export class IngestQueue {
                 const clipSignal = AbortSignal.any([signal, controller.signal]);
                 this.state.waiting = 0;
                 this.state.position++;
-                this.state.current = { id: shot.id, filename: shot.filename, percent: 0, phase: 'transferring' };
+                this.state.current = { id: shot.id, filename: shot.filename, percent: 0, phase: 'transferring', kind: libraryJob?.kind ?? 'commit' };
                 this.scanner.processingIngest(shot.id);
                 this.publish();
                 try {
@@ -598,7 +602,7 @@ export class IngestQueue {
     async stop() {
         this.workGeneration++;
         this.state.stopping = true; this.publish();
-        await Promise.all([this.cancelTransfers(), ...(this.proxies ? [this.proxies.stop(), this.scanner.pauseBackground()] : [])]);
+        await Promise.all([this.cancelTransfers(), this.proxies?.stop()]);
         this.state.stopping = false;
         this.state.work = this.proxies?.status();
         this.publish();
@@ -613,6 +617,7 @@ export class IngestQueue {
     async close() {
         this.closing = true;
         await this.stop();
+        await this.scanner.pauseBackground();
         await this.libraryRefresh?.promise;
         clearTimeout(this.progressTimer);
         this.onChange = undefined;

@@ -8,7 +8,7 @@ export function SkipSelection({ count, skippedCount, disabled, onChange }: {
     const input = useRef<HTMLInputElement>(null);
     useEffect(() => { if (input.current) input.current.indeterminate = mixed; }, [mixed]);
     return <label title={`${skippedCount > 0 ? "Stop skipping selected clips" : "Skip selected clips"}${count > 1 ? ` (${skippedCount} of ${count} skipped)` : ""}`}
-        className={`group/skip relative inline-flex h-7 shrink-0 items-center rounded-md border border-white/15 bg-white/8 px-2 text-[10px] font-medium transition duration-75 has-[:checked]:border-white/35 has-[:checked]:bg-white/20 has-[:checked]:ring-1 has-[:checked]:ring-white/10 has-[:indeterminate]:border-white/35 has-[:indeterminate]:bg-white/20 has-[:indeterminate]:ring-1 has-[:indeterminate]:ring-white/10 ${locked ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:border-white/25 hover:bg-white/15"}`}>
+        className={`group/skip relative inline-flex size-7 shrink-0 items-center justify-center rounded-md border border-white/15 bg-white/8 transition duration-75 has-[:checked]:border-white/15 has-[:checked]:bg-black/70 has-[:checked]:hover:bg-black/80 has-[:indeterminate]:border-white/15 has-[:indeterminate]:bg-black/70 has-[:indeterminate]:hover:bg-black/80 ${locked ? "cursor-not-allowed opacity-40" : "cursor-pointer hover:border-white/25 hover:bg-white/15"}`}>
         <input ref={input} type="checkbox" aria-label="Skip selected clips" aria-checked={mixed ? "mixed" : count > 0 && skippedCount === count}
             checked={count > 0 && skippedCount === count} disabled={locked}
             onChange={() => onChange(skippedCount === 0)} className="peer absolute inset-0 size-full cursor-[inherit] opacity-0" />
@@ -17,7 +17,6 @@ export function SkipSelection({ count, skippedCount, disabled, onChange }: {
                 <circle cx="12" cy="12" r="9" />
                 <path d="M8 12h8" />
             </svg>
-            <span>Skip</span>
         </span>
     </label>;
 }

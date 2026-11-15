@@ -109,7 +109,8 @@ export class ProxyQueue {
     }
     status(): NonNullable<IngestStatus['work']> {
         return { paused: this.paused, busy: !!this.current || this.queued > 0 || this.scanner.thumbnailsBusy(), encoding: !!this.current,
-            queued: this.queued, scratchPath: this.scratch?.location.path ?? null, error: this.error };
+            queued: this.queued, scratchPath: this.scratch?.location.path ?? null, error: this.error,
+            current: this.current ? { id: this.current.id, percent: this.current.percent } : undefined };
     }
     private changed() {
         for (const listener of [...this.listeners]) listener();

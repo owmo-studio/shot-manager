@@ -9,7 +9,7 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
 
 (async () => {
     const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'owmo-proxy-check-')));
-    let scanner, queue, proxies;
+    let scanner, queue, proxies, releaseThumbnail;
     try {
         const entry = join(root, 'entry.ts');
         await fs.writeFile(entry, ['server/proxies.ts', 'server/scanner.ts', 'server/ingestion.ts', 'server/library.ts', 'server/rsync.ts'].map(file => `export * from ${JSON.stringify(join(__dirname, '..', file))};`).join('\n'));
@@ -59,11 +59,13 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         await until(() => encodingHeld && scanner.snapshot().shots.some(shot => shot.proxyState === 'ready'), 'first proxy ready, second encoding');
         const shots = scanner.snapshot().shots;
         const backgroundProgress = (await queue.status()).tasks;
+        assert.equal((await queue.status()).work.current.percent,50,'Footer proxy progress belongs to the current encode, not completed queue work');
         assert.deepEqual({ total: backgroundProgress.total, completed: backgroundProgress.completed, proxies: backgroundProgress.proxiesRemaining, transfers: backgroundProgress.transfersRemaining },
             { total: 3, completed: 1, proxies: 2, transfers: 0 }, 'Background encoding reports tasks before a Commit');
         assert.ok(backgroundProgress.percent > 33 && backgroundProgress.percent < 100, 'Partial encode progress contributes to overall progress');
         assert.ok(shots.some(shot => shot.proxyLocation === 'cache'), 'Generated proxy is identified as local');
         const pending = shots.find(shot => shot.proxyState === 'encoding');
+        assert.equal((await queue.status()).work.current.percent,pending.proxyPercent,'Footer and card use the same encoding percentage');
         assert.equal(pending.editable, true, 'Encoding does not lock metadata edits');
         await scanner.updateOrganization([pending.id], { field: 'notes', operation: 'set', value: 'Edited during encoding' });
         const review = await queue.preview(shots.map(shot => shot.id));
@@ -86,7 +88,8 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         await until(async () => !(await queue.status()).active, 'all submitted clips synced');
         assert.deepEqual((await queue.status()).errors, []);
         assert.equal((await queue.status()).completed, 3);
-        assert.deepEqual((await queue.status()).tasks, { completed: 6, total: 6, percent: 100, proxiesRemaining: 0, transfersRemaining: 0 }, 'Both kinds of work must finish for overall 100%');
+        assert.deepEqual((await queue.status()).tasks, { completed: 6, total: 6, percent: 100, proxiesRemaining: 0, transfersRemaining: 0, syncsRemaining: 0, sync: {completed:0,total:0,percent:0} }, 'Both kinds of work must finish for overall 100%');
+        assert.equal((await queue.status()).work.current,undefined,'Completed encodes leave no stale active progress');
         assert.ok(scanner.snapshot().shots.every(shot => shot.proxyLocation === 'library'), 'Published proxies are identified as Library assets');
         assert.equal(maxEncoders, 1);
         const scratchDirectory = join(scratch, scratchFolder, 'proxies');
@@ -159,6 +162,35 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         await queue.stop(); releaseCheck();
         await assert.rejects(stoppedReview, /Work was stopped/);
         assert.equal(proxies.status().paused, true, 'A Commit review finishing after Stop cannot restart work');
+        // Manual Stop leaves active thumbnail work intact and permits new thumbnails.
+        const beforeFolder=join(root,'thumbnail-before'), afterFolder=join(root,'thumbnail-after');
+        await fs.mkdir(beforeFolder);await fs.mkdir(afterFolder);
+        for(const [folder,name,color] of [[beforeFolder,'before.mp4','gold'],[afterFolder,'after.mp4','pink']])
+            await execute('ffmpeg',['-v','error','-f','lavfi','-i',`color=c=${color}:s=160x90:r=10`,'-t','0.3','-c:v','libx264',join(folder,name)]);
+        const thumbnails=scanner.thumbnailQueue, extract=thumbnails.extract.bind(thumbnails);
+        let thumbnailSignal;
+        thumbnails.extract=async(...args)=>{
+            if(args[0]===join(beforeFolder,'before.mp4')){
+                thumbnailSignal=args[2];
+                await new Promise((resolve,reject)=>{
+                    const abort=()=>reject(new Error('Thumbnail fixture aborted'));
+                    thumbnailSignal.addEventListener('abort',abort,{once:true});
+                    releaseThumbnail=()=>{thumbnailSignal.removeEventListener('abort',abort);resolve();};
+                });
+            }
+            return extract(...args);
+        };
+        scanner.discover({id:'thumbnail-before',path:beforeFolder,name:'Before',type:'folder',available:true,cameraModels:[]});
+        await until(()=>!!releaseThumbnail,'active thumbnail before Stop');
+        await queue.stop();
+        assert.equal(thumbnailSignal.aborted,false,'Stop does not abort active thumbnail extraction');
+        assert.equal(scanner.snapshot().shots.find(shot=>shot.filename==='before.mp4').thumbnailStatus,'pending');
+        scanner.discover({id:'thumbnail-after',path:afterFolder,name:'After',type:'folder',available:true,cameraModels:[]});
+        await until(()=>scanner.snapshot().shots.some(shot=>shot.filename==='after.mp4'&&shot.thumbnailStatus==='pending'),'new thumbnail queues after Stop');
+        releaseThumbnail();
+        await until(()=>['before.mp4','after.mp4'].every(name=>scanner.snapshot().shots.some(shot=>shot.filename===name&&shot.thumbnailStatus==='ready')),'active and newly queued thumbnails complete after Stop');
+        thumbnails.extract=extract;
+        assert.equal(proxies.status().paused,true,'Thumbnail completion does not resume proxy encoding');
         // Exercise cancellation of an actual FFmpeg child after it reports a frame.
         const abort = new AbortController();
         await assert.rejects(encodeProxy(join(source, first.filename), join(root, 'cancelled.partial'), first, abort.signal, () => abort.abort()), /stopped/);
@@ -178,5 +210,5 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         } finally { await sharing.close(); }
         for (const [name, bytes] of originals) assert.deepEqual(await fs.readFile(join(source, name)), bytes, 'Source footage untouched');
         console.log('PASS: ProRes Proxy dimensions/color/audio/timecode, non-blocking edits, parallel encoding/transfers, dependency scheduling, Library reuse, scratch cleanup, Stop/Resume, missing-proxy refresh, and scratch mount/path safety.');
-    } finally { await queue?.close(); await proxies?.close(); await scanner?.close(); await fs.rm(root, { recursive: true, force: true }); }
+    } finally { releaseThumbnail?.(); await queue?.close(); await proxies?.close(); await scanner?.close(); await fs.rm(root, { recursive: true, force: true }); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

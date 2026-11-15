@@ -1217,9 +1217,9 @@ if (!process.versions.electron) {
             await fill("Scene", "Friends arriving at the studio.");
             await js(`document.activeElement?.blur()`);
             await push(collection.shots.map(shot=>['Clip 4.mp4','Clip 5.mp4'].includes(shot.filename)?{...shot,organization:{...shot.organization,group:shot.filename==='Clip 4.mp4'?'TH01':'TH02',camera:shot.filename==='Clip 4.mp4'?'A':'B',rating:shot.filename==='Clip 4.mp4'?'preferred':'usable'}}:shot));
-            await wait(`document.querySelector('[aria-label="Group"]').placeholder==='Mixed'&&document.querySelector('[aria-label="Camera"]').placeholder==='Mixed'&&document.querySelector('[aria-label="Rating"]').value==='mixed'`);
+            await wait(`document.querySelector('[aria-label="Group"]').placeholder==='Mixed'&&document.querySelector('[aria-label="Camera"]').placeholder==='Mixed'&&document.querySelector('[aria-label="Quality"]').value==='mixed'`);
             await fill('Group','TH01-T02');await fill('Camera','B');
-            await js(`(()=>{const el=document.querySelector('[aria-label="Rating"]');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(el,'usable');el.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+            await js(`(()=>{const el=document.querySelector('[aria-label="Quality"]');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(el,'usable');el.dispatchEvent(new Event('change',{bubbles:true}));})()`);
             await fill("Notes", "Shared notes");
             await wait(
                 `!Array.from(document.querySelectorAll('[role="status"]')).some(node=>node.textContent==='Saving…')`,

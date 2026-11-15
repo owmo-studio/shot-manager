@@ -41,7 +41,7 @@ export function CommitReviewDialog({
                 )}
             </p>
             {retiring > 0 && transfers > 0 && <p className="mt-2 text-xs text-zinc-400">{transfers} to commit · {retiring} synced to remove from workspace.</p>}
-            <p className="mt-2 break-all text-xs text-zinc-500">{review.libraryPath}</p>
+            <p className="mt-2 break-all text-sm text-zinc-500">{review.libraryPath}</p>
             <div className="mt-4 max-h-[45vh] overflow-y-auto rounded-lg border border-white/10">
                 {review.clips.map((clip) => {
                     const included = includedIds.has(clip.id);
@@ -66,7 +66,7 @@ export function CommitReviewDialog({
                                 {clip.mode === 'synced' ? <p className="mt-1 text-xs text-zinc-500">Remove from workspace.</p> : <details className="mt-1 text-xs text-zinc-500">
                                     <summary className="cursor-pointer">File destinations</summary>
                                     {clip.files.map((file) => (
-                                        <p key={file.to} className="mt-2 break-all">
+                                        <p key={file.to} className="mt-2 break-all text-sm">
                                             {file.from}
                                             <br />→ {file.to}
                                         </p>

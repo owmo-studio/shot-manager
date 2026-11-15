@@ -6,7 +6,7 @@ export function ClipActionDialog({ shots, action, busy, error, onCancel, onConfi
     shots: VideoShot[]; action: "eject" | "stop"; busy: boolean; error: string | null; onCancel: () => void; onConfirm: () => void;
 }) {
     const label = action === "stop" ? "Stop" : "Eject";
-    const work = shots.every(shot => shot.workKind === 'sync') ? 'Sync' : shots.some(shot => shot.workKind === 'sync') ? 'Work' : 'Commit';
+    const work = shots.every(shot => shot.workKind === 'sync') ? 'Export' : shots.some(shot => shot.workKind === 'sync') ? 'Work' : 'Commit';
     return <ModalDialog titleId={`${action}-title`} busy={busy} onCancel={onCancel} width="w-[min(440px,90vw)]"
         title={action === "stop" ? `Stop ${work}?` : `Eject ${shots.length === 1 ? "clip" : `${shots.length} clips`}?`}>
         <p className="mt-3 text-sm text-zinc-400">{action === "eject" ? `Remove ${shots.length === 1 ? "this clip" : "these clips"} from the workspace.` : `Cancel queued and active ${work === 'Work' ? 'transfers' : `${work}s`} for these clips.`}</p>

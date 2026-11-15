@@ -13,7 +13,7 @@ export function DirectoryUnavailableDialog({ directories, onDismiss, onEject }: 
         <h2 id="unavailable-directory-title" className="text-lg font-medium text-amber-300">Media unavailable</h2>
         <p className="mt-3 text-sm text-zinc-400">{ids.length} {ids.length === 1 ? "clip is" : "clips are"} affected. Reconnect or eject them.</p>
         <ul className="mt-4 max-h-64 space-y-3 overflow-auto">{directories.map(directory => <li key={directory.path}>
-            <p className="break-all text-xs text-zinc-300">{directory.path}</p>
+            <p className="break-all text-sm text-zinc-300">{directory.path}</p>
             <p className="mt-1 text-xs text-zinc-500">{directory.clipIds.length} {directory.clipIds.length === 1 ? "clip" : "clips"}</p>
         </li>)}</ul>
         <div className="mt-5 flex justify-end gap-3">

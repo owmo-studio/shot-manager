@@ -17,7 +17,7 @@ export function ClipGroupingFields({ shots, pending, failure, submit, onInvalid,
     const [camera, setCamera] = useState(() => common(initial[1]));
     const [rating, setRating] = useState(() => new Set(initial[2]).size > 1 ? 'mixed' : common(initial[2]));
     useEffect(() => {
-        if (pending || failure || document.activeElement?.matches('[aria-label="Group"], [aria-label="Camera"], [aria-label="Rating"]')) return;
+        if (pending || failure || document.activeElement?.matches('[aria-label="Group"], [aria-label="Camera"], [aria-label="Quality"]')) return;
         const values: string[][] = JSON.parse(saved);
         setGroup(common(values[0])); setCamera(common(values[1]));
         setRating(new Set(values[2]).size > 1 ? 'mixed' : common(values[2]));
@@ -40,8 +40,8 @@ export function ClipGroupingFields({ shots, pending, failure, submit, onInvalid,
             </div>;
         })}
         <div data-attribute-field="rating" className="block min-w-0 text-xs text-zinc-400">
-            <span className="attribute-label">Rating</span>
-            <select aria-label="Rating" value={rating} className={inputStyle}
+            <span className="attribute-label">Quality</span>
+            <select aria-label="Quality" value={rating} className={inputStyle}
                 onChange={event => { setRating(event.target.value); submit({ field: 'rating', operation: 'set', value: event.target.value }); }}>
                 <option value=""></option>
                 {rating === 'mixed' && <option value="mixed" disabled>Mixed</option>}

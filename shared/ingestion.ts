@@ -30,8 +30,9 @@ export interface IngestStatus {
     waiting?: number;
     tasks?: { completed: number; total: number; percent: number; proxiesRemaining: number; transfersRemaining: number; syncsRemaining?: number;
         sync?: { completed: number; total: number; percent: number } };
-    work?: { paused: boolean; busy: boolean; encoding: boolean; queued: number; scratchPath: string | null; error?: string };
-    current?: { id: string; filename: string; percent: number; phase: 'transferring' | 'metadata' };
+    work?: { paused: boolean; busy: boolean; encoding: boolean; queued: number; scratchPath: string | null; error?: string;
+        current?: { id: string; percent: number } };
+    current?: { id: string; filename: string; percent: number; phase: 'transferring' | 'metadata'; kind?: 'commit' | 'sync' };
     errors: { id: string; filename: string; message: string; eventId: string; kind?: 'commit' | 'sync' }[];
     acceptedReviews?: string[];
 }

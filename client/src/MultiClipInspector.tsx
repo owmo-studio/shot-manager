@@ -5,6 +5,7 @@ import { EjectButton } from "./EjectButton";
 import { SkipSelection } from "./SkipSelection";
 import { SyncButton, DeletePlaceholder } from './SyncButton';
 import { inspectorButton } from './buttonStyles';
+import { ThumbnailIcon } from './ThumbnailIcon';
 import { ResizableInspector } from "./ResizableInspector";
 import type { ShotCollection, VideoShot } from "../../shared/shots";
 
@@ -22,7 +23,7 @@ export function MultiClipInspector({ shots, onEject, ejectBusy, skippedCount, di
             <div><h2 className="text-sm font-medium">{count} Selected Clips</h2>
                 <p className="mt-1 text-xs text-zinc-500">Shared values · Counts mark differences</p></div>
             <div className="flex shrink-0 items-center gap-2">
-                <button disabled title="Select one clip to set a thumbnail" className={inspectorButton}>Thumb</button>
+                <button disabled aria-label="Set current frame as thumbnail" title="Select one clip to set a thumbnail" className={inspectorButton}><ThumbnailIcon /></button>
                 {mode === 'import' ? <>
                     <SkipSelection count={count} skippedCount={skippedCount} disabled={disabled} onChange={onSkipChange} />
                     <EjectButton cancel={cancelCount > 0} count={cancelCount || count} busy={ejectBusy} onClick={onEject} />

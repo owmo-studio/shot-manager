@@ -47,7 +47,7 @@ function ShotCard({
     const proxyLibrary = shot.proxyState === "ready" && shot.proxyLocation === "library";
     const proxyEncoding = shot.proxyState === "encoding";
     const transferring = shot.ingestState === "processing";
-    const progressLabel = transferring ? shot.workKind === 'sync' ? "Syncing to destination" : "Committing to Library" : proxyEncoding ? "Generating proxy" : null;
+    const progressLabel = transferring ? shot.workKind === 'sync' ? "Exporting to destination" : "Committing to Library" : proxyEncoding ? "Generating proxy" : null;
     const progressPercent = Math.max(0, Math.min(100, (transferring ? shot.transferPercent : shot.proxyPercent) ?? 0));
     const proxyLabel = proxyLibrary
         ? "Proxy in Library"
@@ -59,7 +59,7 @@ function ShotCard({
               (shot.proxyState === "unverified" ? "Proxy not verified in Library" : "Proxy missing or queued"));
     const activity =
         shot.ingestState === "processing"
-            ? `Syncing: ${shot.transferPercent ?? 0}%`
+            ? `${shot.workKind === 'sync' ? 'Exporting' : 'Committing'}: ${shot.transferPercent ?? 0}%`
             : shot.ingestState === "queued"
               ? proxyLocal || proxyLibrary
                   ? "Queued for transfer"
@@ -119,7 +119,7 @@ function ShotCard({
                 type="button"
                 onClick={onSelect}
                 aria-label={`Inspect ${shot.filename}`}
-                aria-description={`${activity}. ${proxyLabel}`}
+                aria-description={`${skipped ? "Skipped. " : ""}${activity}. ${proxyLabel}`}
                 aria-pressed={selected}
                 aria-controls="clip-inspector"
                 data-editable={shot.editable}
@@ -141,16 +141,14 @@ function ShotCard({
                     data-shot-thumbnail
                     className={`relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg ring-1 ring-inset transition-opacity duration-150 ${unavailable ? "ring-red-500/30 bg-red-500/5" : skipped ? "ring-white/5 bg-black" : "ring-white/8 bg-white/4"}`}
                 >
-                    {!skipped && (
-                        <span
-                            data-proxy-state={shot.proxyState}
-                            data-proxy-location={shot.proxyLocation}
-                            role="img"
-                            aria-label={proxyLabel}
-                            title={proxyLabel}
-                            className={`absolute left-1.5 top-1.5 z-10 size-2.5 rounded-full ${proxyLibrary ? "bg-emerald-400" : proxyLocal ? "bg-yellow-400" : "border border-white/65"}`}
-                        />
-                    )}
+                    <span
+                        data-proxy-state={shot.proxyState}
+                        data-proxy-location={shot.proxyLocation}
+                        role="img"
+                        aria-label={proxyLabel}
+                        title={proxyLabel}
+                        className={`absolute left-1.5 top-1.5 z-10 size-2.5 rounded-full ${proxyLibrary ? "bg-emerald-400" : proxyLocal ? "bg-yellow-400" : "border border-white/65"}`}
+                    />
                     {(transferring || proxyEncoding) && (
                         <span
                             data-transfer-spinner={transferring ? "" : undefined}
@@ -189,16 +187,6 @@ function ShotCard({
                             />
                         ) : null}
                     </span>
-                    {skipped && !unavailable && (
-                        <span
-                            role="img"
-                            aria-label="Skipped"
-                            title="Skipped"
-                            className="pointer-events-none absolute -left-8 top-4 z-10 w-28 -rotate-45 bg-black py-1 text-center text-[11px] font-bold tracking-wider text-red-100 shadow-sm"
-                        >
-                            SKIP
-                        </span>
-                    )}
                     {unavailable && (
                         <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-red-950/30">
                             <span
