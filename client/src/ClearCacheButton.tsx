@@ -68,7 +68,6 @@ export function ClearCacheButton({ disabled, onBusyChange, onReset }: {
                     <span><span className="block text-zinc-200">Keep {kind.label.toLowerCase()}</span><span className="block text-xs text-zinc-500">{kind.detail}</span></span>
                 </label>)}
             </div>
-            <p className="mt-3 text-xs text-zinc-500">Library files and original videos are kept.</p>
             {error && <p role="alert" className="mt-3 text-sm text-red-300">{error}</p>}
             <div className="mt-6 flex justify-end gap-3">
                 <button autoFocus type="button" disabled={busy} onClick={close} className={secondaryButton}>Cancel</button>
