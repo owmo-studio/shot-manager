@@ -83,6 +83,7 @@ if (!process.versions.electron) {
                 revision: statusOverride.revision + 1,
                 active: false,
                 current: undefined,
+                exportCurrent: undefined,
                 tasks: { completed: 0, total: 0, percent: 0, proxiesRemaining: 0, transfersRemaining: 0 },
                 work: {
                     paused: all,
@@ -409,7 +410,7 @@ if (!process.versions.electron) {
             await js(`window.desktop.updateLibraryOrganization(['${publishedId}'],{field:'notes',operation:'set',value:'Library committed edit'})`);
             await until(()=>js(`!!document.querySelector('[data-shot-status="changes-pending"]')`),'Library update ready');
             await click('Commit');await until(()=>js(`document.querySelector('dialog[open]')?.textContent.includes('Ready to Commit?')`),'Library Commit review');
-            assert.equal(await js(`document.querySelectorAll('dialog details p').length`),1,'Library review only writes metadata');
+            assert.equal(await js(`document.querySelectorAll('dialog details').length`),0,'Library review omits per-file destinations');
             await click('Commit');
             await until(async()=>!(await js('window.desktop.getIngestStatus()')).active && fs.readFileSync(join(root,'library',`${publishedId}.metadata.json`),'utf8').includes('Library committed edit'),'Library metadata Commit');
             for(const [role,bytes] of Object.entries(beforeLibraryEdit)) assert.deepEqual(fs.readFileSync(join(root,'library',`${publishedId}.${role}`)),bytes,'Metadata Commit preserves media assets');
@@ -670,9 +671,7 @@ if (!process.versions.electron) {
                 () => js(`document.querySelector('dialog[open]')?.textContent.includes('↻ Update')`),
                 "Replacement not labeled",
             );
-            assert.ok(
-                await js(`document.querySelector('dialog').textContent.includes('existing Library clip')`),
-            );
+            assert.equal(await js(`document.querySelector('dialog').textContent.includes('existing Library clip')`), false, 'Update tag provides the replacement context without extra copy');
             await click("Cancel");
             // Existing Library assets must indicate an update even without a local receipt.
             const unprocessed = await js(
@@ -812,15 +811,17 @@ if (!process.versions.electron) {
             assert.equal(await js(`document.querySelector('[aria-label="Proxy progress"]').getAttribute('aria-valuenow')`),'61','Proxy bar shows the active encode');
             assert.equal(await js(`document.querySelector('[aria-label="Commit progress"]').getAttribute('aria-valuenow')`),'42','Commit bar shows the active clip');
             const commitOnlyStatus = statusOverride;
-            statusOverride = { ...statusOverride, revision: statusOverride.revision + 1, current:{...statusOverride.current,kind:'sync',percent:73}, tasks: { ...statusOverride.tasks, syncsRemaining: 2, sync: { completed: 1, total: 3, percent: 47 } } };
+            statusOverride = { ...statusOverride, revision: statusOverride.revision + 1, exportCurrent:{...statusOverride.current,id:'e'.repeat(64),kind:'sync',percent:73}, tasks: { ...statusOverride.tasks, syncsRemaining: 2, sync: { completed: 1, total: 3, percent: 47 } } };
             backend.emit('message', { type: 'ingestion:changed', status: statusOverride });
             await until(()=>js(`document.querySelector('[data-work-progress]')?.getAttribute('aria-label')==='1 proxy, 2 commits, 2 exports' && document.querySelector('[aria-label="Export progress"]')?.getAttribute('aria-valuenow')==='73'`),'Export progress coexists with proxy/Commit counts');
+            assert.equal(await js(`document.querySelector('[aria-label="Commit progress"]').getAttribute('aria-valuenow')`),'42','Commit and Export report separate simultaneous percentages');
+            assert.equal(await js(`document.querySelector('[aria-label="Proxy progress"]').getAttribute('aria-valuenow')`),'61','Encoding remains independent of both transfers');
             statusOverride = { ...statusOverride, revision: statusOverride.revision + 1, tasks: { ...statusOverride.tasks, proxiesRemaining: 0, transfersRemaining: 0 } };
             backend.emit('message', { type: 'ingestion:changed', status: statusOverride });
             await until(()=>js(`document.querySelector('[data-work-progress]')?.getAttribute('aria-label')==='0 proxies, 0 commits, 2 exports'`),'Export-only work stays visible');
             statusOverride = { ...commitOnlyStatus, revision: statusOverride.revision + 1 };
             backend.emit('message', { type: 'ingestion:changed', status: statusOverride });
-            await until(()=>js(`document.querySelector('[data-transfer-progress]').getAttribute('data-active')==='true' && document.querySelector('[aria-label="Commit progress"]')?.getAttribute('aria-valuenow')==='42' && document.querySelector('[data-work-progress]')?.getAttribute('aria-label')==='1 proxy, 2 commits, 0 exports'`),'Shared bar returns to the active Commit after Export work finishes');
+            await until(()=>js(`document.querySelector('[data-work-kind="commit"]').getAttribute('data-active')==='true' && document.querySelector('[aria-label="Commit progress"]')?.getAttribute('aria-valuenow')==='42' && document.querySelector('[data-work-progress]')?.getAttribute('aria-label')==='1 proxy, 2 commits, 0 exports'`),'Commit progress stays independent after Export work finishes');
             const sharedQueueReads=ingestReads;
             await click('Library');
             await until(()=>js(`document.querySelector('[data-work-progress]')?.getAttribute('aria-label')==='1 proxy, 2 commits, 0 exports' && document.querySelector('[aria-label="Proxy progress"]')?.getAttribute('aria-valuenow')==='61'`),'Library keeps shared queue progress');

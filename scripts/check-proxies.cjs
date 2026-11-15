@@ -80,6 +80,19 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         assert.deepEqual({ total: mixedProgress.total, proxies: mixedProgress.proxiesRemaining, transfers: mixedProgress.transfersRemaining },
             { total: 6, proxies: 2, transfers: 3 }, 'Commit adds one transfer per clip to existing proxy work');
         assert.equal(overlap, true, 'Encoder and rsync worker can run concurrently');
+        const exportId = 'e'.repeat(64);
+        queue.enqueueLibrary([{ id: exportId, filename: 'Parallel Export fixture', kind: 'sync', execute: async (signal, progress) => {
+            progress(73);
+            await new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(new Error('Stopped fixture Export')), { once: true }));
+        } }]);
+        const parallel = await queue.status();
+        assert.equal(parallel.work.current.percent, 50);
+        assert.ok(parallel.current && parallel.exportCurrent, 'All three workers are active together');
+        assert.equal(parallel.exportCurrent.percent, 73);
+        assert.equal(parallel.exportCurrent.percent, scanner.transferPercent(exportId));
+        await queue.cancel([exportId]);
+        assert.ok((await queue.status()).current && (await queue.status()).work.encoding, 'Cancelling Export preserves Commit and encoding');
+
         assert.ok(scanner.snapshot().shots.every(shot => !shot.editable), 'Submitted clips are locked, including those waiting for a proxy');
         assert.ok(scanner.snapshot().shots.some(shot => shot.ingestState === 'processing'));
         assert.equal(scanner.snapshot().shots.find(shot=>shot.ingestState==='processing').mediaReadiness.state,'ready','Active Commit keeps its underlying readiness until publication');

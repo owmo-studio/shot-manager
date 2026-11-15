@@ -139,34 +139,68 @@ async function until(test, label) { for (let i = 0; i < 750; i++) { if (await te
         assert.ok(scanner.snapshot().shots.every(shot => shot.editable));
         const metadata = JSON.parse(await fs.readFile(join(library, `${b.id}.metadata.json`), 'utf8'));
         assert.equal(metadata.scene, '', 'Stopped append does not publish its updated metadata');
-        // An active Import finishes; queued Exports then precede both kinds of Commit.
-        const order = [];
-        queue.onChange = next => { if (next.current && order.at(-1) !== next.current.id) order.push(next.current.id); };
-        hold = true; entered = false;
+        // Commit and Export have independent serial workers and shared clip locks.
+        const commits = [], exports = [];
+        queue.onChange = next => {
+            if (next.current && commits.at(-1) !== next.current.id) commits.push(next.current.id);
+            if (next.exportCurrent && exports.at(-1) !== next.exportCurrent.id) exports.push(next.exportCurrent.id);
+        };
+        hold = true; entered = false; releaseExport = undefined;
         plan = await queue.preview([a.id,b.id]); await queue.submit(plan.token,[a.id,b.id]);
-        await until(()=>entered,'active Commit before Export priority');
+        await until(()=>entered,'active Commit');
         const metadataId='1'.repeat(64), exportId='2'.repeat(64), secondExportId='3'.repeat(64);
         queue.enqueueLibrary([{id:metadataId,filename:'Metadata fixture',execute:async()=>{}}]);
-        queue.enqueueLibrary([{id:exportId,filename:'First export fixture',kind:'sync',execute:async(signal,progress)=>{
+        const heldExport = {id:exportId,filename:'First export fixture',kind:'sync',execute:async(signal,progress)=>{
             progress(37);
             await new Promise((resolve,reject)=>{
                 const abort=()=>reject(new Error('Stopped fixture Export'));
                 signal.addEventListener('abort',abort,{once:true});
                 releaseExport=()=>{signal.removeEventListener('abort',abort);resolve();};
             });
-        }}]);
+        }};
+        queue.enqueueLibrary([heldExport]);
         queue.enqueueLibrary([{id:secondExportId,filename:'Second export fixture',kind:'sync',execute:async()=>{}}]);
-        assert.equal((await queue.status()).current.id,a.id,'Export never interrupts an active Commit');
-        release(); await until(()=>!!releaseExport,'Export gets next transfer slot');
+        await until(()=>!!releaseExport,'Export starts while Commit is held');
         status=await queue.status();
-        assert.equal(status.current.id,exportId);assert.equal(status.current.kind,'sync');assert.equal(status.current.percent,37);
-        assert.equal(status.current.percent,scanner.transferPercent(exportId),'Footer and card use the same active transfer percentage');
-        assert.equal(status.tasks.transfersRemaining,2);assert.equal(status.tasks.syncsRemaining,2,'Remaining counts include active and queued clips');
-        releaseExport(); await until(async()=>!(await queue.status()).active,'priority queue drains');
-        assert.deepEqual(order,[a.id,exportId,secondExportId,b.id,metadataId],'Exports retain their order ahead of queued Import and metadata Commits');
-        assert.deepEqual((await queue.status()).errors,[]);
+        assert.equal(status.current.id,a.id);assert.equal(status.exportCurrent.id,exportId);
+        assert.equal(status.exportCurrent.percent,37);
+        assert.equal(status.exportCurrent.percent,scanner.transferPercent(exportId),'Export footer and card progress match independently');
+        assert.equal(status.tasks.transfersRemaining,3);assert.equal(status.tasks.syncsRemaining,2);
+        assert.deepEqual(exports,[exportId],'Only one Export executes at a time');
+        assert.throws(()=>queue.enqueueLibrary([{...heldExport,id:a.id}]),/already queued/,'A fingerprint cannot Commit and Export together');
+        release();
+        await until(async()=>!(await queue.status()).current,'Commit lane drains while Export is still held');
+        status=await queue.status();
+        assert.equal(status.active,true);assert.equal(status.exportCurrent.id,exportId);
+        assert.equal(status.tasks.transfersRemaining,0);assert.equal(status.tasks.syncsRemaining,2);
+        assert.equal(scanner.canEditLibrary([exportId]),false,'Draining Commit cannot unlock an active Export');
+        assert.deepEqual(commits,[a.id,b.id,metadataId],'Import and metadata Commits retain acceptance order');
+        releaseExport(); await until(async()=>!(await queue.status()).active,'both lanes drain');
+        assert.deepEqual(exports,[exportId,secondExportId],'Exports retain their own acceptance order');
+
+        // Per-clip cancellation affects one lane; emergency Stop settles both lanes
+        // and clears queued work without starting it afterward.
+        hold=true;entered=false;releaseExport=undefined;
+        await scanner.updateOrganization([a.id,b.id],{field:'notes',operation:'set',value:'Concurrent cancellation'});
+        plan=await queue.preview([a.id,b.id]);await queue.submit(plan.token,[a.id,b.id]);
+        await until(()=>entered,'Commit held for cancellation');
+        queue.enqueueLibrary([heldExport]);await until(()=>!!releaseExport,'Export held for cancellation');
+        await queue.cancel([a.id]);
+        assert.equal((await queue.status()).exportCurrent.id,exportId,'Per-clip Stop leaves the other lane active');
+        await until(async()=>!(await queue.status()).current,'uncancelled Commit completes');
+        hold=true;entered=false;
+        plan=await queue.preview([a.id]);await queue.submit(plan.token,[a.id]);
+        await until(()=>entered,'Commit restarted beside Export');
+        let queuedExportRan=false;
+        queue.enqueueLibrary([{id:secondExportId,filename:'Cancelled queued Export',kind:'sync',execute:async()=>{queuedExportRan=true;}}]);
+        await queue.stop();
+        status=await queue.status();
+        assert.equal(status.active,false);assert.equal(status.current,undefined);assert.equal(status.exportCurrent,undefined);
+        assert.equal(status.tasks.transfersRemaining,0);assert.equal(status.tasks.syncsRemaining,0);
+        assert.equal(queuedExportRan,false);assert.equal(scanner.canEditLibrary([a.id,exportId,secondExportId]),true);
+        assert.deepEqual(status.errors,[]);
         for (const [name, bytes] of originals) assert.deepEqual(await fs.readFile(join(input, name)), bytes);
-        console.log('PASS: active Commit append, immutable reviews/conflicts, duplicate exclusion, stable progress totals, per-clip Eject, worker drain during validation, Stop races, and original preservation.');
+        console.log('PASS: active Commit append, immutable reviews/conflicts, duplicate exclusion, stable progress totals, per-clip Eject, worker drain during validation, parallel Commit/Export lanes, independent progress, cancellation/Stop races, and original preservation.');
     } finally {
         release?.(); releaseCapture?.(); releaseExport?.(); await queue?.close(); await manager?.close();
         await fs.rm(root, { recursive: true, force: true });

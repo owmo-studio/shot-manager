@@ -13,6 +13,7 @@ import { rsyncFile } from './rsync';
 import { AppError } from '../shared/errors';
 import type { ProxyQueue } from './proxies';
 
+type TransferKind = 'commit' | 'sync';
 type Capture = Awaited<ReturnType<ShotScanner['captureIngest']>>;
 interface Entry {
     capture: Capture;
@@ -29,12 +30,12 @@ export class IngestQueue {
     private review?: Review;
     private working = false;
     private closing = false;
-    private run?: Promise<void>;
+    private runs = new Map<TransferKind, Promise<void>>();
     private preparing?: Promise<void>;
     private controller?: AbortController;
     private queuedIds: string[] = [];
     private cancelledIds = new Set<string>();
-    private activeTransfer?: { id: string; controller: AbortController; done: Promise<void> };
+    private activeTransfers = new Map<TransferKind, { id: string; controller: AbortController; done: Promise<void> }>();
     private submission = 0;
     private transferKeys = new Map<string, string>();
     private pending: { entry: Entry; location: LibraryLocation }[] = [];
@@ -167,7 +168,8 @@ export class IngestQueue {
             }
         }
         for (const id of this.queuedIds) pending.set(this.transferKeys.get(id)!, {
-            kind: this.scanner.workKind(id) === 'sync' ? 'sync' : 'transfer', percent: this.state.current?.id === id ? this.state.current.percent : 0,
+            kind: this.scanner.workKind(id) === 'sync' ? 'sync' : 'transfer',
+            percent: [this.state.current, this.state.exportCurrent].find(current => current?.id === id)?.percent ?? 0,
         });
         // Retain completed work while a session is running. New work after idle starts a fresh count.
         if (![...this.tasks.values()].some(task => task.percent < 100) && [...pending.keys()].some(key => !this.tasks.has(key))) this.tasks.clear();
@@ -315,7 +317,7 @@ export class IngestQueue {
                 this.controller = new AbortController();
                 this.cancelledIds.clear();
                 this.transferKeys.clear();
-                this.state = { ...this.state, position: 0, completed: 0, waiting: 0, total: 0, current: undefined };
+                this.state = { ...this.state, position: 0, completed: 0, waiting: 0, total: 0, current: undefined, exportCurrent: undefined };
             }
             const signal = this.controller!.signal;
             this.state.active = true;
@@ -345,13 +347,13 @@ export class IngestQueue {
             if (generation !== this.workGeneration) throw new Error('Work was stopped. Review Commit again.');
             this.validateRetirements(retirements, listing);
             if (this.proxies?.status().paused) this.resume();
-            this.proxies?.prioritize(this.queuedIds);
-            this.proxies?.retry(this.queuedIds);
+            this.prioritizeCommits();
+            this.proxies?.retry(this.commitIds());
             this.scanner.retireSynced(retirements);
             this.review = undefined;
             this.pending.push(...entries.filter(entry => !this.cancelledIds.has(entry.capture.shot.id)).map(entry => ({ entry, location: review.location })));
             this.state.acceptedReviews = [...(this.state.acceptedReviews ?? []), token].slice(-128);
-            if (!this.run) this.run = this.process(signal);
+            this.startWorker('commit');
             this.wakeWorker?.();
             locked = []; // Worker owns the locks now.
             return structuredClone(this.state);
@@ -360,8 +362,8 @@ export class IngestQueue {
                 this.scanner.unlockIngest(locked);
                 this.queuedIds = this.queuedIds.filter(id => !locked.includes(id));
                 this.state.total -= locked.length;
-                if (!this.run) {
-                    this.state.active = false;
+                if (!this.runs.size) {
+                    this.state.active = this.runs.size > 0 || this.queuedIds.length > 0;
                     if (!this.controller?.signal.aborted) this.state.stopping = false;
                     this.state.current = undefined;
                 }
@@ -393,66 +395,78 @@ export class IngestQueue {
         });
     }
 
-    private async process(signal: AbortSignal) {
+    private commitIds() { return this.queuedIds.filter(id => this.scanner.workKind(id) !== 'sync'); }
+    private prioritizeCommits() { this.proxies?.prioritize(this.commitIds()); }
+
+    private startWorker(kind: TransferKind) {
+        if (!this.runs.has(kind)) this.runs.set(kind, this.process(kind, this.controller!.signal));
+    }
+
+    private async process(kind: TransferKind, signal: AbortSignal) {
+        const stateKey = kind === 'sync' ? 'exportCurrent' : 'current';
         try {
             while (!signal.aborted) {
                 this.pending = this.pending.filter(item => !this.cancelledIds.has(item.entry.capture.shot.id));
                 this.libraryPending = this.libraryPending.filter(job => !this.cancelledIds.has(job.id));
-                if (!this.pending.length && !this.libraryPending.length && !this.preparing) break;
+                const jobIndex = this.libraryPending.findIndex(job => (job.kind ?? 'commit') === kind);
+                if (jobIndex < 0 && (kind === 'sync' || (!this.pending.length && !this.preparing))) break;
                 const available = new Set(this.scanner.snapshot().shots.filter(shot => shot.available).map(shot => shot.id));
-                const index = this.proxies ? this.pending.findIndex(({ entry }) => this.proxies!.readyFor(entry.capture.shot.id) || !available.has(entry.capture.shot.id)) : this.pending.length ? 0 : -1;
-                if (index < 0 && !this.libraryPending.length) {
+                const index = kind === 'sync' ? -1 : this.proxies
+                    ? this.pending.findIndex(({ entry }) => this.proxies!.readyFor(entry.capture.shot.id) || !available.has(entry.capture.shot.id))
+                    : this.pending.length ? 0 : -1;
+                if (index < 0 && jobIndex < 0) {
                     this.state.current = undefined; this.state.waiting = this.pending.length; this.publish();
                     await this.waitForWork(signal);
                     continue;
                 }
-                // Exports get the next transfer slot. Keep acceptance order within
-                // each priority, bypassing Imports that are still encoding.
-                const exportIndex = this.libraryPending.findIndex(job => job.kind === 'sync');
-                const jobIndex = Math.max(0, exportIndex);
+                // Each lane is serial. Ready Import and Library Commits retain their
+                // acceptance order; Exports run independently of proxy preparation.
                 const nextJob = this.libraryPending[jobIndex];
-                const libraryJob = nextJob && (exportIndex >= 0 || index < 0 || this.queuedIds.indexOf(nextJob.id) < this.queuedIds.indexOf(this.pending[index].entry.capture.shot.id))
+                const libraryJob = nextJob && (index < 0 || this.queuedIds.indexOf(nextJob.id) < this.queuedIds.indexOf(this.pending[index].entry.capture.shot.id))
                     ? this.libraryPending.splice(jobIndex, 1)[0] : undefined;
                 const item = libraryJob ? undefined : this.pending.splice(index, 1)[0];
                 const shot = libraryJob ?? item!.entry.capture.shot;
                 const controller = new AbortController();
                 let finish!: () => void;
                 const done = new Promise<void>(resolve => { finish = resolve; });
-                this.activeTransfer = { id: shot.id, controller, done };
+                this.activeTransfers.set(kind, { id: shot.id, controller, done });
                 const clipSignal = AbortSignal.any([signal, controller.signal]);
-                this.state.waiting = 0;
+                if (kind === 'commit') this.state.waiting = 0;
                 this.state.position++;
-                this.state.current = { id: shot.id, filename: shot.filename, percent: 0, phase: 'transferring', kind: libraryJob?.kind ?? 'commit' };
+                const current: NonNullable<IngestStatus['current']> = { id: shot.id, filename: shot.filename, percent: 0, phase: 'transferring', kind };
+                this.state[stateKey] = current;
                 this.scanner.processingIngest(shot.id);
                 this.publish();
                 try {
                     if (libraryJob) await libraryJob.execute(clipSignal, percent => {
-                        this.state.current!.percent = Math.max(0, Math.min(99, percent));
-                        this.scanner.setTransferProgress(shot.id, this.state.current!.percent); this.publish(true);
+                        if (clipSignal.aborted || this.state[stateKey] !== current) return;
+                        current.percent = Math.max(0, Math.min(99, percent));
+                        this.scanner.setTransferProgress(shot.id, current.percent); this.publish(true);
                     });
                     else await this.execute(item!.entry, item!.location, clipSignal);
-                    this.state.current!.percent = 100;
+                    current.percent = 100;
                     this.state.completed = (this.state.completed ?? 0) + 1;
                     this.publish();
                 } catch (error) {
                     if (!clipSignal.aborted) this.state.errors.push({ id: shot.id, filename: shot.filename,
-                        message: error instanceof Error ? error.message : String(error), eventId: randomUUID(), kind: libraryJob?.kind });
+                        message: error instanceof Error ? error.message : String(error), eventId: randomUUID(), kind });
                     this.publish();
                 } finally {
                     this.queuedIds = this.queuedIds.filter(id => id !== shot.id); this.scanner.unlockIngest([shot.id]);
-                    this.proxies?.prioritize(this.queuedIds);
-                    this.activeTransfer = undefined; finish();
+                    this.prioritizeCommits();
+                    this.activeTransfers.delete(kind); finish();
                 }
             }
         } finally {
-            this.scanner.unlockIngest(this.queuedIds);
-            this.queuedIds = [];
-            this.pending = [];
-            this.libraryPending = [];
-            this.run = undefined;
-            this.state.active = false;
-            if (!signal.aborted) this.state.stopping = false;
-            this.state.current = undefined; this.state.waiting = 0;
+            // A lane must never clear the other lane's jobs, locks, or progress.
+            const remaining = this.queuedIds.filter(id => (this.scanner.workKind(id) ?? 'commit') === kind);
+            this.scanner.unlockIngest(remaining);
+            this.queuedIds = this.queuedIds.filter(id => !remaining.includes(id));
+            if (kind === 'commit') { this.pending = []; this.state.waiting = 0; }
+            this.libraryPending = this.libraryPending.filter(job => (job.kind ?? 'commit') !== kind);
+            this.runs.delete(kind);
+            this.state.active = this.runs.size > 0 || this.queuedIds.length > 0;
+            this.state[stateKey] = undefined;
             this.publish();
         }
     }
@@ -467,7 +481,7 @@ export class IngestQueue {
             this.scanner.lockLibraryCommit(ids, kind);
             if (!this.state.active) {
                 this.controller = new AbortController(); this.cancelledIds.clear(); this.transferKeys.clear();
-                this.state = { ...this.state, position: 0, completed: 0, waiting: 0, total: 0, current: undefined };
+                this.state = { ...this.state, position: 0, completed: 0, waiting: 0, total: 0, current: undefined, exportCurrent: undefined };
             }
             this.state.active = true; this.state.total += jobs.length; this.submission++;
             for (const job of jobs) {
@@ -476,7 +490,7 @@ export class IngestQueue {
             }
             this.libraryPending.push(...jobs); this.publish();
             if (reviewToken) this.state.acceptedReviews = [...(this.state.acceptedReviews ?? []), reviewToken].slice(-128);
-            if (!this.run) this.run = this.process(this.controller!.signal);
+            this.startWorker(kind);
             this.wakeWorker?.();
             return structuredClone(this.state);
         } finally { this.working = false; }
@@ -486,17 +500,17 @@ export class IngestQueue {
         if (this.closing) throw new Error('The app is closing.');
         // Cancel Commit snapshots only. Background proxy generation remains useful and editable.
         const selected = ids.filter(id => this.queuedIds.includes(id));
-        const active = this.activeTransfer && selected.includes(this.activeTransfer.id) ? this.activeTransfer : undefined;
+        const active = [...this.activeTransfers.values()].filter(transfer => selected.includes(transfer.id));
         selected.forEach(id => this.cancelledIds.add(id));
         this.pending = this.pending.filter(item => !selected.includes(item.entry.capture.shot.id));
         this.libraryPending = this.libraryPending.filter(job => !selected.includes(job.id));
         this.queuedIds = this.queuedIds.filter(id => !selected.includes(id));
-        active?.controller.abort();
-        this.scanner.unlockIngest(selected.filter(id => id !== active?.id));
-        this.proxies?.prioritize(this.queuedIds);
+        active.forEach(transfer => transfer.controller.abort());
+        this.scanner.unlockIngest(selected.filter(id => !active.some(transfer => transfer.id === id)));
+        this.prioritizeCommits();
         this.wakeWorker?.();
         if (this.review?.entries.some(entry => selected.includes(entry.capture.shot.id))) this.review = undefined;
-        await Promise.all([this.preparing, active?.done]);
+        await Promise.all([this.preparing, ...active.map(transfer => transfer.done)]);
         // A publication that beat cancellation has already persisted its successful receipt.
         this.publish();
         return this.scanner.snapshot();
@@ -505,7 +519,7 @@ export class IngestQueue {
     async eject(ids: string[]) {
         if (this.closing) throw new Error('The app is closing.');
         const unique = [...new Set(ids)];
-        if (unique.some(id => this.queuedIds.includes(id) || this.activeTransfer?.id === id)) {
+        if (unique.some(id => this.queuedIds.includes(id) || [...this.activeTransfers.values()].some(transfer => transfer.id === id))) {
             throw new AppError('Stop queued or active commits before ejecting these clips.', 'CLIP_COMMIT_ACTIVE', 'failed', 409);
         }
         this.scanner.beginEject(unique);
@@ -544,7 +558,7 @@ export class IngestQueue {
                 // Transfer bytes exclude metadata publication and the saved receipt.
                 // Reserve 100% until the entire clip has finished successfully.
                 const percent = Math.min(99, Math.round(bytes / Math.max(totalBytes, 1) * 100));
-                if (this.state.current && this.state.current.percent !== percent) {
+                if (!signal.aborted && this.state.current?.id === shot.id && this.state.current.percent !== percent) {
                     this.state.current.percent = percent;
                     this.scanner.setTransferProgress(shot.id, percent);
                     this.publish(true);
@@ -593,9 +607,8 @@ export class IngestQueue {
     private async cancelTransfers() {
         this.review = undefined;
         this.controller?.abort();
-        this.scanner.unlockIngest(this.queuedIds.filter(id => id !== this.state.current?.id));
         await this.preparing;
-        await this.run;
+        await Promise.all(this.runs.values());
         this.proxies?.prioritize([]);
     }
 

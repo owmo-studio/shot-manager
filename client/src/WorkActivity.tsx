@@ -10,16 +10,13 @@ export function WorkActivity({ status, disabled, checking, onRefresh, onStop, co
     const commits = status.tasks?.transfersRemaining ?? 0;
     const exports = status.tasks?.syncsRemaining ?? 0;
     const proxyProgress = proxies > 0 ? status.work?.current : undefined;
-    const transfer = status.current && (status.current.kind === 'sync' ? exports : commits) > 0 ? status.current : undefined;
-    const exporting = transfer?.kind === 'sync';
-    const transferLabel = transfer ? exporting ? 'Export progress' : 'Commit progress' : 'Transfer progress';
     const percent = (value?: number) => Math.max(0, Math.min(100, value ?? 0));
     const canStop = hasWork && !disabled && !status.stopping;
     const summary = `${proxies} ${proxies === 1 ? 'proxy' : 'proxies'}, ${commits} ${commits === 1 ? 'commit' : 'commits'}, ${exports} ${exports === 1 ? 'export' : 'exports'}`;
     return <div data-work-progress data-work-active={hasWork} data-ingest-progress={status.active ? '' : undefined}
         role="status" aria-label={summary}
         className="col-start-2 row-start-1 flex items-center gap-4 text-xs tabular-nums">
-        <div className="grid w-[min(416px,32vw)] grid-cols-2 gap-4">
+        <div className="grid w-[min(480px,38vw)] grid-cols-3 gap-4">
             <div data-work-kind="proxy" data-active={proxies > 0} className="flex flex-col gap-1">
                 <div className="flex items-center gap-2">
                     <span className={`text-[11px] ${proxies > 0 ? 'text-zinc-200' : 'text-zinc-600'}`}>Proxies</span>
@@ -31,23 +28,23 @@ export function WorkActivity({ status, disabled, checking, onRefresh, onStop, co
                     <div key={proxyProgress?.id ?? 'idle'} className="h-full rounded-full bg-yellow-400 motion-safe:transition-[width]" style={{ width: `${percent(proxyProgress?.percent)}%` }} />
                 </div>
             </div>
-            <div data-transfer-progress data-active={commits + exports > 0} className="flex flex-col gap-1">
-                <div className="flex items-center justify-between gap-4">
-                    <span data-work-kind="commit" data-active={commits > 0} className="flex items-center gap-2">
-                        <span className={`text-[11px] ${transfer && !exporting ? 'text-zinc-200' : 'text-zinc-600'}`}>Commits</span>
-                        <span className={`font-medium ${commits > 0 ? 'text-white' : 'text-zinc-600'}`}>{commits}</span>
-                    </span>
-                    <span data-work-kind="export" data-active={exports > 0} className="flex items-center gap-2">
-                        <span className={`text-[11px] ${exporting ? 'text-zinc-200' : 'text-zinc-600'}`}>Exports</span>
-                        <span className={`font-medium ${exports > 0 ? 'text-white' : 'text-zinc-600'}`}>{exports}</span>
-                    </span>
-                </div>
-                <div role="progressbar" aria-label={transferLabel} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent(transfer?.percent)}
-                    aria-valuetext={transfer ? `${exporting ? 'Exporting' : 'Committing'} ${transfer.filename}: ${percent(transfer.percent)}%` : commits + exports > 0 ? 'Waiting to transfer' : 'No transfers queued'}
-                    className="h-1.5 overflow-hidden rounded-full bg-white/8">
-                    <div key={transfer?.id ?? 'idle'} className={`h-full rounded-full motion-safe:transition-[width] ${exporting ? 'bg-emerald-400' : 'bg-blue-500'}`} style={{ width: `${percent(transfer?.percent)}%` }} />
-                </div>
-            </div>
+            {([
+                { kind: 'commit', label: 'Commits', count: commits, current: status.current, color: 'bg-blue-500' },
+                { kind: 'export', label: 'Exports', count: exports, current: status.exportCurrent, color: 'bg-emerald-400' },
+            ] as const).map(({ kind, label, count, current, color }) => {
+                const active = count > 0 ? current : undefined;
+                return <div key={kind} data-work-kind={kind} data-active={count > 0} className="flex flex-col gap-1">
+                    <div className="flex items-center gap-2">
+                        <span className={`text-[11px] ${count > 0 ? 'text-zinc-200' : 'text-zinc-600'}`}>{label}</span>
+                        <span className={`font-medium ${count > 0 ? 'text-white' : 'text-zinc-600'}`}>{count}</span>
+                    </div>
+                    <div role="progressbar" aria-label={kind === 'commit' ? 'Commit progress' : 'Export progress'} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent(active?.percent)}
+                        aria-valuetext={active ? `${kind === 'commit' ? 'Committing' : 'Exporting'} ${active.filename}: ${percent(active.percent)}%` : count > 0 ? 'Waiting to transfer' : `No ${label.toLowerCase()} queued`}
+                        className="h-1.5 overflow-hidden rounded-full bg-white/8">
+                        <div key={active?.id ?? 'idle'} className={`h-full rounded-full motion-safe:transition-[width] ${color}`} style={{ width: `${percent(active?.percent)}%` }} />
+                    </div>
+                </div>;
+            })}
         </div>
         {controlTarget && createPortal(<button type="button" aria-label={hasWork ? 'Stop processing' : 'Refresh assets'}
             aria-busy={checking || status.stopping}

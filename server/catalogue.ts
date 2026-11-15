@@ -303,10 +303,10 @@ export class LibraryCatalogue {
         }));
         await this.queue.status();
         if (review.generation !== this.queue.workRevision) throw new Error('Work was stopped. Commit again when ready.');
-        const result = this.queue.enqueueLibrary(captures.map(capture => ({ ...capture, execute: signal => this.commit(capture, review.location, signal) })), token);
+        const result = this.queue.enqueueLibrary(captures.map(capture => ({ ...capture, execute: (signal, progress) => this.commit(capture, review.location, signal, progress) })), token);
         this.review = undefined; this.changed(); return result;
     }
-    private async commit(capture: { id: string; attributes: ReturnType<typeof ingestAttributes>; thumbnail?: Buffer }, location: LibraryLocation, signal: AbortSignal) {
+    private async commit(capture: { id: string; attributes: ReturnType<typeof ingestAttributes>; thumbnail?: Buffer }, location: LibraryLocation, signal: AbortSignal, progress: (percent: number) => void) {
         const { id, attributes } = capture;
         signal.throwIfAborted(); await this.validateLocation(location);
         const { metadata, identity } = await readLibraryMetadata(location, id);
@@ -325,10 +325,11 @@ export class LibraryCatalogue {
                 await writeFile(staged, capture.thumbnail, { flag: 'wx', mode: 0o600 });
                 await this.validateLocation(location); signal.throwIfAborted();
                 if (await libraryFileIdentity(target) !== expected) throw new Error('Library thumbnail changed during Commit. Commit again.');
-                await this.transfer(staged, target, signal, () => undefined, true);
+                await this.transfer(staged, target, signal, percent => progress(Math.min(99, percent)), true);
             }
             await this.validateLocation(location);
             signal.throwIfAborted();
+            progress(99);
             await writeFile(temporary, JSON.stringify(updated, null, 2) + '\n', { flag: 'wx', flush: true });
             await this.validateLocation(location); signal.throwIfAborted();
             if (await libraryFileIdentity(path) !== identity) throw new Error('Library metadata changed during Commit. Commit again.');

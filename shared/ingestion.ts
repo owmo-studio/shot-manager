@@ -32,7 +32,9 @@ export interface IngestStatus {
         sync?: { completed: number; total: number; percent: number } };
     work?: { paused: boolean; busy: boolean; encoding: boolean; queued: number; scratchPath: string | null; error?: string;
         current?: { id: string; percent: number } };
+    // Independent active transfer lanes; current is the Commit worker.
     current?: { id: string; filename: string; percent: number; phase: 'transferring' | 'metadata'; kind?: 'commit' | 'sync' };
+    exportCurrent?: IngestStatus['current'];
     errors: { id: string; filename: string; message: string; eventId: string; kind?: 'commit' | 'sync' }[];
     acceptedReviews?: string[];
 }

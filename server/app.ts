@@ -62,16 +62,19 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
   })
   catalogue.onChange = () => onLibraryChanged?.({ revision: ++libraryRevision, vocabularyRevision: libraryRevision })
   workspace.scanner.organization.onChange = () => { catalogue.changed(); void workspace.scanner.reloadOrganizations().catch(error => server.log.warn(error)) }
-  let catalogueQueueState = ''
+  let catalogueQueueState = '', catalogueTransferProgress = ''
   ingestion.onChange = status => {
     onIngestChanged?.(status)
-    // Import byte/proxy progress does not change catalogue rows. Notify only for
-    // Commit membership/lock transitions; descriptive edits have their own notice.
-    const next = JSON.stringify([status.active, status.stopping, status.current?.id, status.total, status.completed, status.waiting, status.tasks?.transfersRemaining])
-    if (next !== catalogueQueueState || (status.current && workspace.scanner.workKind(status.current.id) === 'sync')) {
+    // Membership changes reload drafts; Library transfer progress only needs a
+    // new local snapshot. Import/proxy progress must not reload the catalogue.
+    const next = JSON.stringify([status.active, status.stopping, status.current?.id, status.exportCurrent?.id, status.total, status.completed, status.waiting, status.tasks?.transfersRemaining, status.tasks?.syncsRemaining])
+    const libraryCommit = status.current && workspace.scanner.workKind(status.current.id) === 'commit' ? status.current : undefined
+    const progress = JSON.stringify([libraryCommit?.id, libraryCommit?.percent, status.exportCurrent?.id, status.exportCurrent?.percent])
+    if (next !== catalogueQueueState) {
       catalogueQueueState = next; catalogue.changed()
       void workspace.scanner.reloadOrganizations().catch(error => server.log.warn(error))
-    }
+    } else if (progress !== catalogueTransferProgress) catalogue.changed()
+    catalogueTransferProgress = progress
   }
   ingestion.onPublished = async (metadata, location, names) => {
     await catalogue.published(metadata, location, names)
