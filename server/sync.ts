@@ -9,7 +9,7 @@ import { inspectLibrary, libraryFileIdentity, readLibraryMetadata, within } from
 import { ingestAttributes } from '../shared/ingestion';
 import { resolveFormatter } from './resolveExport';
 import type { ExportClipPlan, ExportFormatter } from './exportPlan';
-import { checkExportDirectories, exportBatchFilename, exportFileIdentity, exportPath, inspectExportDirectories, publishExportFile, readExportOwner } from './exportFiles';
+import { checkExportDirectories, exportMetadataFilename, exportFileIdentity, exportPath, inspectExportDirectories, publishExportFile, readExportDocument, readExportOwner } from './exportFiles';
 import type { ExportDirectories } from './exportFiles';
 import type { LibraryLocation } from './library';
 import { rsyncFile } from './rsync';
@@ -93,6 +93,8 @@ export class LibrarySync {
             const library = await this.libraryLocation(), destination = choice.location;
             await this.locations(library, destination);
             const directories = await inspectExportDirectories(destination.path);
+            const document = await readExportDocument(destination.path, exportMetadataFilename);
+            this.formatter.manifest([], destination.path, document.content);
             const collection = await this.catalogue.refresh();
             if (collection.error) throw new Error(collection.error);
             const captures: Capture[] = [], reserved = new Set<string>();
@@ -165,7 +167,6 @@ export class LibrarySync {
             const latest = await this.catalogue.snapshot();
             if (captures.some(c => { const shot = latest.shots.find(s => s.id === c!.id); return !shot?.editable || shot.ingestState === 'changes-pending'; })) throw new Error('Clips changed. Commit or Revert, then review Export again.');
             if (review.generation !== this.queue.workRevision) throw new Error('Work was stopped. Review Export again.');
-            const batch = { filename: exportBatchFilename(), identity: null as string | null, completed: [] as ExportClipPlan[] };
             const guard = async () => {
                 await this.locations(review.library, review.destination);
                 await checkExportDirectories(review.destination.path, directories);
@@ -175,6 +176,10 @@ export class LibrarySync {
                     await this.locations(review.library, review.destination);
                     await checkExportDirectories(review.destination.path, directories, true, () => this.locations(review.library, review.destination));
                     await this.validate(capture, review.library);
+                    // Read the latest document when this serial Export job starts,
+                    // including rows written by earlier submissions to this folder.
+                    const document = await readExportDocument(review.destination.path, exportMetadataFilename);
+                    const content = this.formatter.manifest([capture.plan!], review.destination.path, document.content);
                     const total = capture.files.reduce((sum, file) => sum + file.bytes, 0) || 1;
                     let completed = 0;
                     for (const file of capture.files) {
@@ -184,13 +189,10 @@ export class LibrarySync {
                         await this.transfer(file.from, file.to, signal, percent => progress((completed + file.bytes * percent / 100) / total * 99));
                         completed += file.bytes;
                     }
-                    // The per-export CSV advertises completed media only.
+                    // Publish the row only after this clip's media has succeeded.
                     if (await libraryFileIdentity(join(review.library.path, libraryAssetName(capture.id, 'metadata', 'json'))) !== capture.metadataIdentity) throw new Error('Library metadata changed during Export. Review Export again.');
-                    const plan = capture.plan!;
-                    const completedPlans = [...batch.completed, plan];
-                    batch.identity = await publishExportFile(review.destination.path, batch.filename,
-                        this.formatter.manifest(completedPlans, review.destination.path), batch.identity, signal, guard);
-                    batch.completed = completedPlans;
+                    await publishExportFile(review.destination.path, exportMetadataFilename,
+                        content, document.identity, signal, guard);
                 }
             })), token);
             this.reviews.delete(token); return result;

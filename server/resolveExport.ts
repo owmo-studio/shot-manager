@@ -8,6 +8,36 @@ const columns = ['File Name', 'Clip Directory', 'Clip Name', 'Description', 'Sce
 // Quote only fields that need CSV escaping, as in Resolve's own metadata export.
 const csvCell = (value: string) => /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 
+// CSV fields may contain commas, escaped quotes, or embedded line breaks.
+function readRows(content: string): string[][] {
+    const rows: string[][] = [];
+    let row: string[] = [], cell = '', quoted = false, closed = false;
+    const invalid = () => new Error('Export metadata CSV is invalid or has different columns. The file has been preserved.');
+    const field = () => { row.push(cell); cell = ''; closed = false; if (row.length > columns.length) throw invalid(); };
+    const record = () => { field(); rows.push(row); row = []; };
+    const text = content.replace(/^\uFEFF/, '');
+    for (let i = 0; i < text.length; i++) {
+        const character = text[i];
+        if (quoted) {
+            if (character === '"') {
+                if (text[i + 1] === '"') { cell += '"'; i++; }
+                else { quoted = false; closed = true; }
+            } else cell += character;
+        } else if (character === ',') field();
+        else if (character === '\r' || character === '\n') {
+            record(); if (character === '\r' && text[i + 1] === '\n') i++;
+        } else if (character === '"' && !cell && !closed) quoted = true;
+        else {
+            if (closed || character === '"') throw invalid();
+            cell += character;
+        }
+    }
+    if (quoted) throw invalid();
+    if (row.length || cell || closed) record();
+    if (JSON.stringify(rows.shift()) !== JSON.stringify(columns) || rows.some(row => row.length !== columns.length || !row[0])) throw invalid();
+    return rows;
+}
+
 export const resolveFormatter: ExportFormatter = {
     id: 'resolve',
     clip(metadata, extension, suffixLength) {
@@ -31,8 +61,9 @@ export const resolveFormatter: ExportFormatter = {
                 Keywords: [...new Set(keywords)].join(', '), 'Identity': metadata.identity ?? '', 'Project': metadata.project ?? '',
                 'Group': metadata.group, 'Camera': metadata.camera, 'Quality': metadata.rating ?? '' } };
     },
-    manifest(clips, destination) {
-        const rows = clips.map(clip => columns.map(column => column === 'File Name' ? clip.source : column === 'Clip Directory' ? destination : clip.fields[column] ?? ''));
-        return [columns, ...rows].map(row => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
+    manifest(clips, destination, existing) {
+        const rows = new Map((existing === undefined ? [] : readRows(existing)).map(row => [row[0], row]));
+        for (const clip of clips) rows.set(clip.source, columns.map(column => column === 'File Name' ? clip.source : column === 'Clip Directory' ? destination : clip.fields[column] ?? ''));
+        return [columns, ...rows.values()].map(row => row.map(csvCell).join(',')).join('\r\n') + '\r\n';
     },
 };

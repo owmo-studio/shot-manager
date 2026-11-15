@@ -1,6 +1,6 @@
 {
   "name": "owmo-shot-manager",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "A local desktop workspace for video processing",
   "main": "out/main/index.cjs",
@@ -27,7 +27,9 @@
     "check:sync": "node scripts/check-sync.cjs",
     "check:proxy-priority": "node scripts/check-proxy-priority.cjs",
     "check:proxies": "node scripts/check-proxies.cjs",
-    "check:ingestion-ui": "npm run build && node scripts/check-ingestion-ui.cjs"
+    "check:ingestion-ui": "npm run build && node scripts/check-ingestion-ui.cjs",
+    "package:mac": "npm run build && node scripts/package-mac.cjs",
+    "check:packaged": "node scripts/check-packaged.cjs"
   },
   "engines": {
     "node": ">=22.12.0"
@@ -45,6 +47,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
     "electron": "^45.2.0",
+    "electron-builder": "^26.18.0",
     "electron-vite": "^6.0.0",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",

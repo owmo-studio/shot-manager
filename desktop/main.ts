@@ -85,7 +85,7 @@ function requireMainWindow(event: IpcMainInvokeEvent): BrowserWindow {
 }
 
 async function startBackend(): Promise<void> {
-  const sourceLuts = join(app.getAppPath(), 'resources', 'luts')
+  const sourceLuts = app.isPackaged ? join(process.resourcesPath, 'luts') : join(app.getAppPath(), 'resources', 'luts')
   const lutDirectory = existsSync(sourceLuts) ? sourceLuts : join(__dirname, '..', 'resources', 'luts')
   const configurationPath = join(app.getPath('userData'), 'configuration.json')
   const cache = await managedCacheLocation()
@@ -95,6 +95,8 @@ async function startBackend(): Promise<void> {
   backend = utilityProcess.fork(join(__dirname, 'backend.cjs'), [], {
     serviceName: 'Shot Manager Backend',
     env: { ...process.env, SHOT_MANAGER_TOKEN: token,
+      // Finder does not inherit the shell PATH that finds Homebrew media tools.
+      PATH: [...new Set([...(process.env.PATH ?? '').split(':'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].filter(Boolean))].join(':'),
       SHOT_MANAGER_THUMBNAIL_CACHE: storage.thumbnails, SHOT_MANAGER_FINGERPRINT_DIRECTORY: storage.fingerprints,
       SHOT_MANAGER_ORGANIZATION_FILE: storage.metadata, SHOT_MANAGER_CACHE_ROOT: storage.root,
       SHOT_MANAGER_CACHE_PARENT: cache.parent, SHOT_MANAGER_CACHE_MOUNT: cache.mount,

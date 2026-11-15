@@ -366,6 +366,7 @@ function App() {
             <header className="grid grid-cols-[1fr_auto_1fr] items-center gap-6 border-b border-white/8 px-6 py-4">
                 <h1 className="font-semibold tracking-tight">
                     OWMO <span className="font-normal text-zinc-400">Shot Manager</span>
+                    <span aria-label="Application version" className="ml-2 text-xs font-normal tracking-normal text-zinc-400">{__APP_VERSION__}</span>
                 </h1>
                 <nav aria-label="Workspace" className="flex gap-1 rounded-lg bg-white/4 p-1">
                     {(['import', 'library'] as const).map(view => <button key={view} type="button"

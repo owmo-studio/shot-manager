@@ -433,13 +433,13 @@ if (!process.versions.electron) {
             await until(()=>js(`!!document.querySelector('dialog [data-sync-included]') && Array.from(document.querySelectorAll('dialog button')).find(el=>el.textContent.trim()==='Export')?.disabled===false`),'Export plan ready');
             await fs.promises.writeFile('/tmp/owmo-sync-review.png',(await window.webContents.capturePage()).toPNG());
             await click('Export');
-            await until(async()=>!(await js('window.desktop.getIngestStatus()')).active && fs.existsSync(join(root,'destination','Metadata')) && fs.readdirSync(join(root,'destination','Metadata')).length===1,'Resolve Export completes');
+            await until(async()=>!(await js('window.desktop.getIngestStatus()')).active && fs.existsSync(join(root,'destination','_metadata.csv')),'Resolve Export completes');
             const exportedMetadata=JSON.parse(fs.readFileSync(join(root,'library',`${publishedId}.metadata.json`),'utf8'));
             const exportBase=require('node:path').parse(exportedMetadata.originalFilename).name+'__'+publishedId.slice(0,8);
-            assert.deepEqual(fs.readdirSync(join(root,'destination')).sort(),['Metadata','Proxy',`${exportBase}.mp4`].sort());
+            assert.deepEqual(fs.readdirSync(join(root,'destination')).sort(),['_metadata.csv','Proxy',`${exportBase}.mp4`].sort());
             for(const [name,role] of [[`${exportBase}.mp4`,'source.mp4'],[`Proxy/${exportBase}.mov`,'proxy.mov']]) assert.deepEqual(fs.readFileSync(join(root,'destination',name)),fs.readFileSync(join(root,'library',`${publishedId}.${role}`)));
-            assert.ok(fs.readdirSync(join(root,'destination','Metadata')).every(name=>name.endsWith('.csv')),'Export exports CSV metadata only');
-            const manifest=fs.readFileSync(join(root,'destination','Metadata',fs.readdirSync(join(root,'destination','Metadata'))[0]),'utf8');
+            assert.ok(!fs.existsSync(join(root,'destination','Metadata')),'Export does not create a Metadata folder');
+            const manifest=fs.readFileSync(join(root,'destination','_metadata.csv'),'utf8');
             assert.ok(manifest.startsWith('File Name,Clip Directory,Clip Name,'));
             assert.ok(manifest.includes(`\r\n${exportBase}.mp4,`),'CSV matches exported media filename');
             await js(`window.desktop.updateLibraryOrganization(['${publishedId}'],{field:'scene',operation:'set',value:'Pending Export test'})`);

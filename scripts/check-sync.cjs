@@ -34,7 +34,7 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
             await fs.writeFile(join(library, `${id}.thumb.jpg`), Buffer.from([255, 216, 255, 217]));
         }
         const outputName=id=>`Camera-${id[0]}__${id.slice(0,8)}`;
-        const manifestNames=()=>fs.readdir(join(destination,'Metadata'));
+        const metadataFile=join(destination,'_metadata.csv');
         const original = new Map(await Promise.all((await fs.readdir(library)).map(async name => [name, await fs.readFile(join(library, name))])));
         const inspect = () => inspectLibrary(library);
         scanner = new ShotScanner(join(cache, 'thumbnails'), undefined, join(cache, 'metadata.json'));
@@ -63,22 +63,21 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         assert.equal((await fs.readdir(destination)).length, 0, 'Rejected selection queues nothing');
         await sync.submit(r.token, [ids[0]]); await idle();
         assert.deepEqual((await queue.status()).tasks.sync, { completed: 1, total: 1, percent: 100 }, 'Completed Export progress is retained until the next work session');
-        assert.deepEqual((await fs.readdir(destination)).sort(), [`${outputName(ids[0])}.mp4`, 'Metadata', 'Proxy'].sort(), 'Source is directly in the chosen folder');
+        assert.deepEqual((await fs.readdir(destination)).sort(), [`${outputName(ids[0])}.mp4`, '_metadata.csv', 'Proxy'].sort(), 'Source is directly in the chosen folder');
         assert.deepEqual(await fs.readFile(join(destination,`${outputName(ids[0])}.mp4`)),original.get(`${ids[0]}.source.mp4`));
         assert.deepEqual(await fs.readFile(join(destination,'Proxy',`${outputName(ids[0])}.mov`)),original.get(`${ids[0]}.proxy.mov`));
-        assert.ok((await fs.readdir(join(destination,'Metadata'))).every(name=>name.endsWith('.csv')), 'Only batch CSVs are exported as metadata');
-        let manifests=await manifestNames();assert.equal(manifests.length,1);
-        let rows=await parseCSV(join(destination,'Metadata',manifests[0]));
+        assert.equal(await fs.stat(join(destination,'Metadata')).catch(()=>null),null,'No metadata subfolder is created');
+        let rows=await parseCSV(metadataFile);
         assert.equal(rows.length,1);assert.equal(rows[0]['File Name'],`${outputName(ids[0])}.mp4`);assert.equal(rows[0]['Clip Directory'],destination);
         for(const field of ['Description','Scene','Camera #','Good Take','Comments','Keywords','Identity','Quality']) assert.equal(rows[0][field],'','Optional metadata stays blank');
-        const firstManifest=await fs.readFile(join(destination,'Metadata',manifests[0]));
+        const firstManifest=await fs.readFile(metadataFile);
         r = await review([ids[0]]); assert.equal(r.clips[0].mode, 'replace');
         const destinationFile = join(destination, `${outputName(ids[0])}.mp4`);
         const before = await fs.stat(destinationFile);
         await sync.submit(r.token, [ids[0]]); await idle();
         assert.equal((await fs.stat(destinationFile)).ino, before.ino, 'rsync quick check avoids recopying');
-        assert.equal((await manifestNames()).length,2,'Each export gets its own manifest');
-        assert.deepEqual(await fs.readFile(join(destination,'Metadata',manifests[0])),firstManifest,'Later exports preserve earlier CSVs');
+        assert.deepEqual((await fs.readdir(destination)).filter(name=>name.endsWith('.csv')),['_metadata.csv'],'Repeated exports keep one CSV');
+        assert.deepEqual(await fs.readFile(metadataFile),firstManifest,'Re-export updates the same row without duplicates');
         r = await review([ids[0]]);
         await fs.writeFile(destinationFile, 'Changed after review');
         await assert.rejects(sync.submit(r.token, [ids[0]]), /Destination files changed/);
@@ -110,17 +109,18 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         await queue.cancel([ids[0]]); gate = undefined; await idle();
         assert.equal(aborts, 1); assert.equal((await catalogue.snapshot()).shots.find(s => s.id === ids[0]).editable, true);
         assert.ok(await fs.stat(join(destination, `${outputName(ids[1])}.mp4`)), 'Unrelated appended clip completes');
-        const manifestsBeforeStop=await manifestNames();
+        const metadataBeforeStop=await fs.readFile(metadataFile);
         let globalStarted; const globalActive = new Promise(resolve => { globalStarted = resolve; }); gate = true; entered = globalStarted;
         await submit(ids); await globalActive; await queue.stop(); gate = undefined; await idle();
         assert.equal(aborts, 2, 'Toolbar Stop aborts the active Export');
-        assert.deepEqual(await manifestNames(),manifestsBeforeStop,'Cancelled batches publish no CSV');
+        assert.deepEqual(await fs.readFile(metadataFile),metadataBeforeStop,'Cancelled exports leave the CSV unchanged');
         assert.ok((await catalogue.snapshot()).shots.every(s => s.editable), 'Toolbar Stop unlocks queued and active exports');
-        const manifestsBeforeFailure=new Set(await manifestNames());
+        const rowsBeforeFailure=await parseCSV(metadataFile);
         r = await review(ids); fail = true; await sync.submit(r.token, ids); await idle();
-        const failureManifest=(await manifestNames()).find(name=>!manifestsBeforeFailure.has(name));
-        rows=await parseCSV(join(destination,'Metadata',failureManifest));
-        assert.deepEqual(rows.map(row=>row['File Name']),[`${outputName(ids[1])}.mp4`],'Failed clips never appear in the export CSV');
+        rows=await parseCSV(metadataFile);
+        assert.equal(rows.length,rowsBeforeFailure.length,'Re-exports preserve previously exported filenames without duplicates');
+        assert.ok(rows.some(row=>row['File Name']===`${outputName(ids[1])}.mp4`),'Appended exports add their rows');
+        assert.deepEqual(rows.find(row=>row['File Name']===r.clips[0].outputFilename),rowsBeforeFailure.find(row=>row['File Name']===r.clips[0].outputFilename),'A failed re-export keeps its previously completed row');
         status = await queue.status(); assert.equal(status.errors.at(-1).kind, 'sync'); assert.match(status.errors.at(-1).message, /Synthetic transfer failure/);
         assert.ok((await catalogue.snapshot()).shots.every(s => s.editable && !s.ingestState), 'Failures unlock; exports do not create Commit state');
         // Subfolder replacement and symlinks must not redirect writes.
@@ -129,10 +129,23 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         await assert.rejects(sync.submit(r.token,[ids[0]]),/Export folder changed/);
         await fs.rmdir(join(destination,'Proxy'));await fs.rename(join(destination,'Proxy-saved'),join(destination,'Proxy'));
         const outside=join(root,'outside');await fs.mkdir(outside);
-        await fs.rename(join(destination,'Metadata'),join(destination,'Metadata-saved'));await fs.symlink(outside,join(destination,'Metadata'));
-        await assert.rejects(review([ids[0]]),/real directories/);
-        assert.deepEqual(await fs.readdir(outside),[]);await fs.unlink(join(destination,'Metadata'));await fs.rename(join(destination,'Metadata-saved'),join(destination,'Metadata'));
+        const savedCSV=join(root,'saved.csv');await fs.rename(metadataFile,savedCSV);
+        const outsideCSV=join(outside,'external.csv');await fs.copyFile(savedCSV,outsideCSV);
+        const outsideBytes=await fs.readFile(outsideCSV);
+        await fs.symlink(outsideCSV,metadataFile);await assert.rejects(review([ids[0]]),/regular file/);
+        await fs.unlink(metadataFile);await fs.link(outsideCSV,metadataFile);await assert.rejects(review([ids[0]]),/linked file/);
+        await fs.unlink(metadataFile);await fs.rename(savedCSV,metadataFile);
+        assert.deepEqual(await fs.readFile(outsideCSV),outsideBytes,'CSV aliases cannot modify outside files');
+        const validCSV=await fs.readFile(metadataFile);
+        for(const invalid of ['not our columns\nanything\n',validCSV.toString().split('\r\n')[0]+'\r\n"unterminated']) {
+            await fs.writeFile(metadataFile,invalid);await assert.rejects(review([ids[0]]),/CSV is invalid/);
+            assert.equal(await fs.readFile(metadataFile,'utf8'),invalid,'Malformed CSV is preserved');
+        }
+        await fs.writeFile(metadataFile,validCSV);
+        await fs.unlink(outsideCSV);
         // Files from an older export layout are left untouched and are no longer inputs.
+        await fs.mkdir(join(destination,'Metadata'));
+        const legacyCSV=join(destination,'Metadata','old.csv');await fs.writeFile(legacyCSV,'old dated CSV');
         const legacyPath=join(destination,'Metadata',`${outputName(ids[0])}.metadata.json`);
         await fs.writeFile(legacyPath,'{broken');
         r=await review([ids[0]]);assert.equal(r.clips[0].issue,undefined);
@@ -140,6 +153,7 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         await sync.submit(r.token,[ids[0]]);await idle();
         assert.equal(await fs.readFile(legacyPath,'utf8'),'{broken');
         assert.deepEqual(await fs.readdir(join(destination,'Manifest')),['old.csv']);
+        assert.equal(await fs.readFile(legacyCSV,'utf8'),'old dated CSV');
         // A subfolder redirected during rsync must also block subsequent publication.
         let redirectedStarted; const redirectedActive=new Promise(resolve=>{redirectedStarted=resolve;});gate=true;entered=redirectedStarted;
         await submit([ids[0]]);await redirectedActive;
@@ -159,6 +173,15 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         const csvHeaders=csvText.split('\r\n')[0].split(',');
         assert.deepEqual(csvHeaders.slice(-5),['Identity','Project','Group','Camera','Quality'],'Custom headers match the user-facing Resolve fields');
         const csvRow=(await parseCSV(csvFixture))[0];assert.equal(csvRow.Description,full.scene);assert.equal(csvRow.Scene,full.group);assert.equal(csvRow['Camera #'],'A');assert.equal(csvRow['Good Take'],'1');assert.equal(csvRow.Comments,full.notes);assert.equal(csvRow.Identity,full.identity);assert.equal(csvRow.Project,full.project);assert.equal(csvRow.Group,full.group);assert.equal(csvRow.Camera,full.camera);assert.equal(csvRow.Quality,full.rating);assert.ok(csvRow['Clip Name'].includes('OWMO'));
+        const other=resolveFormatter.clip(validateLibraryMetadata(JSON.parse(original.get(`${ids[1]}.metadata.json`)),ids[1]),'mp4',8);
+        const combined=resolveFormatter.manifest([other],destination,csvText);
+        await fs.writeFile(csvFixture,combined);const cumulative=await parseCSV(csvFixture);
+        assert.equal(cumulative.length,2);assert.deepEqual(cumulative[0],csvRow,'Unrelated quoted/multiline rows survive merging');
+        const updated={...formatted,fields:{...formatted.fields,Comments:'Updated, "quoted"\nnotes',Quality:''}};
+        await fs.writeFile(csvFixture,resolveFormatter.manifest([updated],destination,combined));
+        const changedRows=await parseCSV(csvFixture);assert.equal(changedRows.length,2);
+        assert.equal(changedRows[0].Comments,updated.fields.Comments);assert.equal(changedRows[0].Quality,'','Blank fields clear previous values');
+        assert.deepEqual(changedRows[1],cumulative[1],'Updating a filename keeps other rows');
         full.rating='usable';assert.equal(resolveFormatter.clip(full,'mov',8).fields['Good Take'],'0');
         full.originalFilename='bad/name:with?characters.MOV';assert.ok(!/[<>:"/\\|?*]/.test(resolveFormatter.clip(full,'mov',8).source));
         full.originalFilename='é'.repeat(300)+'.MOV';assert.ok(Buffer.byteLength(resolveFormatter.clip(full,'mov',64).source)<=255);assert.ok(Buffer.byteLength(resolveFormatter.clip(full,'mp4',64).proxy.split('/')[1])<=255);
@@ -177,7 +200,7 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         assert.deepEqual(await fs.readdir(destination), [], 'Changed destination root is never written');
         for (const [name, bytes] of original) assert.deepEqual(await fs.readFile(join(library, name)), bytes, 'Library remains unchanged');
         assert.equal(scanner.snapshot().shots.length, 0, 'Export never adds Import workspace clips');
-        console.log('PASS: Resolve source/proxy naming/layout, optional and escaped CSV metadata, per-batch manifests with successful clips only, stable collision handling, folder/file guards, exclusions, stale reviews, queue append/cancel/Stop/failure, quick-check reuse, and unchanged Library assets.');
+        console.log('PASS: Resolve source/proxy naming/layout, optional and escaped CSV metadata, cumulative root CSV upserts with successful clips only, stable collision handling, folder/file guards, exclusions, stale reviews, queue append/cancel/Stop/failure, quick-check reuse, and unchanged Library assets.');
     } finally {
         await queue?.close(); await catalogue?.close(); await scanner?.close(); await fs.rm(root, { recursive: true, force: true });
     }
