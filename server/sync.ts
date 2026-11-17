@@ -13,6 +13,8 @@ import { checkExportDirectories, exportMetadataFilename, exportFileIdentity, exp
 import type { ExportDirectories } from './exportFiles';
 import type { LibraryLocation } from './library';
 import { rsyncFile } from './rsync';
+import { DEFAULT_STORAGE_WAIT_SECONDS, withStorageRecovery } from './storageRecovery';
+import type { StorageRetryInfo } from './storageRecovery';
 
 interface FileCopy { from: string; to: string; sourceIdentity: string; targetIdentity: string | null; bytes: number }
 interface Capture { id: string; filename: string; files: FileCopy[]; metadataIdentity: string; plan?: ExportClipPlan; issue?: string }
@@ -28,7 +30,9 @@ export class LibrarySync {
     private busy = false;
     private exportOwners = new Map<string, string>();
     constructor(private catalogue: LibraryCatalogue, private scanner: ShotScanner, private queue: IngestQueue,
-        private libraryLocation: () => Promise<LibraryLocation>, private transfer = rsyncFile, private formatter: ExportFormatter = resolveFormatter) {}
+        private libraryLocation: () => Promise<LibraryLocation>, private transfer = rsyncFile, private formatter: ExportFormatter = resolveFormatter,
+        private configuredStorageWait: () => Promise<number> = async () => DEFAULT_STORAGE_WAIT_SECONDS,
+        private onStorageRetry: (info: StorageRetryInfo) => void = () => undefined) {}
 
     async choose(path: string) {
         const location = await this.inspectDestination(path);
@@ -38,7 +42,7 @@ export class LibrarySync {
     }
     private async inspectDestination(path: string) {
         try { return await inspectLibrary(path); }
-        catch { throw new Error('Export destination is unavailable. Choose an accessible folder on a mounted volume.'); }
+        catch (cause) { throw new Error('Export destination is unavailable. Choose an accessible folder on a mounted volume.', { cause }); }
     }
     private expire() {
         for (const [key, value] of this.destinations) if (Date.now() - value.created > lifetime) this.destinations.delete(key);
@@ -46,9 +50,11 @@ export class LibrarySync {
         while (this.destinations.size >= 32) this.destinations.delete(this.destinations.keys().next().value!);
         while (this.reviews.size >= 32) this.reviews.delete(this.reviews.keys().next().value!);
     }
-    private async locations(library: LibraryLocation, destination: LibraryLocation) {
-        if (!sameLocation(library, await this.libraryLocation())) throw new Error('Library changed. Review Export again.');
-        if (!sameLocation(destination, await this.inspectDestination(destination.path))) throw new Error('Export destination changed or is unavailable. Choose it again.');
+    private async locations(library: LibraryLocation, destination: LibraryLocation, signal?: AbortSignal, configuredWait?: number) {
+        await withStorageRecovery(async () => {
+            if (!sameLocation(library, await this.libraryLocation())) throw new Error('Library changed. Review Export again.');
+            if (!sameLocation(destination, await this.inspectDestination(destination.path))) throw new Error('Export destination changed. Choose it again.');
+        }, configuredWait ?? await this.configuredStorageWait(), signal, this.onStorageRetry);
         if (within(library.path, destination.path)) throw new Error('Choose a Export destination outside the Library.');
     }
     private protectOriginal(path: string, identity: string | null, source: string) {
@@ -167,14 +173,15 @@ export class LibrarySync {
             const latest = await this.catalogue.snapshot();
             if (captures.some(c => { const shot = latest.shots.find(s => s.id === c!.id); return !shot?.editable || shot.ingestState === 'changes-pending'; })) throw new Error('Clips changed. Commit or Revert, then review Export again.');
             if (review.generation !== this.queue.workRevision) throw new Error('Work was stopped. Review Export again.');
-            const guard = async () => {
-                await this.locations(review.library, review.destination);
+            const storageWait = await this.configuredStorageWait();
+            const guard = async (signal?: AbortSignal) => {
+                await this.locations(review.library, review.destination, signal, storageWait);
                 await checkExportDirectories(review.destination.path, directories);
             };
             const result = this.queue.enqueueLibrary((captures as Capture[]).map(capture => ({ id: capture.id, filename: capture.filename, kind: 'sync',
                 execute: async (signal, progress) => {
-                    await this.locations(review.library, review.destination);
-                    await checkExportDirectories(review.destination.path, directories, true, () => this.locations(review.library, review.destination));
+                    await this.locations(review.library, review.destination, signal, storageWait);
+                    await checkExportDirectories(review.destination.path, directories, true, () => this.locations(review.library, review.destination, signal, storageWait));
                     await this.validate(capture, review.library);
                     // Read the latest document when this serial Export job starts,
                     // including rows written by earlier submissions to this folder.
@@ -183,7 +190,7 @@ export class LibrarySync {
                     const total = capture.files.reduce((sum, file) => sum + file.bytes, 0) || 1;
                     let completed = 0;
                     for (const file of capture.files) {
-                        signal.throwIfAborted(); await guard();
+                        signal.throwIfAborted(); await guard(signal);
                         if (await libraryFileIdentity(file.from) !== file.sourceIdentity || await exportFileIdentity(file.to) !== file.targetIdentity) throw new Error('Export files changed after review. Review Export again.');
                         this.protectOriginal(file.to, file.targetIdentity, file.sourceIdentity);
                         await this.transfer(file.from, file.to, signal, percent => progress((completed + file.bytes * percent / 100) / total * 99));

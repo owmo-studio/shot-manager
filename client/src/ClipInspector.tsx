@@ -16,6 +16,7 @@ import { SyncButton } from './SyncButton';
 import { DeleteButton } from './DeleteButton';
 import { inspectorButton } from './buttonStyles';
 import { ThumbnailIcon } from './ThumbnailIcon';
+import { libraryThumbnailChanged } from './libraryDiff';
 
 function bytesLabel(bytes: number) {
     if (!bytes) return "0 B";
@@ -69,6 +70,7 @@ export function ClipInspector({
     const empty = !selectedShot;
     const shot = selectedShot ?? emptyShot;
     const skipped = !!shot.organization?.skipped;
+    const thumbnailChanged = libraryThumbnailChanged(shot);
     const [tab, setTab] = useState<"metadata" | "file">("metadata");
     const [details, setDetails] = useState<ShotDetails | null>(null);
     const [detailsError, setDetailsError] = useState<string | null>(null);
@@ -169,9 +171,9 @@ export function ClipInspector({
                             onClick={() => void setThumbnail()}
                             disabled={thumbnailBusy || unavailable || locked || scrubbing || !frameReady || !thumbnailReady}
                             aria-label="Set current frame as thumbnail"
-                            title="Set current frame as thumbnail"
+                            title={thumbnailChanged ? "Thumbnail differs from Library — set current frame" : "Set current frame as thumbnail"}
                             aria-busy={thumbnailBusy}
-                            className={inspectorButton}
+                            className={`${inspectorButton}${thumbnailChanged ? " ring-1 ring-amber-400/60 text-amber-200" : ""}`}
                         >
                             <ThumbnailIcon />
                         </button>

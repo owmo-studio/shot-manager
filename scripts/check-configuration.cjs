@@ -28,7 +28,7 @@ const { tmpdir } = require('node:os');
             VideoFingerprintStore, videoSampleRanges, VIDEO_SAMPLE_BYTES } = loaded.exports;
         const configPath = join(root, 'settings', 'configuration.json');
         assert.deepEqual(await readConfiguration(configPath), { version: 1, libraryPath: null });
-        const chosen = { version: 1, libraryPath: join(root, 'dummy-library') };
+        const chosen = { version: 1, libraryPath: join(root, 'dummy-library'), storageWaitSeconds: 42 };
         await saveConfiguration(configPath, chosen);
         assert.deepEqual(await readConfiguration(configPath), chosen, 'Configuration survives a fresh read');
         assert.deepEqual(await fs.readdir(join(root, 'settings')), ['configuration.json'], 'No partial state left behind');
@@ -37,6 +37,8 @@ const { tmpdir } = require('node:os');
         assert.equal(await fs.readFile(configPath, 'utf8'), '{broken');
         await fs.writeFile(configPath, JSON.stringify({ version: 1, libraryPath: 'relative' }));
         await assert.rejects(readConfiguration(configPath));
+        await fs.writeFile(configPath, JSON.stringify({ version: 1, libraryPath: null, storageWaitSeconds: 121 }));
+        await assert.rejects(readConfiguration(configPath), /preserved/);
 
         const cache = join(root, 'cache');
         assert.deepEqual(await inspectThumbnailCache(cache), { files: 0, bytes: 0 });

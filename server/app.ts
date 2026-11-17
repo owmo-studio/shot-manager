@@ -19,6 +19,7 @@ import { viewingProfile } from '../shared/viewing'
 import { loadViewingLut } from './viewing'
 import { validateOptionRemovals, validateOrganizationAction } from '../shared/organization'
 import type { OrganizationAction, TagVocabulary } from '../shared/organization'
+import { DEFAULT_STORAGE_WAIT_SECONDS } from './storageRecovery'
 
 export function createServer(token: string, onShotsChanged?: (change: ShotChange) => void, thumbnailCacheDirectory?: string, fingerprintDirectory?: string, organizationFile?: string, configurationFile?: string, onIngestChanged?: (status: IngestStatus) => void, onLibraryChanged?: (change: ShotChange) => void) {
   const server = Fastify({ logger: true })
@@ -47,19 +48,22 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     if (configured.libraryPath !== path || configured.libraryMount !== location.mount) throw new Error('The configured Library volume is not mounted at its expected location. Choose the Library again if it has changed.')
     return location
   }
-  const ingestion = new IngestQueue(workspace.scanner, async () => (await configuration()).libraryPath, inspectConfigured, rsyncFile, proxies)
+  const storageWait = async () => (await configuration()).storageWaitSeconds ?? DEFAULT_STORAGE_WAIT_SECONDS
+  const storageRetry = (info: { attempt: number; elapsedMs: number; error: string; code?: string }) => server.log.warn({ ...info, operation: 'storage-check' }, 'Retrying temporary storage check')
+  const ingestion = new IngestQueue(workspace.scanner, async () => (await configuration()).libraryPath, inspectConfigured, rsyncFile, proxies, storageWait, storageRetry)
   const catalogue = new LibraryCatalogue(workspace.scanner, async () => (await configuration()).libraryPath, async () => {
     const path = (await configuration()).libraryPath
     if (!path) throw new Error('Library Not Set')
     return inspectConfigured(path)
   }, ingestion, organizationFile ? join(dirname(organizationFile), 'catalogue.json') : undefined,
-  organizationFile ? join(dirname(organizationFile), 'library-thumbnails') : undefined, assertWritable)
+  organizationFile ? join(dirname(organizationFile), 'library-thumbnails') : undefined, assertWritable,
+  storageWait, storageRetry)
   let libraryRevision = 0
   const sync = new LibrarySync(catalogue, workspace.scanner, ingestion, async () => {
     const path = (await configuration()).libraryPath
     if (!path) throw new Error('Library Not Set')
     return inspectConfigured(path)
-  })
+  }, rsyncFile, undefined, storageWait, storageRetry)
   catalogue.onChange = () => onLibraryChanged?.({ revision: ++libraryRevision, vocabularyRevision: libraryRevision })
   workspace.scanner.organization.onChange = () => { catalogue.changed(); void workspace.scanner.reloadOrganizations().catch(error => server.log.warn(error)) }
   let catalogueQueueState = '', catalogueTransferProgress = ''

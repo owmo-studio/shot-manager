@@ -24,6 +24,7 @@
         "check:library": "node scripts/check-library.cjs",
         "check:delete": "node scripts/check-delete.cjs",
         "check:catalogue": "node scripts/check-catalogue.cjs",
+        "check:storage-recovery": "node scripts/check-storage-recovery.cjs",
         "check:sync": "node scripts/check-sync.cjs",
         "check:proxy-priority": "node scripts/check-proxy-priority.cjs",
         "check:proxies": "node scripts/check-proxies.cjs",

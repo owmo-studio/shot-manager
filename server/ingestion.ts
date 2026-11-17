@@ -12,6 +12,8 @@ import type { LibraryMetadata } from '../shared/library';
 import { rsyncFile } from './rsync';
 import { AppError } from '../shared/errors';
 import type { ProxyQueue } from './proxies';
+import { DEFAULT_STORAGE_WAIT_SECONDS, withStorageRecovery } from './storageRecovery';
+import type { StorageRetryInfo } from './storageRecovery';
 
 type TransferKind = 'commit' | 'sync';
 type Capture = Awaited<ReturnType<ShotScanner['captureIngest']>>;
@@ -38,7 +40,7 @@ export class IngestQueue {
     private activeTransfers = new Map<TransferKind, { id: string; controller: AbortController; done: Promise<void> }>();
     private submission = 0;
     private transferKeys = new Map<string, string>();
-    private pending: { entry: Entry; location: LibraryLocation }[] = [];
+    private pending: { entry: Entry; location: LibraryLocation; storageWaitSeconds: number }[] = [];
     private libraryPending: LibraryTransferJob[] = [];
     onPublished?: (metadata: LibraryMetadata, location: LibraryLocation, names: string[]) => Promise<void>;
     private wakeWorker?: () => void;
@@ -51,7 +53,9 @@ export class IngestQueue {
     private state: IngestStatus = { revision: 0, libraryPath: null, active: false, stopping: false, position: 0, total: 0, errors: [] };
 
     constructor(private scanner: ShotScanner, private configuredLibrary: () => Promise<string | null>,
-        private inspect = inspectLibrary, private transfer = rsyncFile, private proxies?: ProxyQueue) {
+        private inspect = inspectLibrary, private transfer = rsyncFile, private proxies?: ProxyQueue,
+        private configuredStorageWait: () => Promise<number> = async () => DEFAULT_STORAGE_WAIT_SECONDS,
+        private onStorageRetry: (info: StorageRetryInfo) => void = () => undefined) {
         if (proxies) {
             proxies.onChange = () => this.backgroundChanged();
             proxies.onError = (shot, message) => {
@@ -223,10 +227,13 @@ export class IngestQueue {
         this.onChange?.(structuredClone(this.state));
     }
 
-    private async location(expected?: LibraryLocation) {
-        const configured = await this.configuredLibrary();
-        if (!configured) throw new Error('Set a Library location in Configuration before committing clips.');
-        const location = await this.inspect(configured, this.scanner.mediaDirectories());
+    private async location(expected?: LibraryLocation, signal?: AbortSignal, configuredWait?: number) {
+        const wait = configuredWait ?? await this.configuredStorageWait();
+        const location = await withStorageRecovery(async () => {
+            const configured = await this.configuredLibrary();
+            if (!configured) throw new Error('Set a Library location in Configuration before committing clips.');
+            return this.inspect(configured, this.scanner.mediaDirectories());
+        }, wait, signal, this.onStorageRetry);
         if (expected && JSON.stringify(location) !== JSON.stringify(expected)) throw new Error('The Library folder or mounted volume changed. Review the commit plan again.');
         return location;
     }
@@ -362,7 +369,8 @@ export class IngestQueue {
             this.proxies?.retry(this.commitIds());
             this.scanner.retireSynced(retirements);
             this.review = undefined;
-            this.pending.push(...entries.filter(entry => !this.cancelledIds.has(entry.capture.shot.id)).map(entry => ({ entry, location: review.location })));
+            const storageWaitSeconds = await this.configuredStorageWait();
+            this.pending.push(...entries.filter(entry => !this.cancelledIds.has(entry.capture.shot.id)).map(entry => ({ entry, location: review.location, storageWaitSeconds })));
             this.state.acceptedReviews = [...(this.state.acceptedReviews ?? []), token].slice(-128);
             this.startWorker('commit');
             this.wakeWorker?.();
@@ -454,7 +462,7 @@ export class IngestQueue {
                         current.percent = Math.max(0, Math.min(99, percent));
                         this.scanner.setTransferProgress(shot.id, current.percent); this.publish(true);
                     });
-                    else await this.execute(item!.entry, item!.location, clipSignal);
+                    else await this.execute(item!.entry, item!.location, clipSignal, item!.storageWaitSeconds);
                     current.percent = 100;
                     this.state.completed = (this.state.completed ?? 0) + 1;
                     this.publish();
@@ -547,11 +555,11 @@ export class IngestQueue {
         }
     }
 
-    private async execute(entry: Entry, location: LibraryLocation, signal: AbortSignal) {
+    private async execute(entry: Entry, location: LibraryLocation, signal: AbortSignal, configuredWait: number) {
         const { shot, path, fileIdentity, thumbnail, signature } = entry.capture;
         const validate = async () => {
             signal.throwIfAborted();
-            await this.location(location);
+            await this.location(location, signal, configuredWait);
             await this.scanner.validateIngest(shot.id, path, fileIdentity);
             signal.throwIfAborted();
         };

@@ -44,6 +44,7 @@ async function until(test, label) {
         assert.ok(view.shots.every(shot=>shot.mediaReadiness.state==='committed'),'Complete verified Library assets are committed despite neutral cards');
         assert.equal(scanner.snapshot().shots.length,0,'Cataloguing never discovers media into Import or queues proxies');
         assert.equal(view.shots[0].organization.notes,'Remote note');
+        assert.equal(view.shots[0].libraryBaseline.notes,'Remote note','Library cards expose the published attribute baseline');
         const originalSource=await fs.readFile(join(library,`${id}.source.mp4`));
         const originalProxy=await fs.readFile(join(library,`${id}.proxy.mov`));
         const originalThumb=await fs.readFile(join(library,`${id}.thumb.jpg`));
@@ -102,6 +103,8 @@ async function until(test, label) {
         await until(async()=>!(await queue.status()).active,'restore original fixture thumbnail');
         await catalogue.update([id],{field:'notes',operation:'set',value:'Local edit'});
         view=await catalogue.snapshot();assert.equal(view.shots.find(shot=>shot.id===id).ingestState,'changes-pending');
+        assert.equal(view.shots.find(shot=>shot.id===id).organization.notes,'Local edit');
+        assert.equal(view.shots.find(shot=>shot.id===id).libraryBaseline.notes,'Remote note','Local edits do not replace the published baseline');
         const remote={...metadata(id),notes:'Changed remotely',scene:'New remote scene'};
         await fs.writeFile(join(library,`${id}.metadata.json`),JSON.stringify(remote));
         view=await catalogue.refresh();

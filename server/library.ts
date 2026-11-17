@@ -69,22 +69,25 @@ export async function inspectLibrary(configured: string, sources: string[] = [])
     try { path = await realpath(chosen); }
     catch (error) {
         if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) {
-            throw new Error('The configured Library folder is missing. Choose an existing Library location in Configuration.');
+            throw new Error('The configured Library folder is missing. Choose an existing Library location in Configuration.', { cause: error });
         }
         throw error;
     }
     if (path !== chosen) throw new Error('The Library location changed. Choose the actual folder in Configuration.');
     if (sources.some(source => resolve(source) === path)) throw new Error('Choose different folders for the Library, Cache, and sources.');
     let info: Awaited<ReturnType<typeof stat>>;
-    try { info = await stat(path); }
+    try { info = await stat(path, { bigint: true }); }
     catch (error) {
         if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) {
-            throw new Error('The configured Library folder is missing. Choose an existing Library location in Configuration.');
+            throw new Error('The configured Library folder is missing. Choose an existing Library location in Configuration.', { cause: error });
         }
         throw error;
     }
     if (!info.isDirectory()) throw new Error('The Library is not a folder.');
-    return { path, identity: `${info.dev}:${info.ino}:${info.birthtimeMs}`, mount: `${mount.device}:${mount.path}:${mount.type}` };
+    // Directory creation/change timestamps are not stable over SMB: Samba may
+    // update them as children are created or removed. Device and inode identify
+    // the directory object without treating ordinary Library writes as a swap.
+    return { path, identity: `${info.dev}:${info.ino}`, mount: `${mount.device}:${mount.path}:${mount.type}` };
 }
 
 export async function libraryFileIdentity(path: string): Promise<string | null> {

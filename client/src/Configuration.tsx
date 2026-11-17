@@ -19,6 +19,7 @@ export function Configuration({ workControlRef }: { workControlRef?: Ref<HTMLDiv
     const [configuration, setConfiguration] = useState<AppConfiguration | null>(null);
     const [libraryChoice, setLibraryChoice] = useState<LocationChoice | null>(null);
     const [clearLibrary, setClearLibrary] = useState(false);
+    const [storageWaitDraft, setStorageWaitDraft] = useState("15");
     const [open, setOpen] = useState(false);
     const [libraryError, setLibraryError] = useState<string | null>(null);
     const [busy, setBusy] = useState<"library" | "cache" | "save" | "review" | null>(null);
@@ -33,11 +34,13 @@ export function Configuration({ workControlRef }: { workControlRef?: Ref<HTMLDiv
     const mutation = useRef(false);
     const requestVersion = useRef(0);
     const hasOptionChanges = OPTION_FIELDS.some((field) => removals[field].length > 0);
-    const hasChanges = hasOptionChanges || !!libraryChoice || clearLibrary;
+    const hasStorageWaitChange = !!configuration && storageWaitDraft !== String(configuration.storageWaitSeconds ?? 15);
+    const hasChanges = hasOptionChanges || !!libraryChoice || clearLibrary || hasStorageWaitChange;
 
     function showConfiguration() {
         setLibraryChoice(null);
         setClearLibrary(false);
+        setStorageWaitDraft(String(configuration?.storageWaitSeconds ?? 15));
         setLibraryError(null);
         setVocabulary(null);
         setRemovals(emptyVocabulary());
@@ -51,7 +54,10 @@ export function Configuration({ workControlRef }: { workControlRef?: Ref<HTMLDiv
         window.desktop
             .getConfiguration()
             .then((value) => {
-                if (!disposed) setConfiguration(value);
+                if (!disposed) {
+                    setConfiguration(value);
+                    setStorageWaitDraft(String(value.storageWaitSeconds ?? 15));
+                }
             })
             .catch(() => {
                 if (!disposed) setLibraryError("Could not load configuration.");
@@ -83,7 +89,10 @@ export function Configuration({ workControlRef }: { workControlRef?: Ref<HTMLDiv
         void window.desktop
             .getConfiguration()
             .then((value) => {
-                if (!disposed) setConfiguration(value);
+                if (!disposed) {
+                    setConfiguration(value);
+                    setStorageWaitDraft(String(value.storageWaitSeconds ?? 15));
+                }
             })
             .catch((error) => {
                 if (!disposed) setLibraryError(errorMessage(error, "Could not load configuration."));
@@ -159,11 +168,13 @@ export function Configuration({ workControlRef }: { workControlRef?: Ref<HTMLDiv
             }
             let warning: string | undefined;
             let workspaceReset = false;
-            if (libraryChoice || clearLibrary) {
+            if (libraryChoice || clearLibrary || hasStorageWaitChange) {
                 const result = await window.desktop.saveConfigurationLocations({
                     ...(clearLibrary ? { library: null } : libraryChoice ? { library: libraryChoice.token } : {}),
+                    ...(hasStorageWaitChange ? { storageWaitSeconds: Number(storageWaitDraft) } : {}),
                 });
                 setConfiguration(result.configuration);
+                setStorageWaitDraft(String(result.configuration.storageWaitSeconds ?? 15));
                 setLibraryChoice(null);
                 setClearLibrary(false);
                 window.dispatchEvent(new Event("configuration-changed"));
@@ -300,6 +311,29 @@ export function Configuration({ workControlRef }: { workControlRef?: Ref<HTMLDiv
                                 </button>
                             )}
                         </div>
+                    </div>
+                    <div className="mt-5 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2">
+                        <label htmlFor="storage-response-wait" className="whitespace-nowrap text-sm text-zinc-300">
+                            Storage response wait
+                        </label>
+                        <div className="flex items-center gap-2">
+                            <input
+                                id="storage-response-wait"
+                                aria-label="Storage response wait in seconds"
+                                type="number"
+                                min={0}
+                                max={120}
+                                step={1}
+                                value={storageWaitDraft}
+                                disabled={!!busy}
+                                onChange={(event) => setStorageWaitDraft(event.target.value)}
+                                className="w-24 rounded-md border border-white/10 bg-black/20 px-2 py-1.5 text-sm text-zinc-200 outline-none focus:border-sky-400 disabled:opacity-40"
+                            />
+                            <span className="text-xs text-zinc-500">seconds (0–120)</span>
+                        </div>
+                        <span className="col-start-2 text-[11px] leading-5 text-zinc-500">
+                            Time allowed for temporary NAS or SMB storage checks to recover during a transfer.
+                        </span>
                     </div>
                     <div className="mt-6 grid grid-cols-2 gap-4">
                         {OPTION_FIELDS.map((field) => (
