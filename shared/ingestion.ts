@@ -30,6 +30,9 @@ export interface IngestStatus {
     waiting?: number;
     tasks?: { completed: number; total: number; percent: number; proxiesRemaining: number; transfersRemaining: number; syncsRemaining?: number;
         sync?: { completed: number; total: number; percent: number } };
+    // Internal refresh signal for metadata-only Library saves. These saves do not
+    // get a fourth progress bar.
+    metadataRevision?: number;
     work?: { paused: boolean; busy: boolean; encoding: boolean; queued: number; scratchPath: string | null; error?: string;
         current?: { id: string; percent: number } };
     // Independent active transfer lanes; current is the Commit worker.

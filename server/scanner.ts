@@ -65,7 +65,7 @@ export class ShotScanner {
         { proxyState: ProxyState; proxyPercent?: number; proxyError?: string; proxyLocation?: "cache" | "library" }
     >();
     private transferProgress = new Map<string, number>();
-    private workKinds = new Map<string, 'commit' | 'sync'>();
+    private workKinds = new Map<string, 'commit' | 'metadata' | 'sync'>();
     private prepared = new Set<string>();
 
     libraryProxy(id: string) {
@@ -159,7 +159,7 @@ export class ShotScanner {
     workKind(id: string) { return this.workKinds.get(id); }
     transferPercent(id: string) { return this.transferProgress.get(id); }
 
-    lockLibraryCommit(ids: string[], kind: 'commit' | 'sync' = 'commit') {
+    lockLibraryCommit(ids: string[], kind: 'commit' | 'metadata' | 'sync' = 'commit') {
         if (this.clearingCache || ids.some(id => this.ingestLocks.has(id) || this.ejecting.has(id) || this.updatingThumbnails.has(id))) throw new Error('Selected clips are locked.');
         ids.forEach(id => { this.ingestLocks.set(id, 'queued'); this.workKinds.set(id, kind); });
         this.publish();
@@ -208,8 +208,11 @@ export class ShotScanner {
         for (const clip of clips) {
             if (this.clips.get(clip.result.shot.id) !== clip || this.ingestLocks.has(clip.result.shot.id)) continue;
             const record = drafts[organizationKey(clip.result.shot.fingerprint!)];
-            if (record && (JSON.stringify(record.data) !== JSON.stringify(clip.result.shot.organization) || JSON.stringify(record.ingestion) !== JSON.stringify(clip.result.shot.ingestion))) {
-                clip.result.shot.organization = record.data; clip.result.shot.ingestion = record.ingestion; changed = true;
+            if (record && (JSON.stringify(record.data) !== JSON.stringify(clip.result.shot.organization) ||
+                JSON.stringify(record.libraryBaseline) !== JSON.stringify(clip.result.shot.libraryBaseline) ||
+                JSON.stringify(record.ingestion) !== JSON.stringify(clip.result.shot.ingestion))) {
+                clip.result.shot.organization = record.data; clip.result.shot.libraryBaseline = record.libraryBaseline;
+                clip.result.shot.ingestion = record.ingestion; changed = true;
             }
         }
         if (changed) this.publish();
@@ -219,7 +222,7 @@ export class ShotScanner {
         await this.organization.forget(fingerprints);
         for (const { value: id } of fingerprints) {
             const shot = this.clips.get(id)?.result.shot;
-            if (shot) { shot.organization = emptyOrganization(); shot.ingestion = undefined; }
+            if (shot) { shot.organization = emptyOrganization(); shot.libraryBaseline = undefined; shot.ingestion = undefined; }
         }
         this.publish();
     }

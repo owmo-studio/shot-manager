@@ -55,8 +55,10 @@ function ShotCard({
     const proxyEncoding = shot.proxyState === "encoding";
     const readiness = shot.mediaReadiness ?? { state: 'unchecked' as const };
     const readinessLabel = `Media readiness: ${readinessLabels[readiness.state]}${readiness.detail ? ` — ${readiness.detail}` : ''}`;
-    const transferring = shot.ingestState === "processing";
-    const progressLabel = transferring ? shot.workKind === 'sync' ? "Exporting to destination" : "Committing to Library" : proxyEncoding ? "Generating proxy" : null;
+    const metadataSaving = shot.ingestState === "processing" && shot.workKind === 'metadata';
+    const transferring = shot.ingestState === "processing" && !metadataSaving;
+    const working = transferring || metadataSaving;
+    const progressLabel = metadataSaving ? "Saving metadata to Library" : transferring ? shot.workKind === 'sync' ? "Exporting to destination" : "Committing to Library" : proxyEncoding ? "Generating proxy" : null;
     const progressPercent = Math.max(0, Math.min(100, (transferring ? shot.transferPercent : shot.proxyPercent) ?? 0));
     const proxyLabel = proxyLibrary
         ? "Proxy in Library"
@@ -67,19 +69,23 @@ function ShotCard({
             : (shot.proxyError ??
               (shot.proxyState === "unverified" ? "Proxy not verified in Library" : "Proxy missing or queued"));
     const activity =
-        shot.ingestState === "processing"
-            ? `${shot.workKind === 'sync' ? 'Exporting' : 'Committing'}: ${shot.transferPercent ?? 0}%`
-            : shot.ingestState === "queued"
-              ? proxyLocal || proxyLibrary
-                  ? "Queued for transfer"
-                  : "Queued: waiting for proxy"
-              : shot.ingestState === "synced"
-                ? "Synced"
-                : shot.ingestState === "changes-pending"
-                  ? "Needs Syncing"
-                  : discovering
-                    ? "Discovering: preparing thumbnail"
-                    : "Editable";
+        metadataSaving
+            ? "Saving metadata"
+            : shot.ingestState === "processing"
+              ? `${shot.workKind === 'sync' ? 'Exporting' : 'Committing'}: ${shot.transferPercent ?? 0}%`
+              : shot.ingestState === "queued"
+                ? shot.workKind === 'metadata'
+                    ? "Queued to save metadata"
+                    : proxyLocal || proxyLibrary
+                      ? "Queued for transfer"
+                      : "Queued: waiting for proxy"
+                : shot.ingestState === "synced"
+                  ? "Synced"
+                  : shot.ingestState === "changes-pending"
+                    ? "Needs Syncing"
+                    : discovering
+                      ? "Discovering: preparing thumbnail"
+                      : "Editable";
 
     useEffect(() => {
         // Keep the displayed image while a refreshed revision loads. Clearing it first
@@ -159,26 +165,26 @@ function ShotCard({
                         title={readinessLabel}
                         className={`absolute left-1.5 top-1.5 z-10 size-2.5 rounded-full ${readinessColors[readiness.state]}`}
                     />
-                    {(transferring || proxyEncoding) && (
+                    {(working || proxyEncoding) && (
                         <span
-                            data-transfer-spinner={transferring ? "" : undefined}
-                            data-proxy-spinner={!transferring && proxyEncoding ? "" : undefined}
+                            data-transfer-spinner={working ? "" : undefined}
+                            data-proxy-spinner={!working && proxyEncoding ? "" : undefined}
                             role="status"
-                            aria-label={transferring ? activity : proxyLabel}
-                            title={transferring ? activity : proxyLabel}
+                            aria-label={working ? activity : proxyLabel}
+                            title={working ? activity : proxyLabel}
                             className="pointer-events-none absolute inset-0 z-10 grid place-items-center"
                         >
                             <span className="grid size-12 place-items-center rounded-full">
                                 <span
                                     aria-hidden="true"
-                                    className={`size-8 rounded-full border-[6px] motion-safe:animate-spin ${transferring ? shot.workKind === 'sync' ? "border-emerald-300/25 border-t-emerald-300" : "border-blue-400/25 border-t-blue-400" : "border-yellow-300/25 border-t-yellow-300"}`}
+                                    className={`size-8 rounded-full border-[6px] motion-safe:animate-spin ${working ? shot.workKind === 'sync' ? "border-emerald-300/25 border-t-emerald-300" : "border-blue-400/25 border-t-blue-400" : "border-yellow-300/25 border-t-yellow-300"}`}
                                 />
                             </span>
                         </span>
                     )}
                     <span
                         data-shot-preview
-                        data-shot-working={!skipped && (transferring || proxyEncoding) ? "true" : undefined}
+                        data-shot-working={!skipped && (working || proxyEncoding) ? "true" : undefined}
                         aria-hidden="true"
                         className={`absolute inset-0 ${skipped ? "opacity-15" : ""}`}
                     >
@@ -204,12 +210,12 @@ function ShotCard({
                             </span>
                         </span>
                     )}
-                    {progressLabel && (
+                    {transferring && (
                         <progress
                             data-shot-progress
-                            data-work-type={transferring ? shot.workKind === 'sync' ? "export" : "commit" : "proxy"}
-                            aria-label={progressLabel}
-                            title={progressLabel}
+                            data-work-type={shot.workKind === 'sync' ? "export" : "commit"}
+                            aria-label={progressLabel ?? "Transfer progress"}
+                            title={progressLabel ?? "Transfer progress"}
                             max={100}
                             value={progressPercent}
                             className="shot-work-progress absolute bottom-0 left-0 z-20 block h-[6px] w-full"

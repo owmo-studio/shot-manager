@@ -1,5 +1,5 @@
 import type { IngestionReceipt, IngestState, ProxyState } from './ingestion';
-import type { ShotOrganization } from './organization';
+import type { ClipAttributes, ShotOrganization } from './organization';
 import type { MediaReadiness } from './mediaReadiness';
 
 export interface DiscoveryRequest { id: string; path: string }
@@ -55,6 +55,9 @@ export interface VideoShot {
     metadata: VideoMetadata;
     fingerprint?: VideoFingerprint;
     organization?: ShotOrganization;
+    // The last descriptive attributes read from the published Library JSON.
+    // Kept separate from the editable local organization draft for comparison UI.
+    libraryBaseline?: ClipAttributes;
     hasThumbnail: boolean;
     hasCustomThumbnail?: boolean;
     thumbnailRevision?: number;
@@ -65,7 +68,7 @@ export interface VideoShot {
     editable: boolean;
     ingestion?: IngestionReceipt;
     ingestState?: IngestState;
-    workKind?: 'commit' | 'sync';
+    workKind?: 'commit' | 'metadata' | 'sync';
     thumbnailDigest?: string;
     proxyState?: ProxyState;
     proxyLocation?: 'cache' | 'library';

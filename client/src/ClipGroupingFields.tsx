@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { VideoShot } from '../../shared/shots';
 import type { OrganizationAction } from '../../shared/organization';
 import { GROUPING_MAX_LENGTH, normalizeGroupingText } from '../../shared/organization';
+import { libraryAttributeChanged } from './libraryDiff';
 
 const inputStyle = 'mt-1.5 block h-9 w-full min-w-0 rounded-lg border border-white/10 bg-black/10 px-3 text-xs text-zinc-200 outline-none focus:border-blue-400/50 placeholder:text-zinc-600';
 const fields = ['group', 'camera', 'rating'] as const;
@@ -27,7 +28,8 @@ export function ClipGroupingFields({ shots, pending, failure, submit, onInvalid,
         {(['group', 'camera'] as const).map((field, index) => {
             const value = field === 'group' ? group : camera, set = field === 'group' ? setGroup : setCamera;
             const label = field === 'group' ? 'Group' : 'Camera';
-            return <div key={field} data-attribute-field={field} className="block min-w-0 text-xs text-zinc-400">
+            const changed = libraryAttributeChanged(shots, field);
+            return <div key={field} data-attribute-field={field} data-library-diff={changed ? 'true' : undefined} className={`block min-w-0 text-xs text-zinc-400${changed ? ' rounded-md p-1 -m-1 ring-1 ring-amber-400/50 bg-amber-400/5' : ''}`}>
                 <span className="attribute-label">{label}</span>
                 <input aria-label={label} type="text" autoComplete="off" maxLength={GROUPING_MAX_LENGTH} value={value}
                     placeholder={new Set(initial[index]).size > 1 ? 'Mixed' : ''} className={inputStyle}
@@ -39,7 +41,7 @@ export function ClipGroupingFields({ shots, pending, failure, submit, onInvalid,
                     }} />
             </div>;
         })}
-        <div data-attribute-field="rating" className="block min-w-0 text-xs text-zinc-400">
+        <div data-attribute-field="rating" data-library-diff={libraryAttributeChanged(shots, 'rating') ? 'true' : undefined} className={`block min-w-0 text-xs text-zinc-400${libraryAttributeChanged(shots, 'rating') ? ' rounded-md p-1 -m-1 ring-1 ring-amber-400/50 bg-amber-400/5' : ''}`}>
             <span className="attribute-label">Quality</span>
             <select aria-label="Quality" value={rating} className={inputStyle}
                 onChange={event => { setRating(event.target.value); submit({ field: 'rating', operation: 'set', value: event.target.value }); }}>

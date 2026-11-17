@@ -7,8 +7,13 @@ import type { OrganizationAction, TagField, TagVocabulary } from '../../shared/o
 import { ClearOrganizationButton } from './ClearOrganizationButton';
 import { RevertOrganizationButton } from './RevertOrganizationButton';
 import { ClipGroupingFields } from './ClipGroupingFields';
+import { libraryAttributeChanged } from './libraryDiff';
 
 const labels: Record<TagField, string> = { identity: 'Identity', project: 'Project', tags: 'Tags' };
+
+function diffClass(changed: boolean) {
+    return changed ? ' rounded-md p-1 -m-1 ring-1 ring-amber-400/50 bg-amber-400/5' : '';
+}
 
 function TagFieldInput({ field, shots, vocabulary, disabled, submit }: {
     field: TagField; shots: VideoShot[]; vocabulary: string[]; disabled: boolean;
@@ -34,6 +39,7 @@ function TagFieldInput({ field, shots, vocabulary, disabled, submit }: {
         try { options.push({ tag: single ? normalizeOption(query) : normalizeTag(query), create: true }); } catch {}
     }
     const showSuggestions = focused && !disabled && (single || query.length > 0);
+    const changed = libraryAttributeChanged(shots, field);
     const active = Math.min(highlight, Math.max(0, options.length - 1));
     useEffect(() => { if (focused) input.current?.focus(); }, [focused]);
     useEffect(() => {
@@ -100,7 +106,7 @@ function TagFieldInput({ field, shots, vocabulary, disabled, submit }: {
         }}
         className={`min-w-20 flex-1 bg-transparent px-1 py-1 text-xs text-zinc-200 outline-none placeholder:text-zinc-600 disabled:opacity-40 ${selectedTag ? 'caret-transparent' : ''}`} />;
 
-    return <div data-attribute-field={field} className="relative" onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) { setFocused(false); setSelectedTag(null); } }}>
+    return <div data-attribute-field={field} data-library-diff={changed ? 'true' : undefined} className={`relative${diffClass(changed)}`} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) { setFocused(false); setSelectedTag(null); } }}>
         <span className="attribute-label block text-xs text-zinc-400">{labels[field]}</span>
         {single ? <div className="tag-control mt-1.5 flex min-h-10 items-center rounded-lg border border-white/10 bg-black/10 focus-within:border-blue-400/50">
             <button type="button" id={`${id}-trigger`} disabled={disabled} aria-label={`${labels[field]} selection`}
@@ -232,7 +238,7 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
     return <div className="attribute-fields flex flex-1 flex-col gap-2">
         <fieldset disabled={disabled} className={`flex min-w-0 flex-col gap-2.5 ${disabled ? 'opacity-50' : ''}`}>
             {(['identity', 'project'] as const).map(field => <TagFieldInput key={field} field={field} shots={shots} vocabulary={vocabulary[field]} disabled={disabled} submit={action => void submit(action)} />)}
-            <div data-attribute-field="scene" className="block text-xs text-zinc-400">
+            <div data-attribute-field="scene" data-library-diff={libraryAttributeChanged(shots, 'scene') ? 'true' : undefined} className={`block text-xs text-zinc-400${diffClass(libraryAttributeChanged(shots, 'scene'))}`}>
                 <span className="attribute-label flex items-center justify-between gap-1">Scene <span className="text-[10px] text-zinc-600">{scene.length}/{SCENE_MAX_LENGTH}</span></span>
                 <input aria-label="Scene" type="text" autoComplete="off" maxLength={SCENE_MAX_LENGTH} value={scene}
                     aria-describedby={sceneHintId} aria-invalid={!!sceneError}
@@ -254,7 +260,7 @@ function AttributeEditor({ shots, onUpdated }: { shots: VideoShot[]; onUpdated: 
             </div>
             <ClipGroupingFields shots={shots} pending={pending} failure={failure} submit={action => void submit(action)} onInvalid={setFailure}
                 flush={() => { void api.flushOrganizationText().catch(() => undefined); }} />
-            <div data-attribute-field="notes" className="block text-xs text-zinc-400"><span className="attribute-label">Notes</span>
+            <div data-attribute-field="notes" data-library-diff={libraryAttributeChanged(shots, 'notes') ? 'true' : undefined} className={`block text-xs text-zinc-400${diffClass(libraryAttributeChanged(shots, 'notes'))}`}><span className="attribute-label">Notes</span>
                 <textarea aria-label="Notes" rows={2} maxLength={10000} value={notes}
                     onBlur={() => { void api.flushOrganizationText().catch(() => undefined); }}
                     placeholder={mixedNotes ? 'Mixed notes — typing replaces selected values' : shots.length ? 'Optional notes' : ''}

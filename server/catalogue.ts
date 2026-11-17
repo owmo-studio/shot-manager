@@ -20,6 +20,8 @@ import { rsyncFile } from './rsync';
 import { mediaReadiness } from '../shared/mediaReadiness';
 import { listDeleteAssets } from './libraryDeletion';
 import type { DeleteAsset } from './libraryDeletion';
+import { DEFAULT_STORAGE_WAIT_SECONDS, withStorageRecovery } from './storageRecovery';
+import type { StorageRetryInfo } from './storageRecovery';
 
 interface CatalogueEntry { metadata: LibraryMetadata; source: string | null; thumbnail: boolean; proxy: boolean; thumbnailRevision?: number; thumbnailDigest?: string }
 interface CatalogueState { path: string | null; refreshedAt?: string; entries: CatalogueEntry[] }
@@ -42,7 +44,9 @@ export class LibraryCatalogue {
     onChange?: () => void;
     constructor(private scanner: ShotScanner, private configured: () => Promise<string | null>,
         private inspect: () => Promise<LibraryLocation>, private queue: IngestQueue, private file?: string,
-        private thumbnails?: string, private assertWritable?: () => Promise<void>) {}
+        private thumbnails?: string, private assertWritable?: () => Promise<void>,
+        private configuredStorageWait: () => Promise<number> = async () => DEFAULT_STORAGE_WAIT_SECONDS,
+        private onStorageRetry: (info: StorageRetryInfo) => void = () => undefined) {}
 
     changed() { this.revision++; this.onChange?.(); }
     private serialize<T>(operation: () => Promise<T>): Promise<T> {
@@ -122,7 +126,10 @@ export class LibraryCatalogue {
                 relativePath: entry.source ?? '', bytes: m.bytes, timestamp: m.recordedAt, dateSource: m.dateSource,
                 dateEvidence: m.dateEvidence, dateConfidence: m.dateConfidence, cameraModel: m.metadata.device.model,
                 durationSeconds: m.durationSeconds, metadata: m.metadata, fingerprint: m.fingerprint,
-                organization: { ...organization, skipped: false }, hasThumbnail: entry.thumbnail || !!draft?.thumbnailDraft,
+                organization: { ...organization, skipped: false },
+                libraryBaseline: draft?.libraryBaseline ?? ingestAttributes(m),
+                ingestion: draft?.ingestion,
+                hasThumbnail: entry.thumbnail || !!draft?.thumbnailDraft,
                 hasCustomThumbnail: pendingThumbnail,
                 thumbnailStatus: entry.thumbnail || draft?.thumbnailDraft ? 'ready' : 'failed', thumbnailDigest: draft?.thumbnailDraft?.digest ?? baselineDigest,
                 thumbnailRevision: draft?.thumbnailDraft?.revision ?? entry.thumbnailRevision ?? (Date.parse(this.state.refreshedAt ?? '') || 0),
@@ -190,8 +197,8 @@ export class LibraryCatalogue {
         void run.finally(() => { if (this.refreshRun === run) this.refreshRun = undefined; }).catch(() => undefined);
         return run;
     }
-    private async validateLocation(expected: LibraryLocation) {
-        const current = await this.inspect();
+    private async validateLocation(expected: LibraryLocation, signal?: AbortSignal, configuredWait?: number) {
+        const current = await withStorageRecovery(() => this.inspect(), configuredWait ?? await this.configuredStorageWait(), signal, this.onStorageRetry);
         if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('The Library folder or mounted volume changed.');
     }
 
@@ -384,12 +391,17 @@ export class LibraryCatalogue {
         }));
         await this.queue.status();
         if (review.generation !== this.queue.workRevision) throw new Error('Work was stopped. Commit again when ready.');
-        const result = this.queue.enqueueLibrary(captures.map(capture => ({ ...capture, execute: (signal, progress) => this.commit(capture, review.location, signal, progress) })), token);
+        const storageWait = await this.configuredStorageWait();
+        const result = this.queue.enqueueLibrary(captures.map(capture => ({
+            ...capture,
+            kind: capture.thumbnail ? 'commit' as const : 'metadata' as const,
+            execute: (signal, progress) => this.commit(capture, review.location, signal, progress, storageWait),
+        })), token);
         this.review = undefined; this.changed(); return result;
     }
-    private async commit(capture: { id: string; attributes: ReturnType<typeof ingestAttributes>; thumbnail?: Buffer }, location: LibraryLocation, signal: AbortSignal, progress: (percent: number) => void) {
+    private async commit(capture: { id: string; attributes: ReturnType<typeof ingestAttributes>; thumbnail?: Buffer }, location: LibraryLocation, signal: AbortSignal, progress: (percent: number) => void, configuredWait: number) {
         const { id, attributes } = capture;
-        signal.throwIfAborted(); await this.validateLocation(location);
+        signal.throwIfAborted(); await this.validateLocation(location, signal, configuredWait);
         const { metadata, identity } = await readLibraryMetadata(location, id);
         const thumbnail = capture.thumbnail ?? (await readLibraryAsset(location, id, 'thumb', 'jpg', 2 * 1024 * 1024)).bytes;
         const digest = createHash('sha256').update(thumbnail).digest('hex');
@@ -404,15 +416,15 @@ export class LibraryCatalogue {
                 const expected = await libraryFileIdentity(target);
                 const staged = join(staging, libraryAssetName(id, 'thumb', 'jpg'));
                 await writeFile(staged, capture.thumbnail, { flag: 'wx', mode: 0o600 });
-                await this.validateLocation(location); signal.throwIfAborted();
+                await this.validateLocation(location, signal, configuredWait); signal.throwIfAborted();
                 if (await libraryFileIdentity(target) !== expected) throw new Error('Library thumbnail changed during Commit. Commit again.');
                 await this.transfer(staged, target, signal, percent => progress(Math.min(99, percent)), true);
             }
-            await this.validateLocation(location);
+            await this.validateLocation(location, signal, configuredWait);
             signal.throwIfAborted();
             progress(99);
             await writeFile(temporary, JSON.stringify(updated, null, 2) + '\n', { flag: 'wx', flush: true });
-            await this.validateLocation(location); signal.throwIfAborted();
+            await this.validateLocation(location, signal, configuredWait); signal.throwIfAborted();
             if (await libraryFileIdentity(path) !== identity) throw new Error('Library metadata changed during Commit. Commit again.');
             await rename(temporary, path);
             // Publication won a possible Stop race; persist that success without an abort check.
@@ -423,7 +435,7 @@ export class LibraryCatalogue {
                 await this.save({ ...this.state, entries });
             });
         } finally {
-            await this.validateLocation(location).then(() => unlink(temporary)).catch(() => undefined);
+            await this.validateLocation(location, undefined, configuredWait).then(() => unlink(temporary)).catch(() => undefined);
             if (staging) await rm(staging, { recursive: true, force: true });
         }
     }

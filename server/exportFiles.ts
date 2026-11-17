@@ -14,9 +14,9 @@ export function exportPath(root: string, name: string) {
 }
 async function directoryIdentity(path: string) {
     try {
-        const info = await lstat(path);
+        const info = await lstat(path, { bigint: true });
         if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Export folders must be real directories, without symlinks.');
-        return `${info.dev}:${info.ino}:${info.birthtimeMs}`;
+        return `${info.dev}:${info.ino}`;
     } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
 }
 export async function inspectExportDirectories(root: string): Promise<ExportDirectories> {

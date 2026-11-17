@@ -17,6 +17,7 @@ import { requestBackend } from './backendRequest'
 import { AppError, errorDetails } from '../shared/errors'
 import type { ApplicationStatus, BackendHealth, BackendStatus } from '../shared/desktop'
 import type { WorkspaceRestore } from '../shared/shots'
+import { storageWaitSeconds } from '../server/storageRecovery'
 
 let mainWindow: BrowserWindow | null = null
 let backend: UtilityProcess | null = null
@@ -416,11 +417,12 @@ if (!app.requestSingleInstanceLock()) {
     handle('configuration:save-locations', async (event, changes: unknown) => {
       requireMainWindow(event)
       if (!changes || typeof changes !== 'object' || Array.isArray(changes) ||
-        !Object.keys(changes).length || Object.keys(changes).some(key => key !== 'library')) throw new Error('Invalid location choices.')
+        !Object.keys(changes).length || Object.keys(changes).some(key => key !== 'library' && key !== 'storageWaitSeconds')) throw new Error('Invalid configuration changes.')
       await flushDrafts()
       return organizationWrites.run(async () => {
         const current = await readConfiguration(configurationPath)
         const next = { ...current }
+        if ('storageWaitSeconds' in changes) next.storageWaitSeconds = storageWaitSeconds((changes as Record<string, unknown>).storageWaitSeconds)
         const selected = []
         for (const kind of ['library'] as const) {
           if (!(kind in changes)) continue

@@ -130,7 +130,7 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         await until(async () => !(await queue.status()).active, 'metadata-only update');
         assert.equal((await fs.stat(proxyPath)).ino, before.ino, 'Existing Library proxy is not overwritten');
         assert.equal(encodeCount, count, 'Metadata updates do not regenerate proxies');
-        assert.equal((await queue.status()).tasks.total, 1, 'A fresh Commit with an existing proxy counts only its transfer');
+        assert.equal((await queue.status()).tasks.total, 1, 'An Import Commit still has a transfer task even when rsync reuses existing media');
 
         // Pause before deleting: refresh must expose the missing proxy and make the shot eligible.
         await queue.stop();
