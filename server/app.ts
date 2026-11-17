@@ -71,7 +71,7 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     onIngestChanged?.(status)
     // Membership changes reload drafts; Library transfer progress only needs a
     // new local snapshot. Import/proxy progress must not reload the catalogue.
-    const next = JSON.stringify([status.active, status.stopping, status.current?.id, status.exportCurrent?.id, status.total, status.completed, status.waiting, status.tasks?.transfersRemaining, status.tasks?.syncsRemaining])
+    const next = JSON.stringify([status.active, status.stopping, status.current?.id, status.exportCurrent?.id, status.total, status.completed, status.waiting, status.tasks?.transfersRemaining, status.tasks?.syncsRemaining, status.metadataRevision])
     const libraryCommit = status.current && workspace.scanner.workKind(status.current.id) === 'commit' ? status.current : undefined
     const progress = JSON.stringify([libraryCommit?.id, libraryCommit?.percent, status.exportCurrent?.id, status.exportCurrent?.percent])
     if (next !== catalogueQueueState) {

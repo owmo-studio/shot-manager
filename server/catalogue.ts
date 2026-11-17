@@ -392,7 +392,11 @@ export class LibraryCatalogue {
         await this.queue.status();
         if (review.generation !== this.queue.workRevision) throw new Error('Work was stopped. Commit again when ready.');
         const storageWait = await this.configuredStorageWait();
-        const result = this.queue.enqueueLibrary(captures.map(capture => ({ ...capture, execute: (signal, progress) => this.commit(capture, review.location, signal, progress, storageWait) })), token);
+        const result = this.queue.enqueueLibrary(captures.map(capture => ({
+            ...capture,
+            kind: capture.thumbnail ? 'commit' as const : 'metadata' as const,
+            execute: (signal, progress) => this.commit(capture, review.location, signal, progress, storageWait),
+        })), token);
         this.review = undefined; this.changed(); return result;
     }
     private async commit(capture: { id: string; attributes: ReturnType<typeof ingestAttributes>; thumbnail?: Buffer }, location: LibraryLocation, signal: AbortSignal, progress: (percent: number) => void, configuredWait: number) {

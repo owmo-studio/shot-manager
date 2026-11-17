@@ -65,7 +65,7 @@ export class ShotScanner {
         { proxyState: ProxyState; proxyPercent?: number; proxyError?: string; proxyLocation?: "cache" | "library" }
     >();
     private transferProgress = new Map<string, number>();
-    private workKinds = new Map<string, 'commit' | 'sync'>();
+    private workKinds = new Map<string, 'commit' | 'metadata' | 'sync'>();
     private prepared = new Set<string>();
 
     libraryProxy(id: string) {
@@ -159,7 +159,7 @@ export class ShotScanner {
     workKind(id: string) { return this.workKinds.get(id); }
     transferPercent(id: string) { return this.transferProgress.get(id); }
 
-    lockLibraryCommit(ids: string[], kind: 'commit' | 'sync' = 'commit') {
+    lockLibraryCommit(ids: string[], kind: 'commit' | 'metadata' | 'sync' = 'commit') {
         if (this.clearingCache || ids.some(id => this.ingestLocks.has(id) || this.ejecting.has(id) || this.updatingThumbnails.has(id))) throw new Error('Selected clips are locked.');
         ids.forEach(id => { this.ingestLocks.set(id, 'queued'); this.workKinds.set(id, kind); });
         this.publish();

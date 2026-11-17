@@ -149,7 +149,8 @@ async function until(test, label) { for (let i = 0; i < 750; i++) { if (await te
         plan = await queue.preview([a.id,b.id]); await queue.submit(plan.token,[a.id,b.id]);
         await until(()=>entered,'active Commit');
         const metadataId='1'.repeat(64), exportId='2'.repeat(64), secondExportId='3'.repeat(64);
-        queue.enqueueLibrary([{id:metadataId,filename:'Metadata fixture',execute:async()=>{}}]);
+        let metadataRan=false;
+        queue.enqueueLibrary([{id:metadataId,filename:'Metadata fixture',kind:'metadata',execute:async()=>{metadataRan=true;}}]);
         const heldExport = {id:exportId,filename:'First export fixture',kind:'sync',execute:async(signal,progress)=>{
             progress(37);
             await new Promise((resolve,reject)=>{
@@ -161,11 +162,12 @@ async function until(test, label) { for (let i = 0; i < 750; i++) { if (await te
         queue.enqueueLibrary([heldExport]);
         queue.enqueueLibrary([{id:secondExportId,filename:'Second export fixture',kind:'sync',execute:async()=>{}}]);
         await until(()=>!!releaseExport,'Export starts while Commit is held');
+        await until(()=>metadataRan,'Metadata-only work runs independently of the held media Commit');
         status=await queue.status();
         assert.equal(status.current.id,a.id);assert.equal(status.exportCurrent.id,exportId);
         assert.equal(status.exportCurrent.percent,37);
         assert.equal(status.exportCurrent.percent,scanner.transferPercent(exportId),'Export footer and card progress match independently');
-        assert.equal(status.tasks.transfersRemaining,3);assert.equal(status.tasks.syncsRemaining,2);
+        assert.equal(status.tasks.transfersRemaining,2);assert.equal(status.tasks.syncsRemaining,2);
         assert.deepEqual(exports,[exportId],'Only one Export executes at a time');
         assert.throws(()=>queue.enqueueLibrary([{...heldExport,id:a.id}]),/already queued/,'A fingerprint cannot Commit and Export together');
         release();
@@ -174,7 +176,7 @@ async function until(test, label) { for (let i = 0; i < 750; i++) { if (await te
         assert.equal(status.active,true);assert.equal(status.exportCurrent.id,exportId);
         assert.equal(status.tasks.transfersRemaining,0);assert.equal(status.tasks.syncsRemaining,2);
         assert.equal(scanner.canEditLibrary([exportId]),false,'Draining Commit cannot unlock an active Export');
-        assert.deepEqual(commits,[a.id,b.id,metadataId],'Import and metadata Commits retain acceptance order');
+        assert.deepEqual(commits,[a.id,b.id],'The Commit progress lane contains media transfers only');
         releaseExport(); await until(async()=>!(await queue.status()).active,'both lanes drain');
         assert.deepEqual(exports,[exportId,secondExportId],'Exports retain their own acceptance order');
 

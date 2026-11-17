@@ -15,7 +15,7 @@ import type { ProxyQueue } from './proxies';
 import { DEFAULT_STORAGE_WAIT_SECONDS, withStorageRecovery } from './storageRecovery';
 import type { StorageRetryInfo } from './storageRecovery';
 
-type TransferKind = 'commit' | 'sync';
+type TransferKind = 'commit' | 'metadata' | 'sync';
 type Capture = Awaited<ReturnType<ShotScanner['captureIngest']>>;
 interface Entry {
     capture: Capture;
@@ -25,7 +25,7 @@ interface Entry {
 interface LibrarySnapshot extends LibraryListing { location: LibraryLocation }
 interface Retirement { id: string; filename: string; signature: string }
 interface Review { token: string; location: LibraryLocation; entries: Entry[]; retirements: Retirement[]; created: number }
-export interface LibraryTransferJob { id: string; filename: string; kind?: 'commit' | 'sync'; execute: (signal: AbortSignal, progress: (percent: number) => void) => Promise<void> }
+export interface LibraryTransferJob { id: string; filename: string; kind?: TransferKind; execute: (signal: AbortSignal, progress: (percent: number) => void) => Promise<void> }
 
 export class IngestQueue {
     get workRevision() { return this.workGeneration; }
@@ -182,10 +182,14 @@ export class IngestQueue {
                 pending.set(`proxy:${shot.id}`, { kind: 'proxy', percent: Math.max(0, Math.min(99, shot.proxyPercent ?? 0)) });
             }
         }
-        for (const id of this.queuedIds) pending.set(this.transferKeys.get(id)!, {
-            kind: this.scanner.workKind(id) === 'sync' ? 'sync' : 'transfer',
-            percent: [this.state.current, this.state.exportCurrent].find(current => current?.id === id)?.percent ?? 0,
-        });
+        for (const id of this.queuedIds) {
+            const workKind = this.scanner.workKind(id);
+            if (workKind === 'metadata') continue;
+            pending.set(this.transferKeys.get(id)!, {
+                kind: workKind === 'sync' ? 'sync' : 'transfer',
+                percent: [this.state.current, this.state.exportCurrent].find(current => current?.id === id)?.percent ?? 0,
+            });
+        }
         // Retain completed work while a session is running. New work after idle starts a fresh count.
         if (![...this.tasks.values()].some(task => task.percent < 100) && [...pending.keys()].some(key => !this.tasks.has(key))) this.tasks.clear();
         for (const [key, task] of this.tasks) {
@@ -414,7 +418,7 @@ export class IngestQueue {
         });
     }
 
-    private commitIds() { return this.queuedIds.filter(id => this.scanner.workKind(id) !== 'sync'); }
+    private commitIds() { return this.queuedIds.filter(id => this.scanner.workKind(id) === 'commit'); }
     private prioritizeCommits() { this.proxies?.prioritize(this.commitIds()); }
 
     private startWorker(kind: TransferKind) {
@@ -422,15 +426,15 @@ export class IngestQueue {
     }
 
     private async process(kind: TransferKind, signal: AbortSignal) {
-        const stateKey = kind === 'sync' ? 'exportCurrent' : 'current';
+        const stateKey = kind === 'sync' ? 'exportCurrent' : kind === 'commit' ? 'current' : undefined;
         try {
             while (!signal.aborted) {
                 this.pending = this.pending.filter(item => !this.cancelledIds.has(item.entry.capture.shot.id));
                 this.libraryPending = this.libraryPending.filter(job => !this.cancelledIds.has(job.id));
                 const jobIndex = this.libraryPending.findIndex(job => (job.kind ?? 'commit') === kind);
-                if (jobIndex < 0 && (kind === 'sync' || (!this.pending.length && !this.preparing))) break;
+                if (jobIndex < 0 && (kind !== 'commit' || (!this.pending.length && !this.preparing))) break;
                 const available = new Set(this.scanner.snapshot().shots.filter(shot => shot.available).map(shot => shot.id));
-                const index = kind === 'sync' ? -1 : this.proxies
+                const index = kind !== 'commit' ? -1 : this.proxies
                     ? this.pending.findIndex(({ entry }) => this.proxies!.readyFor(entry.capture.shot.id) || !available.has(entry.capture.shot.id))
                     : this.pending.length ? 0 : -1;
                 if (index < 0 && jobIndex < 0) {
@@ -439,7 +443,7 @@ export class IngestQueue {
                     continue;
                 }
                 // Each lane is serial. Ready Import and Library Commits retain their
-                // acceptance order; Exports run independently of proxy preparation.
+                // acceptance order; metadata saves and Exports run independently.
                 const nextJob = this.libraryPending[jobIndex];
                 const libraryJob = nextJob && (index < 0 || this.queuedIds.indexOf(nextJob.id) < this.queuedIds.indexOf(this.pending[index].entry.capture.shot.id))
                     ? this.libraryPending.splice(jobIndex, 1)[0] : undefined;
@@ -451,24 +455,24 @@ export class IngestQueue {
                 this.activeTransfers.set(kind, { id: shot.id, controller, done });
                 const clipSignal = AbortSignal.any([signal, controller.signal]);
                 if (kind === 'commit') this.state.waiting = 0;
-                this.state.position++;
-                const current: NonNullable<IngestStatus['current']> = { id: shot.id, filename: shot.filename, percent: 0, phase: 'transferring', kind };
-                this.state[stateKey] = current;
+                if (stateKey) this.state.position++;
+                const current: NonNullable<IngestStatus['current']> | undefined = stateKey ? { id: shot.id, filename: shot.filename, percent: 0, phase: 'transferring', kind: kind === 'sync' ? 'sync' : 'commit' } : undefined;
+                if (stateKey) this.state[stateKey] = current;
                 this.scanner.processingIngest(shot.id);
                 this.publish();
                 try {
                     if (libraryJob) await libraryJob.execute(clipSignal, percent => {
-                        if (clipSignal.aborted || this.state[stateKey] !== current) return;
+                        if (!stateKey || !current || clipSignal.aborted || this.state[stateKey] !== current) return;
                         current.percent = Math.max(0, Math.min(99, percent));
                         this.scanner.setTransferProgress(shot.id, current.percent); this.publish(true);
                     });
                     else await this.execute(item!.entry, item!.location, clipSignal, item!.storageWaitSeconds);
-                    current.percent = 100;
-                    this.state.completed = (this.state.completed ?? 0) + 1;
+                    if (current) current.percent = 100;
+                    if (stateKey) this.state.completed = (this.state.completed ?? 0) + 1;
                     this.publish();
                 } catch (error) {
                     if (!clipSignal.aborted) this.state.errors.push({ id: shot.id, filename: shot.filename,
-                        message: error instanceof Error ? error.message : String(error), eventId: randomUUID(), kind });
+                        message: error instanceof Error ? error.message : String(error), eventId: randomUUID(), kind: kind === 'sync' ? 'sync' : 'commit' });
                     this.publish();
                 } finally {
                     this.queuedIds = this.queuedIds.filter(id => id !== shot.id); this.scanner.unlockIngest([shot.id]);
@@ -483,9 +487,10 @@ export class IngestQueue {
             this.queuedIds = this.queuedIds.filter(id => !remaining.includes(id));
             if (kind === 'commit') { this.pending = []; this.state.waiting = 0; }
             this.libraryPending = this.libraryPending.filter(job => (job.kind ?? 'commit') !== kind);
+            if (kind === 'metadata') this.state.metadataRevision = (this.state.metadataRevision ?? 0) + 1;
             this.runs.delete(kind);
             this.state.active = this.runs.size > 0 || this.queuedIds.length > 0;
-            this.state[stateKey] = undefined;
+            if (stateKey) this.state[stateKey] = undefined;
             this.publish();
         }
     }
@@ -494,22 +499,31 @@ export class IngestQueue {
         this.beginOperation();
         try {
             if (!jobs.length || jobs.some(job => this.queuedIds.includes(job.id))) throw new Error('Selected clips are already queued.');
-            const ids = jobs.map(job => job.id), kind = jobs[0].kind ?? 'commit';
-            if (new Set(ids).size !== ids.length || jobs.some(job => (job.kind ?? 'commit') !== kind)) throw new Error('Invalid transfer submission.');
+            const ids = jobs.map(job => job.id);
+            if (new Set(ids).size !== ids.length) throw new Error('Invalid transfer submission.');
             if (!this.scanner.canEditLibrary(ids)) throw new Error('Selected clips are locked.');
-            this.scanner.lockLibraryCommit(ids, kind);
+            const transferJobs = jobs.filter(job => (job.kind ?? 'commit') !== 'metadata');
+            const groups = new Map<TransferKind, LibraryTransferJob[]>();
+            for (const job of jobs) {
+                const kind = job.kind ?? 'commit';
+                const group = groups.get(kind) ?? [];
+                group.push(job); groups.set(kind, group);
+            }
+            for (const [kind, group] of groups) this.scanner.lockLibraryCommit(group.map(job => job.id), kind);
             if (!this.state.active) {
                 this.controller = new AbortController(); this.cancelledIds.clear(); this.transferKeys.clear();
                 this.state = { ...this.state, position: 0, completed: 0, waiting: 0, total: 0, current: undefined, exportCurrent: undefined };
+                if (!transferJobs.length && ![...this.tasks.values()].some(task => task.percent < 100)) this.tasks.clear();
             }
-            this.state.active = true; this.state.total += jobs.length; this.submission++;
+            this.state.active = true; this.state.total += transferJobs.length; this.submission++;
+            if (groups.has('metadata')) this.state.metadataRevision = (this.state.metadataRevision ?? 0) + 1;
             for (const job of jobs) {
                 this.cancelledIds.delete(job.id); this.queuedIds.push(job.id);
                 this.transferKeys.set(job.id, `transfer:${this.submission}:${job.id}`);
             }
             this.libraryPending.push(...jobs); this.publish();
             if (reviewToken) this.state.acceptedReviews = [...(this.state.acceptedReviews ?? []), reviewToken].slice(-128);
-            this.startWorker(kind);
+            for (const kind of groups.keys()) this.startWorker(kind);
             this.wakeWorker?.();
             return structuredClone(this.state);
         } finally { this.working = false; }
