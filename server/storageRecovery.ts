@@ -1,5 +1,5 @@
-export const DEFAULT_STORAGE_WAIT_SECONDS = 15;
-export const MAX_STORAGE_WAIT_SECONDS = 120;
+// Shared recovery window for all storage checks; not a user setting.
+export const DEFAULT_STORAGE_WAIT_SECONDS = 10;
 
 export interface StorageRetryInfo {
     attempt: number;
@@ -15,8 +15,8 @@ const transientCodes = new Set([
 
 export function storageWaitSeconds(value: unknown) {
     if (value === undefined) return DEFAULT_STORAGE_WAIT_SECONDS;
-    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > MAX_STORAGE_WAIT_SECONDS) {
-        throw new Error(`Storage response wait must be a whole number from 0 to ${MAX_STORAGE_WAIT_SECONDS} seconds.`);
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+        throw new Error('Storage response wait must be a non-negative whole number of seconds.');
     }
     return value;
 }

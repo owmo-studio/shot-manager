@@ -1,5 +1,5 @@
 import { useClipView } from "./ClipViewContext";
-import { secondaryButton, dangerButton } from "./buttonStyles";
+import { secondaryButton, dangerButton, smallDangerButton } from "./buttonStyles";
 import { useEffect, useRef, useState } from 'react';
 import { errorMessage } from '../../shared/errors';
 import type { ShotCollection, VideoShot } from '../../shared/shots';
@@ -38,7 +38,7 @@ export function RevertOrganizationButton({ shots, onReverted }: {
     return <>
         <button type="button" aria-label="Revert pending clip attributes" title="Restore attributes and thumbnails from the Library"
             disabled={disabled || busy} onClick={() => { setError(null); setTargets([...candidates]); }}
-            className="flex h-7 items-center rounded-md border border-white/15 bg-white/8 px-2 text-[10px] font-medium text-zinc-200 transition duration-75 enabled:hover:border-red-400/40 enabled:hover:bg-red-500/15 enabled:hover:text-red-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">Revert</button>
+            className={smallDangerButton}>Revert</button>
         {targets && <dialog ref={dialog} role="alertdialog" aria-labelledby="revert-organization-title" aria-describedby="revert-organization-description"
             onCancel={event => { event.preventDefault(); if (!busy) setTargets(null); }}
             className="m-auto w-full max-w-md rounded-2xl border border-white/10 bg-[#1b2029] p-6 text-zinc-200 shadow-2xl backdrop:bg-black/60">

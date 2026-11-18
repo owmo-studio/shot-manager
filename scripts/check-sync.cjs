@@ -40,7 +40,7 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         scanner = new ShotScanner(join(cache, 'thumbnails'), undefined, join(cache, 'metadata.json'));
         queue = new IngestQueue(scanner, async () => library, inspect);
         await queue.status();
-        catalogue = new LibraryCatalogue(scanner, async () => library, inspect, queue, join(cache, 'catalogue.json'), join(cache, 'library-thumbnails'));
+        catalogue = new LibraryCatalogue(scanner, async () => library, inspect, queue, join(cache, 'catalogue.json'), join(cache, 'library', 'thumbnails'));
         let gate, entered, fail = false, aborts = 0;
         const sync = new LibrarySync(catalogue, scanner, queue, inspect, async (...args) => {
             if (gate) { entered?.(); await new Promise((resolve, reject) => {

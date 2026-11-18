@@ -1,4 +1,4 @@
-import { lstat, readFile, readdir, realpath, unlink } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, realpath, rename, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { inspectLibrary, within } from './library';
 import { scratchFolder } from './proxies';
@@ -18,13 +18,32 @@ export function cacheFiles(root: string) {
         thumbnails: join(root, 'thumbnails'),
         fingerprints: join(root, 'fingerprints'),
         proxies: join(root, 'proxies'),
+        library: { root: join(root, 'library'), thumbnails: join(root, 'library', 'thumbnails') },
     };
+}
+
+// Called before backend startup, when no thumbnail jobs are running. Preserve
+// existing cached assets without overwriting an already populated new location.
+export async function prepareLibraryCache(root: string) {
+    const legacy = join(root, 'library-thumbnails');
+    const previous = await lstat(legacy).catch(error => { if (error.code === 'ENOENT') return undefined; throw error; });
+    if (!previous) return;
+    if (!previous.isDirectory() || previous.isSymbolicLink() || await realpath(legacy) !== legacy) throw new Error('Library cache must be a regular folder.');
+    const paths = cacheFiles(root).library;
+    await mkdir(paths.root, { recursive: true, mode: 0o700 });
+    if (!(await lstat(paths.root)).isDirectory() || await realpath(paths.root) !== paths.root) throw new Error('Library cache must be a regular folder.');
+    const target = await lstat(paths.thumbnails).catch(error => { if (error.code === 'ENOENT') return undefined; throw error; });
+    if (target) {
+        if (!target.isDirectory() || target.isSymbolicLink() || await realpath(paths.thumbnails) !== paths.thumbnails) throw new Error('Library thumbnail cache must be a regular folder.');
+        return;
+    }
+    await rename(legacy, paths.thumbnails);
 }
 
 const categoryPatterns = {
     catalogue: /^catalogue\.json(?:\.[a-f0-9-]{36}\.tmp)?$/,
     metadata: /^metadata\.json(?:\.[a-f0-9-]{36}\.tmp)?$/,
-    thumbnails: /^[a-f0-9]{64}(?:\.jpg|\.[a-f0-9-]{36}\.tmp)$/,
+    thumbnails: /^[a-f0-9]{64}(?:\.jpg(?:\.[a-f0-9-]{36}\.tmp)?|\.[a-f0-9-]{36}\.tmp)$/,
     fingerprints: /^[a-f0-9]{64}\.json(?:\.[a-f0-9-]{36}\.tmp)?$/,
     proxies: /^[a-f0-9]{64}\.proxy\.(?:mov|[a-f0-9-]{36}\.partial)$/,
 } as const;
@@ -45,7 +64,10 @@ async function categoryFiles(directory: string, pattern: RegExp) {
 async function categoryEntries(root: string, category: CacheCategory) {
     const paths = cacheFiles(root);
     const files = await categoryFiles(category === 'metadata' || category === 'catalogue' ? root : paths[category], categoryPatterns[category]);
-    if (category === 'thumbnails') files.push(...await categoryFiles(join(root, 'library-thumbnails'), categoryPatterns.thumbnails));
+    if (category === 'thumbnails') {
+        files.push(...await categoryFiles(paths.library.thumbnails, categoryPatterns.thumbnails));
+        files.push(...await categoryFiles(join(root, 'library-thumbnails'), categoryPatterns.thumbnails));
+    }
     if (category === 'proxies') files.push(...await categoryFiles(root, categoryPatterns.proxies));
     return files;
 }
@@ -162,6 +184,7 @@ export async function clearSelectedCache(root: string, selection: CacheSelection
     }
     if (selection.thumbnails) {
         await clearDirectory(paths.thumbnails, categoryPatterns.thumbnails);
+        await clearDirectory(paths.library.thumbnails, categoryPatterns.thumbnails);
         await clearDirectory(join(root, 'library-thumbnails'), categoryPatterns.thumbnails);
     }
     if (selection.fingerprints) await clearDirectory(paths.fingerprints, /^[a-f0-9]{64}\.json(?:\.[a-f0-9-]{36}\.tmp)?$/);

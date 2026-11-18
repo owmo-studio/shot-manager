@@ -28,7 +28,7 @@ const { tmpdir } = require('node:os');
             VideoFingerprintStore, videoSampleRanges, VIDEO_SAMPLE_BYTES } = loaded.exports;
         const configPath = join(root, 'settings', 'configuration.json');
         assert.deepEqual(await readConfiguration(configPath), { version: 1, libraryPath: null });
-        const chosen = { version: 1, libraryPath: join(root, 'dummy-library'), storageWaitSeconds: 42 };
+        const chosen = { version: 1, libraryPath: join(root, 'dummy-library') };
         await saveConfiguration(configPath, chosen);
         assert.deepEqual(await readConfiguration(configPath), chosen, 'Configuration survives a fresh read');
         assert.deepEqual(await fs.readdir(join(root, 'settings')), ['configuration.json'], 'No partial state left behind');
@@ -38,7 +38,8 @@ const { tmpdir } = require('node:os');
         await fs.writeFile(configPath, JSON.stringify({ version: 1, libraryPath: 'relative' }));
         await assert.rejects(readConfiguration(configPath));
         await fs.writeFile(configPath, JSON.stringify({ version: 1, libraryPath: null, storageWaitSeconds: 121 }));
-        await assert.rejects(readConfiguration(configPath), /preserved/);
+        assert.deepEqual(await readConfiguration(configPath), { version: 1, libraryPath: null }, 'Legacy storage wait cannot override the global setting');
+        assert.equal(JSON.parse(await fs.readFile(configPath, 'utf8')).storageWaitSeconds,121,'Reading does not rewrite existing settings');
 
         const cache = join(root, 'cache');
         assert.deepEqual(await inspectThumbnailCache(cache), { files: 0, bytes: 0 });

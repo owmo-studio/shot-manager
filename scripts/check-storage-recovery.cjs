@@ -13,13 +13,13 @@ const { join, resolve } = require('node:path');
         }});
         const loaded = new (require('node:module'))(__filename, module);
         loaded._compile(bundle.output.find(item => item.type === 'chunk' && item.isEntry).code, __filename);
-        const { DEFAULT_STORAGE_WAIT_SECONDS, MAX_STORAGE_WAIT_SECONDS, storageWaitSeconds, withStorageRecovery } = loaded.exports;
-        assert.equal(DEFAULT_STORAGE_WAIT_SECONDS, 15);
-        assert.equal(storageWaitSeconds(undefined), 15);
+        const { DEFAULT_STORAGE_WAIT_SECONDS, storageWaitSeconds, withStorageRecovery } = loaded.exports;
+        assert.equal(DEFAULT_STORAGE_WAIT_SECONDS, 10);
+        assert.equal(storageWaitSeconds(undefined), 10);
         assert.equal(storageWaitSeconds(0), 0);
         assert.equal(storageWaitSeconds(120), 120);
         assert.throws(() => storageWaitSeconds(-1), /whole number/);
-        assert.throws(() => storageWaitSeconds(MAX_STORAGE_WAIT_SECONDS + 1), /whole number/);
+        assert.throws(() => storageWaitSeconds(1.5), /whole number/);
 
         let attempts = 0, active = 0, maximumActive = 0;
         const retries = [];

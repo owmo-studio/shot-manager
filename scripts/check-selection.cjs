@@ -412,7 +412,7 @@ if (!process.versions.electron) {
             await push(originals);
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
             await wait(
-                `document.querySelector('[aria-label="Library location"]').textContent.includes('Library Not Set')`,
+                `document.querySelector('[aria-label="Library location"]').textContent.includes('Library Not Configured')`,
             );
             await click("Configuration");
             await wait(`!!document.querySelector('dialog[open] [aria-label="Identity options"]')`);

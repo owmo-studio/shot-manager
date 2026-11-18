@@ -14,7 +14,7 @@ import { EjectButton } from "./EjectButton";
 import { SkipSelection } from "./SkipSelection";
 import { SyncButton } from './SyncButton';
 import { DeleteButton } from './DeleteButton';
-import { inspectorButton } from './buttonStyles';
+import { inspectorButton, inspectorChangedButton } from './buttonStyles';
 import { ThumbnailIcon } from './ThumbnailIcon';
 import { libraryThumbnailChanged } from './libraryDiff';
 
@@ -173,7 +173,7 @@ export function ClipInspector({
                             aria-label="Set current frame as thumbnail"
                             title={thumbnailChanged ? "Thumbnail differs from Library — set current frame" : "Set current frame as thumbnail"}
                             aria-busy={thumbnailBusy}
-                            className={`${inspectorButton}${thumbnailChanged ? " ring-1 ring-amber-400/60 text-amber-200" : ""}`}
+                            className={thumbnailChanged ? inspectorChangedButton : inspectorButton}
                         >
                             <ThumbnailIcon />
                         </button>

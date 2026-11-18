@@ -27,7 +27,7 @@ const { join, resolve } = require('node:path');
             const result = await monitor.status();
             assert.deepEqual({ level: result.level, message: result.message }, { level, message });
         };
-        await expect('error', 'Library Not Set');
+        await expect('error', 'Library Not Configured');
         settings = { version: 1, libraryPath: library, libraryMount: lib.mount };
         await expect('ready', 'Ready');
         assert.equal((await inspectLibrary(library, [root])).path, library, 'Nested Library under source is allowed');

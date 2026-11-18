@@ -429,12 +429,16 @@ function App() {
                     className={`relative flex min-w-0 flex-1 items-center justify-center overflow-y-auto text-center transition ${draggingClips ? "bg-blue-400/5 outline-2 -outline-offset-4 outline-dashed outline-blue-400/50" : ""}`}
                 >
                     {tab === 'library' ? (
-                        <div className="w-full self-start" aria-busy={libraryCollection.refreshing}>
+                        <div className={`w-full ${libraryCollection.shots.length ? 'self-start' : 'self-stretch flex flex-col'}`} aria-busy={libraryCollection.refreshing}>
                             {libraryCollection.refreshing && <p role="status" className="sr-only">Refreshing Library…</p>}
-                            {libraryCollection.error && <p role="status" className="px-5 pt-4 text-left text-xs text-red-300">{libraryCollection.error}</p>}
+                            {libraryCollection.libraryPath && libraryCollection.error && <p role="status" className="px-5 pt-4 text-left text-xs text-red-300">{libraryCollection.error}</p>}
                             {libraryCollection.warnings.length > 0 && <p role="status" title={libraryCollection.warnings.join('\n')} className="px-5 pt-4 text-left text-xs text-amber-300">{libraryCollection.warnings.length} metadata files could not be refreshed.</p>}
-                            <ShotGrid key="library-grid" collection={visibleCollection} newestFirst={newestFirst}
-                                selectedShotIds={selection.editingIds} onSelect={selectShot} />
+                            {libraryCollection.shots.length ? <ShotGrid key="library-grid" collection={visibleCollection} newestFirst={newestFirst}
+                                selectedShotIds={selection.editingIds} onSelect={selectShot} /> : <div className="flex flex-1 items-center justify-center">
+                                <div className="max-w-md p-10">
+                                    <h2 className="text-xl font-medium tracking-tight">{!libraryCollection.libraryPath ? 'Library Not Configured' : libraryCollection.refreshing ? 'Refreshing Library…' : libraryCollection.error ? 'Library Unavailable' : 'Library Empty'}</h2>
+                                </div>
+                            </div>}
                         </div>
                     ) : draggingClips ? (
                         <p className="pointer-events-none text-sm text-blue-300">

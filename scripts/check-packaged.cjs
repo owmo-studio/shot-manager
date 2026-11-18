@@ -46,15 +46,23 @@ if (!process.versions.electron) {
     app.whenReady().then(async()=>{
         const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
         const until=async(test,label)=>{for(let i=0;i<750;i++){if(await test())return;await sleep(20);}throw new Error(label);};
-        const js=code=>window.webContents.executeJavaScript(code,true);
+        const js=code=>window.webContents.executeJavaScript(code,true).catch(error=>{console.error('Failed renderer check:',code);throw error;});
         try {
             assert.equal(JSON.parse(fs.readFileSync(join(archive,'package.json'),'utf8')).version,version);
             assert.equal(JSON.parse(fs.readFileSync(join(archive,'package.json'),'utf8')).name,'owmo-shot-manager','Keep the existing app-data directory name');
             await until(()=>window&&!window.webContents.isLoadingMainFrame(),'Renderer did not load');
             await until(()=>js(`!!window.desktop && window.desktop.getBackendStatus().then(s=>s.state==='connected')`),'Bundled backend did not start');
             assert.equal((await js('window.desktop.getConfiguration()')).libraryPath,null,'Never load real configuration');
+            await until(()=>js(`document.querySelector('section[aria-label="Shot cards"] h2')?.textContent==='Library Not Configured'`),'Import must use the unconfigured Library wording');
+            await js(`Array.from(document.querySelectorAll('header button')).find(button=>button.textContent==='Library').click()`);
+            await until(()=>js(`document.querySelector('section[aria-label="Shot cards"] h2')?.textContent==='Library Not Configured'`),'Library must show its unconfigured placeholder');
+            assert.equal(await js(`!!document.querySelector('section[aria-label="Shot cards"] [aria-label="Add clips"]')`),false,'Library placeholder has no add button');
             await js(`(async()=>{const choice=await window.desktop.chooseLibrary();await window.desktop.saveConfigurationLocations({library:choice.token});})()`);
             await until(()=>js(`document.querySelector('[data-application-level="ready"]') && document.querySelector('header [aria-label="Application version"]')?.textContent==='${version}'`),'Ready/version missing');
+            await js('window.desktop.refreshCatalogue()');
+            await until(()=>js(`document.querySelector('section[aria-label="Shot cards"] h2')?.textContent==='Library Empty'`),'Configured empty Library must show its empty placeholder');
+            assert.equal(await js(`!!document.querySelector('section[aria-label="Shot cards"] [aria-label="Add clips"]')`),false,'Empty Library has no add button');
+            await js(`Array.from(document.querySelectorAll('header button')).find(button=>button.textContent==='Import').click()`);
             await js(`document.querySelector('[aria-label="Configuration"]').click()`);
             await until(()=>js(`!!document.querySelector('dialog[open] #configuration-title')`),'Configuration did not open');
             assert.equal(await js(`Array.from(document.querySelectorAll('dialog[open] h2, dialog[open] p, dialog[open] span')).every(el=>getComputedStyle(el).userSelect==='none')`),true,'Dialog labels and paths cannot be selected');
@@ -67,6 +75,7 @@ if (!process.versions.electron) {
             await js(`document.querySelector('dialog[open]').dispatchEvent(new Event('cancel',{cancelable:true}))`);
             await js('window.desktop.chooseClips()');
             await until(()=>js(`window.desktop.getShots().then(s=>s.shots.length===1&&s.shots[0].thumbnailStatus==='ready'&&s.shots[0].proxyState==='ready')`),'Finder PATH must support inspection, thumbnails, and proxy encoding');
+            await until(()=>js(`!!document.querySelector('[data-shot-card] > button')`),'Import card did not render');
             await js(`document.querySelector('[data-shot-card] > button').click()`);
             await until(()=>js(`!!document.querySelector('input[aria-label="Scene"]:not(:disabled)')`),'Editable Scene field missing');
             assert.equal(await js(`getComputedStyle(document.querySelector('input[aria-label="Scene"]')).userSelect`),'text','Editable text fields still allow selection');

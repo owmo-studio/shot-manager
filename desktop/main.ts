@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { mkdir, realpath } from 'node:fs/promises'
 import type { LibraryLocation } from '../server/library'
 import { inspectLibrary } from '../server/library'
-import { assertCacheReady, cacheFiles, cacheInventory, clearSelectedCache, managedCacheDirectory } from '../server/cacheFiles'
+import { assertCacheReady, cacheFiles, cacheInventory, clearSelectedCache, managedCacheDirectory, prepareLibraryCache } from '../server/cacheFiles'
 import type { CacheSelection } from '../server/cacheFiles'
 import { readConfiguration, saveConfiguration } from './configuration'
 import { validateOptionRemovals, validateOrganizationAction } from '../shared/organization'
@@ -17,7 +17,6 @@ import { requestBackend } from './backendRequest'
 import { AppError, errorDetails } from '../shared/errors'
 import type { ApplicationStatus, BackendHealth, BackendStatus } from '../shared/desktop'
 import type { WorkspaceRestore } from '../shared/shots'
-import { storageWaitSeconds } from '../server/storageRecovery'
 
 let mainWindow: BrowserWindow | null = null
 let backend: UtilityProcess | null = null
@@ -92,6 +91,7 @@ async function startBackend(): Promise<void> {
   const cache = await managedCacheLocation()
   const storage = cacheFiles(cache.root)
   await assertCacheReady(cache.parent, storage.root, cache.mount)
+  await prepareLibraryCache(storage.root)
   backendState = 'starting'
   backend = utilityProcess.fork(join(__dirname, 'backend.cjs'), [], {
     serviceName: 'Shot Manager Backend',
@@ -417,12 +417,11 @@ if (!app.requestSingleInstanceLock()) {
     handle('configuration:save-locations', async (event, changes: unknown) => {
       requireMainWindow(event)
       if (!changes || typeof changes !== 'object' || Array.isArray(changes) ||
-        !Object.keys(changes).length || Object.keys(changes).some(key => key !== 'library' && key !== 'storageWaitSeconds')) throw new Error('Invalid configuration changes.')
+        !Object.keys(changes).length || Object.keys(changes).some(key => key !== 'library')) throw new Error('Invalid configuration changes.')
       await flushDrafts()
       return organizationWrites.run(async () => {
         const current = await readConfiguration(configurationPath)
         const next = { ...current }
-        if ('storageWaitSeconds' in changes) next.storageWaitSeconds = storageWaitSeconds((changes as Record<string, unknown>).storageWaitSeconds)
         const selected = []
         for (const kind of ['library'] as const) {
           if (!(kind in changes)) continue

@@ -26,14 +26,13 @@ export interface AppConfiguration {
   version: 1
   libraryPath: string | null
   libraryMount?: string
-  storageWaitSeconds?: number
   scratchPath?: string | null
   scratchMount?: string
 }
 
 // Opaque capability for a directory selected by the native picker; not yet saved.
 export interface LocationChoice { token: string; path: string }
-export interface LocationChanges { library?: string | null; storageWaitSeconds?: number }
+export interface LocationChanges { library?: string | null }
 export interface CacheSelection { metadata: boolean; thumbnails: boolean; fingerprints: boolean; proxies: boolean; catalogue?: boolean }
 
 export interface CacheSummary {

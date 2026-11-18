@@ -32,7 +32,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
         const inspect=async()=>{if(offline)throw new Error('Library unavailable');const location=await inspectLibrary(library);return {...location,mount:location.mount+(changedMount?'-changed':'')};};
         scanner=new ShotScanner(join(cache,'thumbnails'),undefined,join(cache,'metadata.json'));
         queue=new IngestQueue(scanner,async()=>library,inspect);
-        catalogue=new LibraryCatalogue(scanner,async()=>library,inspect,queue,join(cache,'catalogue.json'),join(cache,'library-thumbnails'));
+        catalogue=new LibraryCatalogue(scanner,async()=>library,inspect,queue,join(cache,'catalogue.json'),join(cache,'library','thumbnails'));
         scanner.organization.onChange=()=>catalogue.changed();
         await queue.status();await catalogue.refresh();
         await assert.rejects(catalogue.previewDelete(['../bad']),/Invalid Delete/);

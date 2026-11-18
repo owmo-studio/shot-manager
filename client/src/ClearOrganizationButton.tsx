@@ -1,5 +1,5 @@
 import { useClipView } from "./ClipViewContext";
-import { secondaryButton, dangerButton } from "./buttonStyles";
+import { secondaryButton, dangerButton, smallDangerButton } from "./buttonStyles";
 import { errorMessage } from '../../shared/errors';
 import { useEffect, useRef, useState } from 'react';
 import type { ShotCollection, VideoShot } from '../../shared/shots';
@@ -37,7 +37,7 @@ export function ClearOrganizationButton({ shots, onUpdated }: { shots: VideoShot
     return <>
         <button type="button" aria-label="Clear selected clip information" title="Clear all assigned attributes"
             disabled={disabled || busy} onClick={() => { setError(null); setTargets([...shots]); }}
-            className="flex h-7 items-center rounded-md border border-white/15 bg-white/8 px-2 text-[10px] font-medium text-zinc-200 transition duration-75 enabled:hover:border-red-400/40 enabled:hover:bg-red-500/15 enabled:hover:text-red-200 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40">Clear</button>
+            className={smallDangerButton}>Clear</button>
         {targets && <dialog ref={dialog} role="alertdialog" aria-labelledby="clear-organization-title" aria-describedby="clear-organization-description"
             onCancel={event => { event.preventDefault(); if (!busy) setTargets(null); }}
             className="m-auto w-full max-w-md rounded-2xl border border-white/10 bg-[#1b2029] p-6 text-zinc-200 shadow-2xl backdrop:bg-black/60">

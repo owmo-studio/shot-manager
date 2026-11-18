@@ -41,7 +41,7 @@ export class ApplicationMonitor {
         }
         const locations = this.locations();
         if (!configuration.libraryPath || !configuration.libraryMount) {
-            issues.push({ key: 'configuration', level: 'error', message: 'Library Not Set', detail: 'Set and save a Library location in Configuration.' });
+            issues.push({ key: 'configuration', level: 'error', message: 'Library Not Configured', detail: 'Set and save a Library location in Configuration.' });
             return generation === this.generation ? this.summarize(issues) : { level: 'warning', message: 'Checking Status' };
         }
         const roots = locations.map(source => source.path);

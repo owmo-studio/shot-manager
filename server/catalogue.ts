@@ -460,6 +460,9 @@ export class LibraryCatalogue {
         const cached = this.thumbnails && join(this.thumbnails, `${key}.jpg`);
         if (this.thumbnails) {
             await this.assertWritable?.();
+            const parent = dirname(this.thumbnails);
+            await mkdir(parent, { recursive: true, mode: 0o700 });
+            if (!(await lstat(parent)).isDirectory() || await realpath(parent) !== parent) throw new Error('Library thumbnail Cache must be a regular folder.');
             await mkdir(this.thumbnails, { recursive: true, mode: 0o700 });
             if (!(await lstat(this.thumbnails)).isDirectory() || await realpath(this.thumbnails) !== this.thumbnails) throw new Error('Library thumbnail Cache must be a regular folder.');
         }

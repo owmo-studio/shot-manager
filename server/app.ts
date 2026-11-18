@@ -1,6 +1,6 @@
 import { readConfiguration } from '../desktop/configuration';
 import { ApplicationMonitor } from './applicationStatus';
-import { assertCacheReady, pruneManagedCache } from './cacheFiles';
+import { assertCacheReady, cacheFiles, pruneManagedCache } from './cacheFiles';
 import { inspectLibrary } from './library';
 import { ProxyQueue } from './proxies';
 import { rsyncFile } from './rsync';
@@ -48,20 +48,20 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     if (configured.libraryPath !== path || configured.libraryMount !== location.mount) throw new Error('The configured Library volume is not mounted at its expected location. Choose the Library again if it has changed.')
     return location
   }
-  const storageWait = async () => (await configuration()).storageWaitSeconds ?? DEFAULT_STORAGE_WAIT_SECONDS
+  const storageWait = async () => DEFAULT_STORAGE_WAIT_SECONDS
   const storageRetry = (info: { attempt: number; elapsedMs: number; error: string; code?: string }) => server.log.warn({ ...info, operation: 'storage-check' }, 'Retrying temporary storage check')
   const ingestion = new IngestQueue(workspace.scanner, async () => (await configuration()).libraryPath, inspectConfigured, rsyncFile, proxies, storageWait, storageRetry)
   const catalogue = new LibraryCatalogue(workspace.scanner, async () => (await configuration()).libraryPath, async () => {
     const path = (await configuration()).libraryPath
-    if (!path) throw new Error('Library Not Set')
+    if (!path) throw new Error('Library Not Configured')
     return inspectConfigured(path)
   }, ingestion, organizationFile ? join(dirname(organizationFile), 'catalogue.json') : undefined,
-  organizationFile ? join(dirname(organizationFile), 'library-thumbnails') : undefined, assertWritable,
+  organizationFile ? cacheFiles(dirname(organizationFile)).library.thumbnails : undefined, assertWritable,
   storageWait, storageRetry)
   let libraryRevision = 0
   const sync = new LibrarySync(catalogue, workspace.scanner, ingestion, async () => {
     const path = (await configuration()).libraryPath
-    if (!path) throw new Error('Library Not Set')
+    if (!path) throw new Error('Library Not Configured')
     return inspectConfigured(path)
   }, rsyncFile, undefined, storageWait, storageRetry)
   catalogue.onChange = () => onLibraryChanged?.({ revision: ++libraryRevision, vocabularyRevision: libraryRevision })

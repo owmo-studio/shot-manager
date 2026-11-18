@@ -36,7 +36,7 @@ async function until(test, label) {
         const inspect=async()=>{if(offline)throw new Error('Synthetic offline Library');return inspectLibrary(library);};
         scanner=new ShotScanner(join(cache,"thumbnails"),undefined,draftFile);
         queue=new IngestQueue(scanner,async()=>library,inspect);
-        catalogue=new LibraryCatalogue(scanner,async()=>library,inspect,queue,catalogFile,join(cache,'library-thumbnails'));
+        catalogue=new LibraryCatalogue(scanner,async()=>library,inspect,queue,catalogFile,join(cache,'library','thumbnails'));
         scanner.organization.onChange=()=>catalogue.changed();queue.onChange=()=>catalogue.changed();
         let view=await catalogue.refresh();
         assert.equal(view.error,undefined); assert.equal(view.shots.length,2);
@@ -135,11 +135,15 @@ async function until(test, label) {
         stored.notes='Another remote update';await fs.writeFile(join(library,`${id}.metadata.json`),JSON.stringify(stored));
         await catalogue.refresh();assert.equal((await catalogue.snapshot()).shots.find(shot=>shot.id===id).organization.notes,stored.notes);
         await catalogue.thumbnail(id);
-        const thumbs=join(cache,'library-thumbnails'), unsafe=join(root,'unrelated');await fs.mkdir(unsafe);
+        const thumbs=join(cache,'library','thumbnails'), unsafe=join(root,'unrelated');await fs.mkdir(unsafe);
         await fs.rename(thumbs,thumbs+'-saved');await fs.symlink(unsafe,thumbs);
         await assert.rejects(catalogue.thumbnail(id),/regular folder/);
         assert.deepEqual(await fs.readdir(unsafe),[],'A symlink Cache folder is never written through');
         await fs.unlink(thumbs);await fs.rename(thumbs+'-saved',thumbs);
+        const namespace=join(cache,'library');await fs.rename(namespace,namespace+'-saved');await fs.symlink(unsafe,namespace);
+        await assert.rejects(catalogue.thumbnail(id),/regular folder/);
+        assert.deepEqual(await fs.readdir(unsafe),[],'A redirected Library cache parent is never written through');
+        await fs.unlink(namespace);await fs.rename(namespace+'-saved',namespace);
         offline=true;view=await catalogue.refresh();assert.match(view.error,/offline/);assert.equal(view.shots.length,2,'Offline is never an empty Library');
         assert.ok(view.shots.every(shot=>shot.mediaReadiness.state==='unavailable'),'Cached asset flags do not report committed while offline');
         assert.ok((await catalogue.thumbnail(id)).startsWith('data:image/jpeg;'),'Previously viewed thumbnails work offline');
@@ -189,7 +193,7 @@ async function until(test, label) {
         // Local restart keeps both the catalogue and independently stored edits.
         await catalogue.close();await queue.close();await scanner.close();
         scanner=new ShotScanner(join(cache,"thumbnails"),undefined,draftFile);queue=new IngestQueue(scanner,async()=>library,inspect);
-        catalogue=new LibraryCatalogue(scanner,async()=>library,inspect,queue,catalogFile,join(cache,'library-thumbnails'));
+        catalogue=new LibraryCatalogue(scanner,async()=>library,inspect,queue,catalogFile,join(cache,'library','thumbnails'));
         view=await catalogue.snapshot();assert.equal(view.shots.find(shot=>shot.id===id).organization.notes,'Newer edit');
         assert.ok(view.shots.every(shot=>shot.mediaReadiness.state==='unchecked'),'Cached rows start unchecked after restart');
         assert.equal(await catalogue.thumbnail(id),thumbURL,'Thumbnail drafts survive restart');

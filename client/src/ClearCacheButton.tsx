@@ -1,4 +1,4 @@
-import { secondaryButton, dangerButton } from "./buttonStyles";
+import { secondaryButton, dangerButton, dangerSecondaryButton } from "./buttonStyles";
 import { errorMessage } from '../../shared/errors';
 import { useEffect, useRef, useState } from 'react';
 import type { CacheSelection } from '../../shared/desktop';
@@ -55,7 +55,7 @@ export function ClearCacheButton({ disabled, onBusyChange, onReset }: {
         <button type="button" disabled={disabled} onClick={() => {
             setKeep({ catalogue: false, metadata: false, thumbnails: false, fingerprints: false, proxies: false });
             setError(null); setOpen(true); onBusyChange(true);
-        }} className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300 transition enabled:hover:bg-red-500/20 enabled:hover:text-red-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400 disabled:opacity-40">Clear Cache</button>
+        }} className={dangerSecondaryButton}>Clear Cache</button>
         {open && <dialog ref={dialog} role="alertdialog" aria-labelledby="clear-cache-title" aria-describedby="clear-cache-description"
             onCancel={event => { event.preventDefault(); event.stopPropagation(); close(); }}
             className="m-auto max-h-[calc(100vh-48px)] w-[480px] max-w-[calc(100vw-48px)] overflow-y-auto rounded-2xl border border-white/10 bg-[#1b2029] p-6 text-zinc-200 shadow-2xl backdrop:bg-black/60">

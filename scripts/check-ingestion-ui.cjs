@@ -162,7 +162,7 @@ if (!process.versions.electron) {
             await until(
                 () =>
                     js(
-                        `document.querySelector('[aria-label="Application status"]')?.textContent==='Library Not Set' && !!document.querySelector('[data-application-level="error"]')`,
+                        `document.querySelector('[aria-label="Application status"]')?.textContent==='Library Not Configured' && !!document.querySelector('[data-application-level="error"]')`,
                     ),
                 "Missing configuration did not show red app status",
             );
@@ -175,14 +175,14 @@ if (!process.versions.electron) {
             );
             assert.equal(
                 await js(
-                    `document.querySelector('section[aria-label="Shot cards"] h2')?.textContent==='Library Not Set'`,
+                    `document.querySelector('section[aria-label="Shot cards"] h2')?.textContent==='Library Not Configured'`,
                 ),
                 true,
                 "Empty workspace reflects the critical status",
             );
             await assert.rejects(
                 js(`window.desktop.chooseClips()`),
-                /Library Not Set/,
+                /Library Not Configured/,
                 "Source IPC rejects a critical status",
             );
             // Exercise the real source IPC without exposing renderer paths: chooseClips uses the native picker.
@@ -215,7 +215,7 @@ if (!process.versions.electron) {
                 );
                 assert.equal(
                     await js(`document.querySelector('[aria-label="Library location"]').textContent`),
-                    "Library Not Set",
+                    "Library Not Configured",
                     "Header shows committed location",
                 );
             };
