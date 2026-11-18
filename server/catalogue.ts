@@ -259,13 +259,13 @@ export class LibraryCatalogue {
                 if (complete.length) {
                     const deleted = complete.map(entry => entry.metadata.id);
                     try {
-                        await this.scanner.forgetLibraryMetadata(complete.map(entry => entry.metadata.fingerprint));
+                        await this.scanner.markLibraryDeleted(complete.map(entry => entry.metadata.fingerprint));
                         await this.save({ ...this.state, entries: this.state.entries.filter(entry => !deleted.includes(entry.metadata.id)) });
                         for (const id of deleted) this.verified.delete(id);
                         result.deleted = deleted;
                     } catch (error) {
                         for (const entry of complete) {
-                            const message = `Library files were deleted, but local metadata could not be cleared: ${error instanceof Error ? error.message : String(error)}`;
+                            const message = `Library files were deleted, but the local record could not be updated: ${error instanceof Error ? error.message : String(error)}`;
                             this.verified.set(entry.metadata.id, { path: review.location.path, error: message });
                             result.errors.push({ id: entry.metadata.id, filename: entry.metadata.originalFilename, message });
                         }

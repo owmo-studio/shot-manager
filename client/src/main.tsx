@@ -174,8 +174,9 @@ function App() {
     const dragDepth = useRef(0);
     const workspaceMutation = useRef(false);
     const workspaceStatus = applicationStatus(status, communicationError);
-    const canAddClips = tab === "import" && workspaceLoaded && !addingClips && !ejectBusy && status.state === "connected"
+    const canAcceptDroppedClips = workspaceLoaded && !addingClips && !ejectBusy && status.state === "connected"
         && !!status.application && workspaceStatus.level !== "error";
+    const canAddClips = tab === "import" && canAcceptDroppedClips;
 
     function receiveShots(collection: ShotCollection) {
         if (collection.revision < latestShotRevision.current) return;
@@ -221,9 +222,9 @@ function App() {
         ]);
     }, [importCollection.directories]);
 
-    async function addClips(droppedFiles?: File[]) {
+    async function addClips(droppedFiles?: File[], droppedFromLibrary = false) {
         if (workspaceMutation.current) return;
-        if (!canAddClips) {
+        if (!(droppedFromLibrary ? canAcceptDroppedClips : canAddClips)) {
             setWorkspaceError(workspaceStatus.level === "error" ? `${workspaceStatus.message}. Resolve this issue before adding clips.` : "Please wait for the application status check before adding clips.");
             return;
         }
@@ -293,7 +294,11 @@ function App() {
         dragDepth.current = 0;
         setDraggingClips(false);
         const files = Array.from(event.dataTransfer.files);
-        if (files.length) void addClips(files);
+        if (files.length) {
+            const droppedOnLibrary = tab === 'library';
+            if (droppedOnLibrary) setTab('import');
+            void addClips(files, droppedOnLibrary);
+        }
     }
 
     useEffect(() => {
@@ -423,7 +428,7 @@ function App() {
                     onDragLeave={dragLeave}
                     onDragOver={(event) => {
                         event.preventDefault();
-                        event.dataTransfer.dropEffect = canAddClips ? "copy" : "none";
+                        event.dataTransfer.dropEffect = canAcceptDroppedClips ? "copy" : "none";
                     }}
                     onDrop={dropClips}
                     className={`relative flex min-w-0 flex-1 items-center justify-center overflow-y-auto text-center transition ${draggingClips ? "bg-blue-400/5 outline-2 -outline-offset-4 outline-dashed outline-blue-400/50" : ""}`}
@@ -442,7 +447,7 @@ function App() {
                         </div>
                     ) : draggingClips ? (
                         <p className="pointer-events-none text-sm text-blue-300">
-                            {canAddClips ? "Drop videos, folders, or a card root to add clips" : "Adding clips is unavailable"}
+                            {canAcceptDroppedClips ? "Drop videos, folders, or a card root to add clips" : "Adding clips is unavailable"}
                         </p>
                     ) : shotCollection.shots.length || shotCollection.scans.some(scan => scan.state === 'queued' || scan.state === 'scanning' || scan.error || scan.warnings.length) ? (
                         <ShotGrid

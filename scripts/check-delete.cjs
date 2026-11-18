@@ -84,7 +84,13 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
         assert.deepEqual((await catalogue.snapshot()).shots.map(shot=>shot.id),ids.slice(2));
         assert.deepEqual(JSON.parse(await fs.readFile(join(cache,'catalogue.json'),'utf8')).entries.map(entry=>entry.metadata.id),ids.slice(2));
         const drafts=JSON.parse(await fs.readFile(join(cache,'metadata.json'),'utf8')).drafts;
-        assert.ok(Object.keys(drafts).every(key=>!ids.slice(0,2).some(id=>key.endsWith(id))),'Shared drafts, thumbnail references, and receipts are cleared');
+        assert.ok(ids.slice(0,2).every(id=>Object.keys(drafts).some(key=>key.endsWith(id))),'Local records survive Library deletion');
+        assert.equal(drafts[Object.keys(drafts).find(key=>key.endsWith(ids[0]))].data.notes,'Pending local edit','Local edits survive Library deletion');
+        assert.ok(ids.slice(0,2).every(id=>{
+            const record=drafts[Object.keys(drafts).find(key=>key.endsWith(id))];
+            return record.libraryBaseline===undefined && record.ingestion===undefined;
+        }),'Deleted Library references and receipts are cleared');
+        assert.equal(drafts[Object.keys(drafts).find(key=>key.endsWith(ids[0]))].pendingAttributes,true,'Pending local edits remain protected after deletion');
         assert.ok((await scanner.organization.vocabulary()).identity.includes('Example'),'Saved options remain');
         assert.equal(scanner.libraryProxy(ids[0]),false,'Import presence is invalidated immediately');
         await assert.rejects(executeDelete(review),/Review Delete/,'Confirmation cannot be replayed');
@@ -108,11 +114,11 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
         // A failed local save remains recoverable from the cached row, even after
         // all remote files are gone; a fresh confirmation completes that cleanup.
         await create(ids[0]);await catalogue.refresh();
-        const forget=scanner.organization.forget.bind(scanner.organization);
-        scanner.organization.forget=async()=>{throw new Error('Synthetic local save failure');};
+        const markDeleted=scanner.organization.markLibraryDeleted.bind(scanner.organization);
+        scanner.organization.markLibraryDeleted=async()=>{throw new Error('Synthetic local save failure');};
         review=await catalogue.previewDelete([ids[0]]);
-        const localFailure=await executeDelete(review);scanner.organization.forget=forget;
-        assert.equal(localFailure.deleted.length,0);assert.match(localFailure.errors[0].message,/local metadata could not be cleared/);
+        const localFailure=await executeDelete(review);scanner.organization.markLibraryDeleted=markDeleted;
+        assert.equal(localFailure.deleted.length,0);assert.match(localFailure.errors[0].message,/local record could not be updated/);
         assert.equal((await catalogue.snapshot()).shots.length,1);
         assert.equal((await fs.readdir(library)).some(name=>name.startsWith(ids[0]+'.')),false);
         review=await catalogue.previewDelete([ids[0]]);await executeDelete(review);
@@ -132,11 +138,14 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
         await catalogue.refresh();review=await catalogue.previewDelete([imported.id]);
         assert.deepEqual((await executeDelete(review)).errors,[]);
         const remaining=scanner.snapshot().shots[0];
-        assert.equal(remaining.organization.notes,'');assert.equal(remaining.ingestion,undefined);assert.equal(remaining.ingestState,undefined);
+        assert.equal(remaining.organization.notes,'Imported note');assert.equal(remaining.ingestion,undefined);assert.equal(remaining.libraryBaseline,undefined);assert.equal(remaining.ingestState,undefined);
         assert.equal(remaining.available,true);assert.deepEqual(await fs.readFile(video),originalBytes);
-        await catalogue.close();
         const restarted=new LibraryCatalogue(scanner,async()=>library,inspect,queue,join(cache,'catalogue.json'));
         assert.equal((await restarted.snapshot()).shots.length,0,'Deletion survives app restart');await restarted.close();
+        await scanner.updateOrganization([remaining.id],{field:'notes',operation:'set',value:'Edit while Library is absent'});
+        await create(remaining.id);await catalogue.refresh();
+        const reappeared=scanner.snapshot().shots.find(shot=>shot.id===remaining.id);
+        assert.equal(reappeared.organization.notes,'Edit while Library is absent','Refresh preserves local edits when a deleted ID reappears');
         console.log('PASS: reviewed multi-clip deletion, derived/partial assets, metadata cleanup, stale/locked/offline/mount/symlink/folder guards, partial failures/retry, and source/Export/recycle preservation.');
     } finally { release?.();await queue?.close();await catalogue?.close();await scanner?.close();await fs.rm(root,{recursive:true,force:true}); }
 })().catch(error=>{console.error(error);process.exitCode=1;});

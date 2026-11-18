@@ -7,7 +7,7 @@ import type { IngestionReceipt, IngestState, ProxyState } from "../shared/ingest
 import { ingestionSignature } from './processingState';
 export { ingestionSignature } from './processingState';
 import type { ClipAttributes, OrganizationAction, TagVocabulary } from "../shared/organization";
-import { emptyOrganization, organizationKey } from "../shared/organization";
+import { organizationKey } from "../shared/organization";
 import type { ShotChange, ShotCollection, ShotDetails, DiscoveryScan, VideoShot, VideoMetadata, VideoFingerprint } from "../shared/shots";
 import type { WorkspaceRestore } from "../shared/shots";
 import type { DiscoveredShot } from "./discovery";
@@ -218,11 +218,16 @@ export class ShotScanner {
         if (changed) this.publish();
     }
 
-    async forgetLibraryMetadata(fingerprints: VideoFingerprint[]) {
-        await this.organization.forget(fingerprints);
+    async markLibraryDeleted(fingerprints: VideoFingerprint[]) {
+        await this.organization.markLibraryDeleted(fingerprints);
         for (const { value: id } of fingerprints) {
             const shot = this.clips.get(id)?.result.shot;
-            if (shot) { shot.organization = emptyOrganization(); shot.libraryBaseline = undefined; shot.ingestion = undefined; }
+            if (shot) {
+                // Keep the local organization and thumbnail draft. Only remote
+                // evidence is invalidated; the source remains eligible for Commit.
+                shot.libraryBaseline = undefined;
+                shot.ingestion = undefined;
+            }
         }
         this.publish();
     }

@@ -13,7 +13,7 @@ const readinessColors = {
 };
 const qualityIndicators = {
     preferred: { symbol: '★', label: 'Preferred', color: 'text-yellow-300' },
-    usable: { symbol: '✓', label: 'Usable', color: 'text-emerald-300' },
+    usable: { symbol: '✓', label: 'Usable', color: 'text-blue-300' },
     low: { symbol: '▼', label: 'Low', color: 'text-red-400' },
 };
 
@@ -64,6 +64,10 @@ function ShotCard({
     const metadataSaving = shot.ingestState === "processing" && shot.workKind === 'metadata';
     const transferring = shot.ingestState === "processing" && !metadataSaving;
     const working = transferring || metadataSaving;
+    const indicatorBusy = working || proxyEncoding;
+    const indicatorStyle = indicatorBusy
+        ? `border-2 motion-safe:animate-spin ${working ? shot.workKind === 'sync' ? 'border-emerald-300/25 border-t-emerald-300' : 'border-blue-400/25 border-t-blue-400' : 'border-yellow-300/25 border-t-yellow-300'}`
+        : `${readinessColors[readiness.state]} ${readiness.state === 'ready' || readiness.state === 'committed' || readiness.state === 'unavailable' ? 'shadow-[0_2px_4px_rgb(0_0_0/80%)]' : ''}`;
     const progressLabel = metadataSaving ? "Saving metadata to Library" : transferring ? shot.workKind === 'sync' ? "Exporting to destination" : "Committing to Library" : proxyEncoding ? "Generating proxy" : null;
     const progressPercent = Math.max(0, Math.min(100, (transferring ? shot.transferPercent : shot.proxyPercent) ?? 0));
     const proxyLabel = proxyLibrary
@@ -166,26 +170,15 @@ function ShotCard({
                         data-media-readiness={readiness.state}
                         data-proxy-state={shot.proxyState}
                         data-proxy-location={shot.proxyLocation}
+                        data-readiness-working={indicatorBusy ? 'true' : undefined}
                         role="img"
-                        aria-label={readinessLabel}
-                        title={readinessLabel}
-                        className={`absolute left-1.5 top-1.5 z-10 size-2.5 rounded-full ${readinessColors[readiness.state]}`}
+                        aria-label={indicatorBusy ? `${progressLabel}. ${readinessLabel}` : readinessLabel}
+                        title={indicatorBusy ? `${progressLabel}. ${readinessLabel}` : readinessLabel}
+                        className={`absolute left-1.5 top-1.5 z-10 size-3 rounded-full ${indicatorStyle}`}
                     />
                     {(working || proxyEncoding) && (
-                        <span
-                            data-transfer-spinner={working ? "" : undefined}
-                            data-proxy-spinner={!working && proxyEncoding ? "" : undefined}
-                            role="status"
-                            aria-label={working ? activity : proxyLabel}
-                            title={working ? activity : proxyLabel}
-                            className="pointer-events-none absolute inset-0 z-10 grid place-items-center"
-                        >
-                            <span className="grid size-12 place-items-center rounded-full">
-                                <span
-                                    aria-hidden="true"
-                                    className={`size-8 rounded-full border-[6px] motion-safe:animate-spin ${working ? shot.workKind === 'sync' ? "border-emerald-300/25 border-t-emerald-300" : "border-blue-400/25 border-t-blue-400" : "border-yellow-300/25 border-t-yellow-300"}`}
-                                />
-                            </span>
+                        <span data-shot-activity={working ? 'transfer' : 'proxy'} role="status" className="sr-only">
+                            {working ? activity : proxyLabel}
                         </span>
                     )}
                     <span
@@ -225,10 +218,10 @@ function ShotCard({
                                 {value}
                             </span> : null;
                     })}
-                    {transferring && (
+                    {(transferring || proxyEncoding) && (
                         <progress
                             data-shot-progress
-                            data-work-type={shot.workKind === 'sync' ? "export" : "commit"}
+                            data-work-type={transferring ? shot.workKind === 'sync' ? "export" : "commit" : "proxy"}
                             aria-label={progressLabel ?? "Transfer progress"}
                             title={progressLabel ?? "Transfer progress"}
                             max={100}

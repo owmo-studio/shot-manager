@@ -288,6 +288,17 @@ if (!process.versions.electron) {
             await js(`(() => { const input=document.getElementById('fixture-file-drop'); const data=new DataTransfer(); data.items.add(input.files[0]); document.querySelector('main > section').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:data})); input.remove(); })()`);
             await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===1&&window.desktop.getShots().then(value=>value.scans.every(scan=>scan.state==='complete'))`),'Dropped video file was not added individually');
             assert.equal((await js('window.desktop.getShots()')).shots[0].filename,'blue.mp4','File drop excludes sibling red.mp4');
+            await js(`Array.from(document.querySelectorAll('nav button')).find(button=>button.textContent==='Library').click()`);
+            await until(()=>js(`document.querySelector('nav button[aria-current="page"]')?.textContent==='Library'`),'Library tab did not open');
+            await js(`(() => { const input=document.createElement('input'); input.type='file'; input.id='fixture-library-file-drop'; input.hidden=true; document.body.append(input); })()`);
+            window.webContents.debugger.attach('1.3');
+            try {
+                const {root:documentRoot}=await window.webContents.debugger.sendCommand('DOM.getDocument');
+                const {nodeId}=await window.webContents.debugger.sendCommand('DOM.querySelector',{nodeId:documentRoot.nodeId,selector:'#fixture-library-file-drop'});
+                await window.webContents.debugger.sendCommand('DOM.setFileInputFiles',{nodeId,files:[join(root,'source','red.mp4')]});
+            } finally { window.webContents.debugger.detach(); }
+            await js(`(() => { const input=document.getElementById('fixture-library-file-drop'); const data=new DataTransfer(); data.items.add(input.files[0]); document.querySelector('main > section').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:data})); input.remove(); })()`);
+            await until(()=>js(`document.querySelector('nav button[aria-current="page"]')?.textContent==='Import' && document.querySelectorAll('[data-shot-card]').length===2 && window.desktop.getShots().then(value=>value.scans.every(scan=>scan.state==='complete'))`),'Library drop did not switch to Import and add the file');
             await js("window.desktop.chooseClips()");
             await until(
                 () =>
@@ -566,7 +577,7 @@ if (!process.versions.electron) {
             await until(
                 () =>
                     js(
-                        `!document.querySelector('[data-shot-status="synced"]') && Array.from(document.querySelectorAll('footer button')).some(button=>button.textContent==='Commit'&&!button.disabled)`,
+                        `!document.querySelector('#shot-${ingested.id}[data-shot-status="synced"]') && Array.from(document.querySelectorAll('footer button')).some(button=>button.textContent==='Commit'&&!button.disabled)`,
                     ),
                 "Deleted shot was still synced",
             );
@@ -741,28 +752,32 @@ if (!process.versions.electron) {
             await until(
                 () =>
                     js(
-                        `!!document.querySelector('[data-transfer-spinner]') && !!document.querySelector('[data-proxy-state="encoding"]')`,
+                        `!!document.querySelector('[data-shot-activity="transfer"]') && !!document.querySelector('[data-proxy-state="encoding"]')`,
                     ),
-                "Transfer spinner or proxy readiness dot missing",
+                "Transfer activity or proxy readiness dot missing",
             );
             assert.equal(
                 await js(`getComputedStyle(document.querySelector('[data-proxy-state="encoding"]')).opacity`),
                 "1",
                 "Proxy readiness indicator stays undimmed",
             );
-            assert.equal(await js(`document.querySelector('[data-proxy-location="library"]').classList.contains('bg-blue-500') && document.querySelector('[data-proxy-spinner] > span > span').classList.contains('border-t-yellow-300')`), true, "Library proxy is blue and central encoding wheel is yellow");
-            assert.equal(
-                await js(`(() => { const dot=document.querySelector('[data-proxy-state="encoding"]'); const proxy=document.querySelector('[data-proxy-spinner] > span'); const transfer=document.querySelector('[data-transfer-spinner] > span'); return dot.classList.contains('border-white/65') && !dot.querySelector('svg') && proxy.getBoundingClientRect().width===transfer.getBoundingClientRect().width && proxy.getBoundingClientRect().width===48; })()`),
-                true,
-                "Encoding shows a hollow corner dot and the same large central spinner as transfers",
-            );
+            assert.equal(await js(`document.querySelector('[data-proxy-location="library"]').classList.contains('border-t-blue-400')`), true, "Active Commit indicator is blue");
+            assert.equal(await js(`(() => {
+                const dot = document.querySelector('[data-proxy-state="encoding"]');
+                const previews = Array.from(document.querySelectorAll('[data-shot-working="true"]'));
+                return dot.classList.contains('border-t-yellow-300') &&
+                    Array.from(document.querySelectorAll('[data-readiness-working]')).length === 2 &&
+                    dot.getBoundingClientRect().width === 12 && getComputedStyle(dot).animationName === 'spin' && previews.length === 2 &&
+                    previews.every(el => getComputedStyle(el, '::after').animationName === 'shot-work-pulse') &&
+                    !document.querySelector('[data-transfer-spinner], [data-proxy-spinner]');
+            })()`), true, "Encoding and transfers use small corner spinners and thumbnail pulses without central spinners");
             assert.equal(
                 await js(`document.querySelector('[data-shot-status="processing"] [data-shot-progress]').value`),
                 42,
                 "Transfer progress is shown on its thumbnail",
             );
             assert.equal(await js(`document.querySelector('[data-shot-status="processing"] [data-shot-progress]').dataset.workType`), "commit", "Commit uses the blue progress style");
-            assert.equal(await js(`(() => { const preview=document.querySelector('[data-shot-status="queued"] [data-shot-preview]'); const style=getComputedStyle(preview); return style.opacity==='0.45'&&style.filter.includes('grayscale(0.8)')&&getComputedStyle(preview,'::after').backgroundColor==='rgba(0, 0, 0, 0.2)'; })()`), true, 'Queued proxy encoding retains locked thumbnail styling');
+            assert.equal(await js(`(() => { const preview=document.querySelector('[data-shot-status="queued"] [data-shot-preview]'); const style=getComputedStyle(preview); return style.opacity==='0.45'&&style.filter.includes('grayscale(0.8)'); })()`), true, 'Queued proxy encoding retains locked thumbnail styling');
             assert.equal(
                 await js(
                     `document.querySelector('[data-proxy-state="encoding"]').parentElement.querySelector('[data-shot-progress]').value`,
@@ -783,7 +798,7 @@ if (!process.versions.electron) {
             backend.emit("message", { type: "shots:changed", change: { revision: shotsOverride.revision, vocabularyRevision: shotsOverride.revision } });
             await until(() => js(`!!document.querySelector('[data-proxy-location="cache"]')`), "Local proxy indicator missing");
             assert.equal(await js(`document.querySelector('[data-proxy-location="cache"]').classList.contains('bg-yellow-400')`), true, "Local proxy is yellow");
-            assert.equal(await js(`document.querySelector('[data-shot-status="processing"] [data-proxy-state]').classList.contains('border-white/65')`), true, "Unknown proxy displays an empty white circle");
+            assert.equal(await js(`(() => { const indicator=document.querySelector('[data-shot-status="processing"] [data-proxy-state]'); return indicator.dataset.readinessWorking==='true' && getComputedStyle(indicator).animationName==='spin'; })()`), true, "Active work displays a small readiness spinner");
             const currentStatus = await js("window.desktop.getIngestStatus()");
             statusOverride = {
                 revision: currentStatus.revision + 1000,
@@ -1070,7 +1085,12 @@ if (!process.versions.electron) {
             await until(()=>js(`!document.querySelector('dialog[open]') && document.querySelectorAll('[data-shot-card]').length===0`),'Confirmed Delete removes Library cards');
             for(const id of deleteIds) assert.ok(!fs.readdirSync(join(root,'library')).some(name=>name.startsWith(id+'.')),'Delete removes associated Library assets');
             const remainingDrafts=JSON.parse(fs.readFileSync(join(root,'profile','Shot Manager Cache','metadata.json'),'utf8')).drafts;
-            assert.ok(Object.keys(remainingDrafts).every(key=>!deleteIds.some(id=>key.endsWith(id))),'Delete clears selected local metadata');
+            assert.ok(deleteIds.every(id=>Object.keys(remainingDrafts).some(key=>key.endsWith(id))),'Delete preserves selected local records');
+            assert.ok(deleteIds.every(id=>{
+                const key=Object.keys(remainingDrafts).find(value=>value.endsWith(id));
+                const record=remainingDrafts[key];
+                return record.libraryBaseline===undefined && record.ingestion===undefined;
+            }),'Delete clears selected remote references');
             assert.equal(fs.readdirSync(join(root,'source')).length,originalCount,'Delete preserves original source files');
             await fs.promises.writeFile(join(root, "validated"), "passed");
             clearTimeout(timer);

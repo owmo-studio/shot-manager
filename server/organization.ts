@@ -270,10 +270,28 @@ export class OrganizationStore {
         });
     }
 
-    forget(fingerprints: VideoFingerprint[]) {
+    /**
+     * The Library can disappear while its source clip remains in Import. Keep the
+     * local working record in that case; only the remote baseline and receipt are
+     * no longer valid. Clear Cache and retention are the only operations that
+     * remove the record itself.
+     */
+    markLibraryDeleted(fingerprints: VideoFingerprint[]) {
         return this.serialize(async () => {
             const next = await this.nextState();
-            for (const fingerprint of fingerprints) delete next.drafts[organizationKey(fingerprint)];
+            for (const fingerprint of fingerprints) {
+                const record = next.drafts[organizationKey(fingerprint)];
+                if (!record) continue;
+                const localEdit = record.pendingAttributes === true ||
+                    (record.libraryBaseline !== undefined && JSON.stringify(ingestAttributes(record.data)) !== JSON.stringify(record.libraryBaseline));
+                delete record.libraryBaseline;
+                delete record.ingestion;
+                // Preserve an uncommitted local edit even though there is no
+                // longer a remote baseline to compare it with. If the same ID
+                // reappears on a later refresh, syncLibrary will retain it.
+                record.pendingAttributes = localEdit;
+                record.lastEditedAt = this.now();
+            }
             await this.save(next);
         });
     }
