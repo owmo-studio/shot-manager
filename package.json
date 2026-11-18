@@ -11,6 +11,7 @@
         "typecheck": "tsc --noEmit",
         "build": "npm run typecheck && electron-vite build && node scripts/copy-luts.cjs",
         "check:selection": "npm run build && node scripts/check-selection.cjs",
+        "check:filters": "node scripts/check-filters.cjs",
         "check:application": "node scripts/check-application-status.cjs",
         "check:configuration": "node scripts/check-configuration.cjs",
         "check:cache": "node scripts/check-cache-files.cjs",

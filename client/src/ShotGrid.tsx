@@ -300,7 +300,7 @@ export function ShotGrid({
                 ))}
             {!collection.shots.length && (
                 <p className="mt-20 text-center text-sm text-zinc-500">
-                    {busy ? "Looking for videos…" : "No clips in the workspace."}
+                    {busy ? "Looking for videos…" : "No matching clips."}
                 </p>
             )}
             {[...groups].map(([day, shots]) => (

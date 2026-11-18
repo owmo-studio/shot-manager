@@ -14,7 +14,9 @@ import { initializeDesktop } from "./desktop";
 import { CollectionUpdates } from "./collectionUpdates";
 import { MultiClipInspector } from "./MultiClipInspector";
 import { orderedShots, useShotSelection } from "./shotSelection";
-import { deviceLabel } from "./mediaInfo";
+import { ClipFilterPanel } from './ClipFilterPanel';
+import { emptyClipFilters, matchesClipFilters } from './clipFilters';
+import type { ClipFilters } from './clipFilters';
 import { MIN_INSPECTOR_WIDTH } from "./ResizableInspector";
 import { ApplicationIndicator, applicationStatus } from "./ApplicationIndicator";
 import { CommitControls } from "./CommitControls";
@@ -32,11 +34,7 @@ function App() {
     const workStatus = useWorkStatus(status.state === 'connected');
     const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
     const [tab, setTab] = useState<'import' | 'library'>('import');
-    const [filters, setFilters] = useState<Record<'import' | 'library', string[]>>({ import: [], library: [] });
-    const selectedDevices = filters[tab];
-    const setSelectedDevices = (change: string[] | ((previous: string[]) => string[])) => setFilters(current => ({
-        ...current, [tab]: typeof change === 'function' ? change(current[tab]) : change,
-    }));
+    const [filters, setFilters] = useState<Record<'import' | 'library', ClipFilters>>({ import: emptyClipFilters(), library: emptyClipFilters() });
     const newestFirst = true;
     const [workControlTarget, setWorkControlTarget] = useState<HTMLDivElement | null>(null);
     const [inspectorWidth, setInspectorWidth] = useState(MIN_INSPECTOR_WIDTH);
@@ -45,17 +43,9 @@ function App() {
     const latestLibraryRevision = useRef(-1);
     const shotCollection = tab === 'import' ? importCollection : libraryCollection;
     const latestShotRevision = useRef(-1);
-    const deviceCounts = new Map<string, number>();
-    for (const shot of shotCollection.shots) {
-        const device = deviceLabel(shot.metadata.device, true) ?? "Unknown";
-        deviceCounts.set(device, (deviceCounts.get(device) ?? 0) + 1);
-    }
-    const devices = [...deviceCounts].sort(([first], [second]) => first.localeCompare(second));
-    const deviceKeys = JSON.stringify(devices.map(([name]) => name));
-    const activeDevices = selectedDevices.filter((name) => deviceCounts.has(name));
-    const filtered = (collection: ShotCollection, devices: string[]) => devices.length ? {
-        ...collection, shots: collection.shots.filter(shot => devices.includes(deviceLabel(shot.metadata.device, true) ?? "Unknown")),
-    } : collection;
+    const filtered = (collection: ShotCollection, criteria: ClipFilters) => ({
+        ...collection, shots: collection.shots.filter(shot => matchesClipFilters(shot, criteria)),
+    });
     const importVisible = filtered(importCollection, filters.import);
     const libraryVisible = filtered(libraryCollection, filters.library);
     const visibleCollection = tab === 'import' ? importVisible : libraryVisible;
@@ -151,12 +141,6 @@ function App() {
         if (card) scrollShotIntoView(card);
         card?.focus({ preventScroll: true });
     }, [selection.editingIds]);
-
-    useEffect(() => {
-        const available = new Set<string>(JSON.parse(deviceKeys));
-        setSelectedDevices((current) => current.some((name) => !available.has(name))
-            ? current.filter((name) => available.has(name)) : current);
-    }, [deviceKeys, tab]);
 
     const [addingClips, setAddingClips] = useState(false);
     const [workspaceError, setWorkspaceError] = useState<string | null>(null);
@@ -384,37 +368,8 @@ function App() {
             </header>
             <main className="flex min-h-0 flex-1">
                 <aside className="w-60 shrink-0 overflow-y-auto border-r border-white/8 bg-white/1.5 p-3">
-                    <section aria-label="Filters">
-                        <ul aria-label="Device filters" className="space-y-1">
-                            <li>
-                                <button type="button" aria-label="Show all clips"
-                                    onClick={() => setSelectedDevices([])}
-                                    className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition duration-75 hover:bg-white/4 focus-visible:outline-2 focus-visible:outline-blue-400">
-                                    <span className="min-w-0 truncate text-[13px] text-zinc-200">All</span>
-                                    <span aria-label="Total clips" className="shrink-0 text-xs text-zinc-500">{shotCollection.shots.length.toLocaleString()}</span>
-                                </button>
-                            </li>
-                            {devices.map(([name, count]) => (
-                                <li key={name} className="ml-2">
-                                    <button
-                                        type="button"
-                                        aria-label={`Filter clips by device: ${name}`}
-                                        aria-pressed={activeDevices.includes(name)}
-                                        title={`${name} · ${count} ${count === 1 ? "shot" : "shots"}`}
-                                        onClick={() => setSelectedDevices((current) => current.includes(name)
-                                            ? current.filter((device) => device !== name) : [...current, name])}
-                                        className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition duration-75 focus-visible:outline-2 focus-visible:outline-blue-400 ${activeDevices.includes(name) ? "bg-white/8 hover:bg-white/12" : "hover:bg-white/4"}`}
-                                    >
-                                        <span aria-hidden="true" className={`grid size-4 shrink-0 place-items-center rounded-sm border ${activeDevices.includes(name) ? "border-zinc-400 bg-white/10 text-zinc-100" : "border-zinc-600"}`}>
-                                            {activeDevices.includes(name) && <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-3"><path d="m4 10 4 4 8-8" /></svg>}
-                                        </span>
-                                        <span className="min-w-0 flex-1 truncate text-[13px] text-zinc-200">{name}</span>
-                                        <span className="shrink-0 text-xs text-zinc-500">{count}</span>
-                                    </button>
-                                </li>
-                            ))}
-                        </ul>
-                    </section>
+                    <ClipFilterPanel key={tab} shots={shotCollection.shots} filters={filters[tab]}
+                        onChange={next => setFilters(current => ({ ...current, [tab]: next }))} />
                 </aside>
                 <section
                     aria-label="Shot cards"
@@ -500,7 +455,7 @@ function App() {
                 onEject={ids => { setUnavailableDirectories([]); requestEject(ids); }} />}
             <footer className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-5 border-t border-white/8 px-5 py-2.5 text-xs text-zinc-500">
                 <ApplicationIndicator backend={status} communicationError={communicationError} />
-                <CommitControls key={tab} workControlTarget={workControlTarget} status={workStatus.status} receiveStatus={workStatus.receiveStatus} dismissError={workStatus.dismissError} selectedShotIds={selectedShots.map(shot => shot.id)} shots={shotCollection.shots} catalogueRefreshing={tab === 'library' && libraryCollection.refreshing} connected={status.state === 'connected'} onRefresh={async () => receiveView(await (tab === 'library' ? window.desktop.getLibrary() : window.desktop.getShots()))} />
+                <CommitControls key={tab} workControlTarget={workControlTarget} status={workStatus.status} receiveStatus={workStatus.receiveStatus} dismissError={workStatus.dismissError} selectedShotIds={selectedShots.map(shot => shot.id)} shots={visibleCollection.shots} catalogueRefreshing={tab === 'library' && libraryCollection.refreshing} connected={status.state === 'connected'} onRefresh={async () => receiveView(await (tab === 'library' ? window.desktop.getLibrary() : window.desktop.getShots()))} />
             </footer>
         </div></ClipViewProvider>
     );

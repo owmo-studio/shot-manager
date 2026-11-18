@@ -343,6 +343,12 @@ if (!process.versions.electron) {
             await click('Cancel');
             await selectCard(0); await selectCard(0);
             await until(() => js(`document.querySelector('footer').textContent.includes('2 clips total')`), 'No selection restores all-workspace Commit scope');
+            await fillAttribute('Search clips','blue.mp4');
+            await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===1 && document.querySelector('[aria-label="Clip selection summary"]').textContent.trim()==='1 clip total'`),'Search scopes Commit to visible clips');
+            await click('Commit');
+            await until(()=>js(`document.querySelectorAll('dialog [data-review-included]').length===1`),'Commit review excludes hidden clips without a selection');
+            await click('Cancel');await fillAttribute('Search clips','');
+            await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===2`),'Clear Filters restores Commit scope');
             const idleReads = ingestReads;
             await new Promise((resolve) => setTimeout(resolve, 1200));
             assert.equal(ingestReads, idleReads, "Idle footer does not poll ingestion status");
@@ -435,7 +441,7 @@ if (!process.versions.electron) {
             assert.equal(await js(`Array.from(document.querySelectorAll('#clip-inspector header button')).map(el=>el.getAttribute('aria-label')).join(',')`),'Set current frame as thumbnail,Export,Delete','Library icon button order');
             assert.equal(await js(`document.querySelector('#clip-inspector button[aria-label="Delete"]').disabled`),false,'Delete is enabled for editable Library clips');
             await click('Export');
-            await until(()=>js(`document.querySelectorAll('[data-sync-included]').length===1 && document.querySelector('dialog[open]').textContent.includes(${JSON.stringify(join(root,'destination'))})`),'Export reviews selected Library clip and native-picked destination');
+            await until(()=>js(`document.querySelectorAll('[data-sync-included]').length===1 && document.querySelector('dialog[open]')?.textContent.includes(${JSON.stringify(join(root,'destination'))})`),'Export reviews selected Library clip and native-picked destination');
             assert.equal(await js(`document.querySelector('dialog[open]').textContent.includes('Direct Copy')`),false,'No redundant Export format note');
             assert.equal(await js(`(()=>{const row=document.querySelector('[data-sync-included]'),tag=row.querySelector('span'),name=row.querySelector('p');return tag.getBoundingClientRect().right<name.getBoundingClientRect().left && Math.abs(tag.getBoundingClientRect().top-name.getBoundingClientRect().top)<3;})()`),true,'New/Update tag sits left of filename');
             await js(`document.querySelector('dialog button[aria-label^="Remove "]').click()`);
@@ -477,10 +483,10 @@ if (!process.versions.electron) {
             await js('window.desktop.refreshCatalogue()');
             await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===1`),'Temporary Library row removed');
             await click('Import');
-            assert.equal(await js(`document.querySelector('[aria-label^="Filter clips by device:"]').getAttribute('aria-pressed')`),'true','Import retains its filters');
-            await js(`document.querySelector('[aria-label="Show all clips"]').click()`);
+            assert.equal(await js(`document.querySelector('[aria-label^="Filter clips by device:"]').disabled`),true,'Import disables the sole device option');
+            await js(`document.querySelector('[aria-label="Clear filters"]').click()`);
             await click('Library');
-            assert.equal(await js(`document.querySelector('[aria-label^="Filter clips by device:"]').getAttribute('aria-pressed')`),'true','Library filters survive Import filter changes');
+            assert.equal(await js(`document.querySelector('[aria-label^="Filter clips by device:"]').disabled`),true,'Library disables the sole device option');
             await click('Import');
             await js('window.desktop.chooseClips()');
             await until(()=>js(`!!document.querySelector('[data-shot-status="synced"]')`),'Re-adding a committed clip shows blue in Import');

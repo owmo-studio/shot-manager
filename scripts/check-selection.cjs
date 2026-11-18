@@ -346,23 +346,54 @@ if (!process.versions.electron) {
             };
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
             const originals = structuredClone(collection.shots);
-            assert.equal(
-                await js(`document.querySelector('[aria-label="Total clips"]').textContent.trim()`),
-                "6",
-                "Workspace totals use the backend's one-record-per-fingerprint collection",
-            );
-            assert.equal(await js(`document.querySelector('[aria-label="Show all clips"]').hasAttribute('aria-pressed')`),false,'All is a neutral reset action');
+            assert.equal(await js(`!!document.querySelector('aside [aria-label="Total clips"]')`), false, 'Sidebar has no redundant total');
+            assert.equal(await js(`document.querySelector('[aria-label="Clear filters"]').hasAttribute('aria-pressed')`),false,'Clear is a neutral action');
+            assert.equal(await js(`document.querySelector('[aria-label="Clear filters"]').disabled`),true,'Clear is disabled without any filters');
             assert.equal(await js(`!!document.querySelector('aside [aria-label="Add clips"]')`),false,'Sidebar has no Add button');
             await click("Filter clips by device: Sony ZV-E10 II");
+            assert.equal(await js(`document.querySelector('[aria-label="Clear filters"]').disabled`),false,'A selected filter enables Clear');
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===3`);
-            assert.equal(await js(`document.querySelector('[aria-label="Show all clips"]').hasAttribute('aria-pressed')`),false,'All stays neutral with a device selected');
+            assert.equal(await js(`document.querySelector('[aria-label="Clear filters"]').hasAttribute('aria-pressed')`),false,'Clear stays neutral with a device selected');
             assert.equal(await js(`!!document.querySelector('[aria-label="Inspect Clip 1.mp4"]')`),false,"Filtering uses per-clip metadata, independent of discovery folder");
             await click("Filter clips by device: Sony FX30");
-            assert.equal(await js(`document.querySelector('[aria-label="Show all clips"]').hasAttribute('aria-pressed')`),false,'All stays neutral with multiple device filters');
-            await click("Show all clips");
+            assert.equal(await js(`document.querySelector('[aria-label="Clear filters"]').hasAttribute('aria-pressed')`),false,'Clear stays neutral with multiple device filters');
+            await click("Clear filters");
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
-            assert.equal(await js(`document.querySelector('[aria-label="Show all clips"]').hasAttribute('aria-pressed')`),false);
+            assert.equal(await js(`document.querySelector('[aria-label="Clear filters"]').hasAttribute('aria-pressed')`),false);
             assert.equal(await js(`document.querySelectorAll('[aria-label^="Filter clips by device:"][aria-pressed="true"]').length`),0,'All clears every device filter');
+            await js(`(() => { const input=document.querySelector('[aria-label="Search clips"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'Clip 1'); input.dispatchEvent(new Event('input',{bubbles:true})); })()`);
+            await wait(`document.querySelectorAll('[data-shot-card]').length===1`);
+            assert.ok(await js(`!!document.querySelector('[aria-label="Inspect Clip 1.mp4"]')`),'Sidebar search narrows the grid');
+            assert.equal(await js(`document.querySelector('[aria-label="Clip selection summary"]').textContent.trim()`),'1 clip total','Commit summary follows search results');
+            assert.equal(await js(`document.querySelectorAll('[aria-label^="Filter clips by device:"]').length`),2,'Search leaves hierarchical device options unchanged');
+            assert.equal(await js(`document.querySelector('[aria-label="Clear filters"]').disabled`),true,'Search alone does not enable Clear Filters');
+            await click('Filter clips by device: Sony FX30');
+            await click('Clear filters');
+            assert.equal(await js(`document.querySelector('[aria-label="Search clips"]').value`),'Clip 1','Clearing filters preserves Search');
+            await js(`(() => { const input=document.querySelector('[aria-label="Search clips"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,''); input.dispatchEvent(new Event('input',{bubbles:true})); })()`);
+            await wait(`document.querySelectorAll('[data-shot-card]').length===6 && document.querySelector('[aria-label="Search clips"]').value===''`);
+            await push(originals.map((shot, index) => ({ ...shot, organization: { ...shot.organization,
+                identity: index < 2 ? null : 'Example', project: index < 3 ? 'Tour' : 'Build', tags: index < 3 ? ['studio'] : ['outside'],
+            } })));
+            await js(`(() => { const select=document.querySelector('[aria-label="Filter by Identity"]'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select,Array.from(select.options).find(o=>o.textContent.startsWith('Unassigned')).value); select.dispatchEvent(new Event('change',{bubbles:true})); })()`);
+            await wait(`document.querySelectorAll('[data-shot-card]').length===2`);
+            await click('Clear filters');
+            await click('Choose filter project');
+            await click('Filter by project: Tour');
+            await wait(`document.querySelectorAll('[data-shot-card]').length===3 && !!document.querySelector('[aria-label="Remove project filter Tour"]')`);
+            await js(`(() => { const input=document.querySelector('[aria-label="Find filter project"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'Never create this'); input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); })()`);
+            assert.equal(await js(`document.querySelectorAll('[aria-label="Selected filter project"] > li').length`),1,'Typing an unknown option creates no filter or metadata');
+            await click('Choose filter project');
+            await click('Remove project filter Tour');
+            await wait(`document.querySelectorAll('[data-shot-card]').length===6`);
+            await click('Choose filter tags');await click('Filter by tags: studio');
+            await wait(`document.querySelectorAll('[data-shot-card]').length===3 && !!document.querySelector('[aria-label="Remove tags filter studio"]')`);
+            await click('Choose filter project');await click('Filter by project: Build');
+            await js(`(() => { const select=document.querySelector('[aria-label="Filter by Identity"]'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select,Array.from(select.options).find(o=>o.textContent.startsWith('Unassigned')).value); select.dispatchEvent(new Event('change',{bubbles:true})); })()`);
+            await wait(`document.querySelector('[aria-label="Choose filter tags"]').disabled && document.querySelector('[aria-label="Choose filter project"]').disabled`);
+            assert.equal(await js(`document.querySelector('[aria-label="Remove tags filter studio"]').disabled`),false,'An incompatible selection can still be cleared');
+            await click('Remove tags filter studio');
+            await click('Clear filters');await push(originals);
             // The backend chooses a matching copy; the renderer receives one updated record.
             const relocated = { ...structuredClone(originals[0]), filename: "Copied Clip.mp4", filePath: "/synthetic/B/copy.mp4" };
             await push([relocated, ...originals.slice(1)]);
@@ -605,10 +636,6 @@ if (!process.versions.electron) {
             assert.equal(sources.length, 2, "Clear Cache preserves sources");
             await wait(`document.querySelector('[aria-label="Library location"]')?.textContent==='/synthetic/library'`);
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===6`);
-            assert.equal(
-                await js(`document.querySelector('[aria-label="Total clips"]').textContent.trim()`),
-                "6",
-            );
             assert.equal(await js(`document.querySelector('button[aria-label="Reverse order"]')`), null);
             assert.equal(await js(`document.querySelector('main > section header')`), null);
             assert.ok(
@@ -805,11 +832,7 @@ if (!process.versions.electron) {
             await click("Filter clips by device: Sony ZV-E10 II");
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===3`);
             assert.deepEqual(await selected(), []);
-            assert.equal(
-                await js(`document.querySelector('[aria-label="Total clips"]').textContent.trim()`),
-                "6",
-            );
-            assert.ok(await js(`document.querySelector('[aria-label="Clip selection summary"]').textContent.includes('6 clips total (1 skipped)')`));
+            assert.equal(await js(`document.querySelector('[aria-label="Clip selection summary"]').textContent.trim()`),'3 clips total','Commit excludes hidden selections and hidden skipped clips');
             await inspect(5);
             await arrow("Down");
             assert.deepEqual(await selected(), [5]);
@@ -896,10 +919,6 @@ if (!process.versions.electron) {
             await wait(`!!document.querySelector('#eject-title')`);
             await click("Confirm eject clips");
             await wait(`document.querySelectorAll('button[aria-label^="Inspect "]').length===3`);
-            assert.equal(
-                await js(`document.querySelector('[aria-label="Total clips"]').textContent.trim()`),
-                "3",
-            );
             await wait(`document.querySelector('[aria-label="Clip selection summary"]').textContent.trim()==='3 clips total'`);
             assert.deepEqual(await selected(), []);
             assert.equal(

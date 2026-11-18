@@ -161,7 +161,7 @@ export function CommitControls({
                                   ? "Each clip needs an available source and a ready thumbnail"
                                   : selected && !candidates.length && !syncedCandidates.length
                                     ? "No selected clips need committing"
-                                    : selected ? "Commit eligible selected clips" : "Commit all eligible clips"
+                                    : selected ? "Commit eligible selected clips" : "Commit eligible visible clips"
                         }
                         className={primaryButton}
                     >

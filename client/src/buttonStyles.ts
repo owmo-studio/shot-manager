@@ -9,6 +9,7 @@ const critical = 'border-red-600 bg-red-600 text-white enabled:hover:border-red-
 const criticalSubtle = 'border-red-500/30 bg-red-500/10 text-red-300 enabled:hover:bg-red-500/20 enabled:hover:text-red-200 focus-visible:outline-red-400';
 
 export const secondaryButton = `${regular} ${secondary}`;
+export const smallSecondaryButton = `${base} px-2 py-1 text-[10px] font-medium focus-visible:outline-offset-2 ${secondary}`;
 export const primaryButton = `${regular} ${primary}`;
 export const dangerButton = `${regular} ${critical}`;
 export const dangerSecondaryButton = `${regular} ${criticalSubtle}`;
