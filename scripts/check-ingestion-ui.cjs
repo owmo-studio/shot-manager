@@ -307,6 +307,8 @@ if (!process.versions.electron) {
             await fillAttribute('Group','TH01-T02');await fillAttribute('Camera','A');await fillAttribute('Quality','preferred');
             await js('window.desktop.flushOrganizationText()');
             await until(()=>js(`window.desktop.getShots().then(c=>c.shots.find(s=>s.id===${JSON.stringify(cardIds[0].replace('shot-',''))}).organization.rating==='preferred')`),'Import grouping saves');
+            await fillAttribute('Quality','low');
+            await until(()=>js(`window.desktop.getShots().then(c=>c.shots.find(s=>s.id===${JSON.stringify(cardIds[0].replace('shot-',''))}).organization.rating==='low')`),'Low Quality saves through Electron IPC and backend');
             const importGrouping=await js(`window.desktop.getShots().then(c=>c.shots.find(s=>s.id===${JSON.stringify(cardIds[0].replace('shot-',''))}).organization)`);
             assert.equal(importGrouping.group,'TH01-T02');assert.equal(importGrouping.camera,'A');
             await js(`window.desktop.updateOrganization([${JSON.stringify(cardIds[0].replace('shot-',''))}],{field:'all',operation:'clear',value:''})`);
@@ -402,7 +404,8 @@ if (!process.versions.electron) {
             await until(async()=>!(await js('window.desktop.getIngestStatus()')).active,'Restore fixture thumbnail');
             assert.equal(await js(`!!document.querySelector('[aria-label="Skip selected clips"]') || !!document.querySelector('[aria-label^="Eject "]')`),false,'Library omits Skip and Eject');
             await js(`window.desktop.updateLibraryOrganization(['${publishedId}'],{field:'notes',operation:'set',value:'Library draft'})`);
-            await fillAttribute('Group','Studio/Intro-T02');await fillAttribute('Camera','B');await fillAttribute('Quality','usable');await js('window.desktop.flushOrganizationText()');
+            await fillAttribute('Group','Studio/Intro-T02');await fillAttribute('Camera','B');await fillAttribute('Quality','low');await js('window.desktop.flushOrganizationText()');
+            await until(()=>js(`window.desktop.getLibrary().then(c=>c.shots.find(s=>s.id==='${publishedId}').organization.rating==='low')`),'Low Quality saves in Library');
             await until(()=>js(`document.querySelector('[data-shot-status="changes-pending"]') && document.querySelector('[aria-label="Notes"]').value==='Library draft'`),'Library edits show yellow');
             await click('Revert');await js(`document.querySelector('[aria-label="Confirm revert clip attributes"]').click()`);
             await until(()=>js(`!document.querySelector('dialog[open]') && !document.querySelector('[data-shot-status="changes-pending"]') && document.querySelector('[aria-label="Notes"]').value===''`),'Library Revert restores committed metadata');

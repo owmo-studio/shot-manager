@@ -11,6 +11,11 @@ const readinessLabels = {
 const readinessColors = {
     unchecked: 'border border-white/25', preparing: 'border border-white/65', ready: 'bg-yellow-400', committed: 'bg-blue-500', unavailable: 'bg-red-500',
 };
+const qualityIndicators = {
+    preferred: { symbol: '★', label: 'Preferred', color: 'text-yellow-300' },
+    usable: { symbol: '✓', label: 'Usable', color: 'text-emerald-300' },
+    low: { symbol: '▼', label: 'Low', color: 'text-red-400' },
+};
 
 function ShotCard({
     shot,
@@ -26,6 +31,7 @@ function ShotCard({
     const [failedImage, setFailedImage] = useState(false);
     const card = useRef<HTMLButtonElement>(null);
     const skipped = !!shot.organization?.skipped;
+    const quality = shot.organization?.rating ? qualityIndicators[shot.organization.rating] : null;
     const unavailable = !shot.available;
     const inactive = !unavailable && !shot.editable;
     const cardStyle = unavailable
@@ -210,6 +216,15 @@ function ShotCard({
                             </span>
                         </span>
                     )}
+                    {(['group', 'camera'] as const).map(field => {
+                            const value = shot.organization?.[field];
+                            const label = field === 'group' ? 'Group' : 'Camera';
+                            return value ? <span key={field} data-shot-tag={field}
+                                title={`${label}: ${value}`} aria-label={`${label}: ${value}`}
+                                className={`absolute bottom-2 z-10 max-w-[45%] truncate rounded bg-black/65 px-1.5 py-0.5 text-[10px] font-medium leading-4 text-white ${field === 'group' ? 'left-1.5' : 'right-1.5'}`}>
+                                {value}
+                            </span> : null;
+                    })}
                     {transferring && (
                         <progress
                             data-shot-progress
@@ -222,11 +237,18 @@ function ShotCard({
                         />
                     )}
                 </span>
-                <span
-                    data-shot-filename
-                    className={`mt-2 block truncate text-[13px] ${skipped && !unavailable ? "text-zinc-500" : "text-zinc-200"}`}
-                >
-                    {shot.filename}
+                <span className="mt-2 flex items-center justify-between gap-2">
+                    <span
+                        data-shot-filename
+                        className={`min-w-0 truncate text-[13px] ${skipped && !unavailable ? "text-zinc-500" : "text-zinc-200"}`}
+                    >
+                        {shot.filename}
+                    </span>
+                    {quality && <span data-shot-quality={shot.organization?.rating}
+                        role="img" aria-label={`Quality: ${quality.label}`} title={`Quality: ${quality.label}`}
+                        className={`shrink-0 text-sm font-bold leading-none ${quality.color}`}>
+                        <span aria-hidden="true">{quality.symbol}</span>
+                    </span>}
                 </span>
                 <span className="mt-0.5 flex items-baseline justify-between gap-2 text-xs text-zinc-500">
                     <span className="min-w-0 truncate">{deviceLabel(shot.metadata.device) ?? "Video"}</span>

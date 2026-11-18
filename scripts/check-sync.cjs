@@ -183,6 +183,7 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         assert.equal(changedRows[0].Comments,updated.fields.Comments);assert.equal(changedRows[0].Quality,'','Blank fields clear previous values');
         assert.deepEqual(changedRows[1],cumulative[1],'Updating a filename keeps other rows');
         full.rating='usable';assert.equal(resolveFormatter.clip(full,'mov',8).fields['Good Take'],'0');
+        full.rating='low';assert.equal(resolveFormatter.clip(full,'mov',8).fields.Quality,'low');assert.equal(resolveFormatter.clip(full,'mov',8).fields['Good Take'],'0');
         full.originalFilename='bad/name:with?characters.MOV';assert.ok(!/[<>:"/\\|?*]/.test(resolveFormatter.clip(full,'mov',8).source));
         full.originalFilename='é'.repeat(300)+'.MOV';assert.ok(Buffer.byteLength(resolveFormatter.clip(full,'mov',64).source)<=255);assert.ok(Buffer.byteLength(resolveFormatter.clip(full,'mp4',64).proxy.split('/')[1])<=255);
         assert.throws(()=>exportPath(destination,'../outside'));assert.throws(()=>exportPath(destination,'/absolute'));

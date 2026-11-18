@@ -38,6 +38,8 @@ const { tmpdir } = require('node:os');
         for(const [field,value] of [['group','  TH_01/T02  '],['camera','A'],['rating','preferred']]) await grouping.update([a,b],{field,operation:'set',value},()=>true);
         let grouped=await new OrganizationStore(groupingFile).scanned(a,signal);
         assert.equal(grouped.group,'TH_01/T02');assert.equal(grouped.camera,'A');assert.equal(grouped.rating,'preferred');
+        await grouping.update([a,b],{field:'rating',operation:'set',value:'low'},()=>true);
+        assert.equal((await new OrganizationStore(groupingFile).scanned(a,signal)).rating,'low','Low quality persists and reloads');
         const beforeInvalidGrouping=await fs.readFile(groupingFile,'utf8');
         for(const [field,value] of [['group','bad\ncode'],['camera','x'.repeat(129)],['rating','reject']]) await assert.rejects(grouping.update([a,b],{field,operation:'set',value},()=>true));
         assert.equal(await fs.readFile(groupingFile,'utf8'),beforeInvalidGrouping,'Invalid grouping edits change no drafts');

@@ -209,7 +209,7 @@ export class OrganizationStore {
                 else if (action.field === 'all') { record.data = { ...emptyAttributes(), skipped: record.data.skipped }; delete record.previousProjects; }
                 else if (action.field === 'notes' || action.field === 'scene') record.data[action.field] = action.value;
                 else if (action.field === 'group' || action.field === 'camera') record.data[action.field] = action.value;
-                else if (action.field === 'rating') record.data.rating = action.value === '' ? null : action.value as 'preferred' | 'usable';
+                else if (action.field === 'rating') record.data.rating = action.value === '' ? null : action.value as 'preferred' | 'usable' | 'low';
                 else if (action.field === 'identity' || action.field === 'project') {
                     if (action.operation === 'add') record.data[action.field] = action.value;
                     else if (record.data[action.field] === action.value) record.data[action.field] = null;

@@ -45,10 +45,11 @@ export function ClipGroupingFields({ shots, pending, failure, submit, onInvalid,
             <span className="attribute-label">Quality</span>
             <select aria-label="Quality" value={rating} className={inputStyle}
                 onChange={event => { setRating(event.target.value); submit({ field: 'rating', operation: 'set', value: event.target.value }); }}>
-                <option value=""></option>
+                <option value="">Unrated</option>
                 {rating === 'mixed' && <option value="mixed" disabled>Mixed</option>}
                 <option value="preferred">Preferred</option>
                 <option value="usable">Usable</option>
+                <option value="low">Low</option>
             </select>
         </div>
     </div>;

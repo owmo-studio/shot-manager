@@ -1,7 +1,7 @@
 import { extname } from 'node:path';
 import type { ExportFormatter } from './exportPlan';
 
-// "Rating" is Resolve's built-in star field; keep our Preferred/Usable value in custom "Quality".
+// "Rating" is Resolve's built-in star field; keep our Quality value in custom "Quality".
 const columns = ['File Name', 'Clip Directory', 'Clip Name', 'Description', 'Scene', 'Camera #', 'Good Take', 'Comments', 'Keywords',
     'Identity', 'Project', 'Group', 'Camera', 'Quality'];
 // Resolve fails filename matching when ordinary values are unnecessarily quoted.
@@ -57,7 +57,7 @@ export const resolveFormatter: ExportFormatter = {
             ...(metadata.project ? [`project:${metadata.project}`] : []), ...(metadata.rating ? [`rating:${metadata.rating}`] : [])];
         return { id: metadata.id, source, proxy,
             fields: { 'Clip Name': clipName, Description: metadata.scene, Scene: metadata.group, 'Camera #': metadata.camera,
-                'Good Take': metadata.rating === 'preferred' ? '1' : metadata.rating === 'usable' ? '0' : '', Comments: metadata.notes,
+                'Good Take': metadata.rating === 'preferred' ? '1' : metadata.rating !== null ? '0' : '', Comments: metadata.notes,
                 Keywords: [...new Set(keywords)].join(', '), 'Identity': metadata.identity ?? '', 'Project': metadata.project ?? '',
                 'Group': metadata.group, 'Camera': metadata.camera, 'Quality': metadata.rating ?? '' } };
     },

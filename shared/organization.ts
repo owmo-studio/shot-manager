@@ -5,7 +5,7 @@ export const TAG_FIELDS = ['identity', 'project', 'tags'] as const;
 export const OPTION_FIELDS = ['identity', 'project'] as const;
 export const SCENE_MAX_LENGTH = 80;
 export const GROUPING_MAX_LENGTH = 128;
-export type ClipRating = 'preferred' | 'usable' | null;
+export type ClipRating = 'preferred' | 'usable' | 'low' | null;
 export type TagField = typeof TAG_FIELDS[number];
 export interface ClipAttributes {
     identity: string | null;
@@ -46,7 +46,7 @@ export function validateClipAttributes(value: unknown): ClipAttributes {
         typeof data.notes !== 'string' || data.notes.length > 10000 || !Array.isArray(data.tags) ||
         data.tags.some(tag => typeof tag !== 'string' || normalizeTag(tag) !== tag) ||
         ['group', 'camera'].some(field => data[field] !== undefined && (typeof data[field] !== 'string' || normalizeGroupingText(data[field] as string) !== data[field])) ||
-        !(data.rating === undefined || data.rating === null || data.rating === 'preferred' || data.rating === 'usable')) throw new Error('Invalid Library attributes.');
+        !(data.rating === undefined || data.rating === null || data.rating === 'preferred' || data.rating === 'usable' || data.rating === 'low')) throw new Error('Invalid Library attributes.');
     // Older drafts and Library JSON have no grouping fields; missing means empty.
     return { identity: data.identity, project: data.project, scene: data.scene, notes: data.notes, tags: [...data.tags],
         group: data.group ?? '', camera: data.camera ?? '', rating: data.rating ?? null } as ClipAttributes;
@@ -102,7 +102,7 @@ export function organizationKey(fingerprint: { scheme: string; value: string }) 
 
 export function validateOrganizationAction(action: OrganizationAction): OrganizationAction {
     if ((action.field === 'group' || action.field === 'camera') && action.operation === 'set' && typeof action.value === 'string') return { ...action, value: normalizeGroupingText(action.value) };
-    if (action.field === 'rating' && action.operation === 'set' && ['', 'preferred', 'usable'].includes(action.value)) return action;
+    if (action.field === 'rating' && action.operation === 'set' && ['', 'preferred', 'usable', 'low'].includes(action.value)) return action;
     if (action.field === 'scene' && action.operation === 'set' && typeof action.value === 'string') return { ...action, value: normalizeScene(action.value) };
     if (action.field === 'skip' && action.operation === 'set' && ['true', 'false'].includes(action.value)) return action;
     if (action.field === 'all' && action.operation === 'clear' && action.value === '') return action;
