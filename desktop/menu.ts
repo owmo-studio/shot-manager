@@ -3,7 +3,7 @@ import { app, Menu } from 'electron';
 export function installApplicationMenu() {
     Menu.setApplicationMenu(Menu.buildFromTemplate([
         {
-            label: 'OWMO Shot Manager', submenu: [
+            label: app.getName(), submenu: [
                 { role: 'about' }, { type: 'separator' },
                 { role: 'services' }, { type: 'separator' },
                 { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' },

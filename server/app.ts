@@ -10,7 +10,7 @@ import { LibrarySync } from './sync';
 import { dirname, join } from 'node:path';
 import Fastify from 'fastify'
 import type { AppConfiguration, BackendHealth } from '../shared/desktop'
-import type { IngestStatus } from '../shared/ingestion';
+import type { IngestStatus, WorkQueue, StoppableTransfer } from '../shared/ingestion';
 import type { ShotChange, WorkspaceRestore } from '../shared/shots'
 import { WorkspaceManager } from './workspace'
 import { pruneThumbnailCache } from './thumbnails'
@@ -71,7 +71,7 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     onIngestChanged?.(status)
     // Membership changes reload drafts; Library transfer progress only needs a
     // new local snapshot. Import/proxy progress must not reload the catalogue.
-    const next = JSON.stringify([status.active, status.stopping, status.current?.id, status.exportCurrent?.id, status.total, status.completed, status.waiting, status.tasks?.transfersRemaining, status.tasks?.syncsRemaining, status.metadataRevision])
+    const next = JSON.stringify([status.active, status.stopping, status.current?.id, status.exportCurrent?.id, status.total, status.completed, status.waiting, status.tasks?.transfersRemaining, status.tasks?.syncsRemaining, status.metadataActive, status.metadataPending, status.metadataRevision])
     const libraryCommit = status.current && workspace.scanner.workKind(status.current.id) === 'commit' ? status.current : undefined
     const progress = JSON.stringify([libraryCommit?.id, libraryCommit?.percent, status.exportCurrent?.id, status.exportCurrent?.percent])
     if (next !== catalogueQueueState) {
@@ -137,9 +137,14 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     try { return await ingestion.eject(request.body.shotIds) }
     catch (error) { throw Object.assign(error as Error, { statusCode: (error as { status?: number }).status ?? 409 }) }
   })
-  server.post<{ Body: { shotIds: string[] } }>('/api/workspace/cancel', {
-    schema: { body: { type: 'object', required: ['shotIds'], additionalProperties: false, properties: { shotIds: ids } } }
-  }, async request => ingestion.cancel(request.body.shotIds))
+  server.post<{ Body: { shotIds: string[]; kind?: StoppableTransfer } }>('/api/workspace/cancel', {
+    schema: { body: { type: 'object', required: ['shotIds'], additionalProperties: false,
+      properties: { shotIds: ids, kind: { type: 'string', enum: ['commit', 'sync'] } } } }
+  }, async request => {
+    const { shotIds, kind = 'commit' } = request.body
+    const workspace = await ingestion.cancel(shotIds, kind)
+    return kind === 'sync' ? catalogue.snapshot() : workspace
+  })
   // Only Electron main calls this after Cache clearing, using paths from the previous backend snapshot.
   const restorePath = { type: 'string', pattern: '^/', maxLength: 32768 }
   const restoreFiles = { type: 'array', maxItems: 10000, items: restorePath }
@@ -172,6 +177,10 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
     catch (error) { throw Object.assign(error as Error, { statusCode: 409 }) }
   })
   server.post('/api/work/stop', () => ingestion.stop())
+  server.post<{ Body: { queue: WorkQueue; pause: boolean } }>('/api/work/queue', {
+    schema: { body: { type: 'object', required: ['queue', 'pause'], additionalProperties: false,
+      properties: { queue: { type: 'string', enum: ['proxy', 'commit', 'sync'] }, pause: { type: 'boolean' } } } }
+  }, request => ingestion.controlQueue(request.body.queue, request.body.pause))
   server.post('/api/work/refresh', () => ingestion.refreshWork())
   server.delete<{ Params: { id: string } }>('/api/ingestion/errors/:id', {
     schema: { params: { type: 'object', required: ['id'], properties: { id: { type: 'string', maxLength: 64 } } } }

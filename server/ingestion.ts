@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
 import { ingestAttributes } from '../shared/ingestion';
 import type { IngestReview, IngestStatus } from '../shared/ingestion';
+import type { StoppableTransfer, WorkQueue } from '../shared/ingestion';
 import { ShotScanner } from './scanner';
 import { inspectLibrary, libraryAssetName, libraryFileIdentity, listLibrary, readLibraryRevertAssets } from './library';
 import type { LibraryListing, LibraryLocation } from './library';
@@ -18,11 +19,13 @@ import { reconcileQueueTasks, summarizeQueueTasks } from './queueProgress';
 import type { QueueTask } from './queueProgress';
 
 type TransferKind = 'commit' | 'metadata' | 'sync';
+const pauseTransfer = Symbol('pause transfer queue');
 type Capture = Awaited<ReturnType<ShotScanner['captureIngest']>>;
 interface Entry {
     capture: Capture;
     names: [string, string, string, ...string[]];
     existing: Record<string, string | null>;
+    transferred?: Record<string, string | null>;
 }
 interface LibrarySnapshot extends LibraryListing { location: LibraryLocation }
 interface Retirement { id: string; filename: string; signature: string }
@@ -40,6 +43,7 @@ export class IngestQueue {
     private queuedIds: string[] = [];
     private cancelledIds = new Set<string>();
     private activeTransfers = new Map<TransferKind, { id: string; controller: AbortController; done: Promise<void> }>();
+    private pausing = new Set<WorkQueue>();
     private submission = 0;
     private transferKeys = new Map<string, string>();
     private pending: { entry: Entry; location: LibraryLocation; storageWaitSeconds: number }[] = [];
@@ -77,7 +81,10 @@ export class IngestQueue {
     }
     resume() {
         if (this.closing || this.state.stopping) throw new Error('Wait for work to stop before resuming.');
-        this.scanner.resumeBackground(); this.proxies?.resume(); this.backgroundChanged(); return structuredClone(this.state);
+        this.scanner.resumeBackground();
+        if (!this.state.pausedQueues?.proxy) this.proxies?.resume();
+        this.backgroundChanged();
+        return structuredClone(this.state);
     }
 
     async status() {
@@ -144,12 +151,38 @@ export class IngestQueue {
     }
 
     async refreshLibrary() {
-        this.beginOperation();
-        try {
-            await this.status();
-            await this.scanLibrary();
-            return structuredClone(this.state);
-        } finally { this.working = false; }
+        await this.status();
+        await this.scanLibrary();
+        return structuredClone(this.state);
+    }
+
+    private lanePaused(kind: TransferKind) {
+        return this.state.pausedQueues?.[kind === 'metadata' ? 'commit' : kind] === true;
+    }
+
+    async controlQueue(queue: WorkQueue, pause: boolean) {
+        if (this.closing || this.state.stopping || this.pausing.has(queue)) {
+            throw Object.assign(new Error('Wait for the queue operation to finish.'), { statusCode: 409 });
+        }
+        const kinds: TransferKind[] = queue === 'commit' ? ['commit', 'metadata'] : queue === 'sync' ? ['sync'] : [];
+        (this.state.pausedQueues ??= {})[queue] = pause;
+        if (pause) {
+            this.pausing.add(queue);
+            try {
+                if (queue === 'proxy') await this.proxies?.stop(true);
+                for (const kind of kinds) this.activeTransfers.get(kind)?.controller.abort(pauseTransfer);
+                this.wakeWorker?.();
+                this.publish();
+                await Promise.all(kinds.map(kind => this.runs.get(kind)));
+            } finally { this.pausing.delete(queue); }
+        } else if (queue === 'proxy') {
+            this.proxies?.resume();
+            this.prioritizeCommits();
+        } else {
+            for (const kind of kinds) this.startWorker(kind);
+        }
+        this.backgroundChanged();
+        return structuredClone(this.state);
     }
 
     async refreshWork() {
@@ -175,6 +208,8 @@ export class IngestQueue {
     }
 
     private updateTaskProgress() {
+        this.state.metadataActive = this.activeTransfers.has('metadata');
+        this.state.metadataPending = this.queuedIds.filter(id => this.scanner.workKind(id) === 'metadata').length;
         const shots = this.scanner.snapshot().shots;
         const ready = new Set(shots.filter(shot => shot.proxyState === 'ready').map(shot => `proxy:${shot.id}`));
         const pending = new Map<string, QueueTask>();
@@ -274,7 +309,7 @@ export class IngestQueue {
             if (!entries.length && !retirements.length) throw new Error('No clips need committing.');
             await this.location(location);
             if (generation !== this.workGeneration || this.state.stopping) throw new Error('Work was stopped. Refresh or Commit again when ready.');
-            if (this.proxies?.status().paused || this.scanner.workPaused) this.resume();
+            if (!this.state.pausedQueues?.proxy && (this.proxies?.status().paused || this.scanner.workPaused)) this.resume();
             await this.scanner.reloadOrganizations();
             if (generation !== this.workGeneration || this.state.stopping) throw new Error('Work was stopped. Commit again when ready.');
             const present = new Set(this.scanner.snapshot().shots.map(shot => shot.id));
@@ -352,7 +387,7 @@ export class IngestQueue {
             signal.throwIfAborted();
             if (generation !== this.workGeneration) throw new Error('Work was stopped. Review Commit again.');
             this.validateRetirements(retirements, listing);
-            if (this.proxies?.status().paused) this.resume();
+            if (!this.state.pausedQueues?.proxy && this.proxies?.status().paused) this.resume();
             this.prioritizeCommits();
             this.proxies?.retry(this.commitIds());
             this.scanner.retireSynced(retirements);
@@ -385,7 +420,7 @@ export class IngestQueue {
 
     private async checkExisting(location: LibraryLocation, entry: Entry, listing?: LibraryListing) {
         const existing = await this.existing(location, entry.capture.shot.id, entry.names, listing);
-        if (JSON.stringify(existing) !== JSON.stringify(entry.existing)) throw new Error('Library assets changed after review. Review the commit plan again to approve replacement.');
+        if (JSON.stringify(existing) !== JSON.stringify({ ...entry.existing, ...entry.transferred })) throw new Error('Library assets changed after review. Review the commit plan again to approve replacement.');
     }
 
     private validateRetirements(entries: Retirement[], listing: LibraryListing) {
@@ -402,17 +437,20 @@ export class IngestQueue {
         });
     }
 
-    private commitIds() { return this.queuedIds.filter(id => this.scanner.workKind(id) === 'commit'); }
+    private commitIds() { return this.queuedIds.filter(id => this.scanner.workKind(id) === undefined); }
     private prioritizeCommits() { this.proxies?.prioritize(this.commitIds()); }
 
     private startWorker(kind: TransferKind) {
-        if (!this.runs.has(kind)) this.runs.set(kind, this.process(kind, this.controller!.signal));
+        const signal = this.controller?.signal;
+        if (signal && !signal.aborted && !this.lanePaused(kind) && !this.runs.has(kind)) {
+            this.runs.set(kind, Promise.resolve().then(() => this.process(kind, signal)));
+        }
     }
 
     private async process(kind: TransferKind, signal: AbortSignal) {
         const stateKey = kind === 'sync' ? 'exportCurrent' : kind === 'commit' ? 'current' : undefined;
         try {
-            while (!signal.aborted) {
+            while (!signal.aborted && !this.lanePaused(kind)) {
                 this.pending = this.pending.filter(item => !this.cancelledIds.has(item.entry.capture.shot.id));
                 this.libraryPending = this.libraryPending.filter(job => !this.cancelledIds.has(job.id));
                 const jobIndex = this.libraryPending.findIndex(job => (job.kind ?? 'commit') === kind);
@@ -444,6 +482,7 @@ export class IngestQueue {
                 if (stateKey) this.state[stateKey] = current;
                 this.scanner.processingIngest(shot.id);
                 this.publish();
+                let requeued = false;
                 try {
                     if (libraryJob) await libraryJob.execute(clipSignal, percent => {
                         if (!stateKey || !current || clipSignal.aborted || this.state[stateKey] !== current) return;
@@ -455,22 +494,35 @@ export class IngestQueue {
                     if (stateKey) this.state.completed = (this.state.completed ?? 0) + 1;
                     this.publish();
                 } catch (error) {
-                    if (!clipSignal.aborted) this.state.errors.push({ id: shot.id, filename: shot.filename,
+                    if (clipSignal.reason === pauseTransfer && !signal.aborted && !this.cancelledIds.has(shot.id)) {
+                        if (libraryJob) this.libraryPending.splice(jobIndex, 0, libraryJob);
+                        else this.pending.splice(index, 0, item!);
+                        this.tasks.delete(this.transferKeys.get(shot.id)!);
+                        if (stateKey) { this.state[stateKey] = undefined; this.state.position--; }
+                        this.scanner.requeueIngest(shot.id);
+                        requeued = true;
+                    } else if (!clipSignal.aborted) this.state.errors.push({ id: shot.id, filename: shot.filename,
                         message: error instanceof Error ? error.message : String(error), eventId: randomUUID(), kind: kind === 'sync' ? 'sync' : 'commit' });
                     this.publish();
                 } finally {
-                    this.queuedIds = this.queuedIds.filter(id => id !== shot.id); this.scanner.unlockIngest([shot.id]);
+                    if (!requeued) {
+                        this.queuedIds = this.queuedIds.filter(id => id !== shot.id);
+                        this.scanner.unlockIngest([shot.id]);
+                    }
                     this.prioritizeCommits();
                     this.activeTransfers.delete(kind); finish();
                 }
             }
         } finally {
             // A lane must never clear the other lane's jobs, locks, or progress.
-            const remaining = this.queuedIds.filter(id => (this.scanner.workKind(id) ?? 'commit') === kind);
-            this.scanner.unlockIngest(remaining);
-            this.queuedIds = this.queuedIds.filter(id => !remaining.includes(id));
-            if (kind === 'commit') { this.pending = []; this.state.waiting = 0; }
-            this.libraryPending = this.libraryPending.filter(job => (job.kind ?? 'commit') !== kind);
+            if (signal.aborted || !this.lanePaused(kind)) {
+                const remaining = this.queuedIds.filter(id => (this.scanner.workKind(id) ?? 'commit') === kind);
+                this.scanner.unlockIngest(remaining);
+                this.queuedIds = this.queuedIds.filter(id => !remaining.includes(id));
+                if (kind === 'commit') this.pending = [];
+                this.libraryPending = this.libraryPending.filter(job => (job.kind ?? 'commit') !== kind);
+            }
+            if (kind === 'commit') this.state.waiting = 0;
             if (kind === 'metadata') this.state.metadataRevision = (this.state.metadataRevision ?? 0) + 1;
             this.runs.delete(kind);
             this.state.active = this.runs.size > 0 || this.queuedIds.length > 0;
@@ -513,10 +565,11 @@ export class IngestQueue {
         } finally { this.working = false; }
     }
 
-    async cancel(ids: string[]) {
+    async cancel(ids: string[], kind?: StoppableTransfer) {
         if (this.closing) throw new Error('The app is closing.');
-        // Cancel Commit snapshots only. Background proxy generation remains useful and editable.
-        const selected = ids.filter(id => this.queuedIds.includes(id));
+        // Import Commits have no explicit work kind; Library operations do.
+        const selected = ids.filter(id => this.queuedIds.includes(id) &&
+            (!kind || this.scanner.workKind(id) === (kind === 'commit' ? undefined : 'sync')));
         const active = [...this.activeTransfers.values()].filter(transfer => selected.includes(transfer.id));
         selected.forEach(id => this.cancelledIds.add(id));
         this.pending = this.pending.filter(item => !selected.includes(item.entry.capture.shot.id));
@@ -527,8 +580,9 @@ export class IngestQueue {
         this.prioritizeCommits();
         this.wakeWorker?.();
         if (this.review?.entries.some(entry => selected.includes(entry.capture.shot.id))) this.review = undefined;
-        await Promise.all([this.preparing, ...active.map(transfer => transfer.done)]);
+        await Promise.all([kind === 'sync' ? undefined : this.preparing, ...active.map(transfer => transfer.done)]);
         // A publication that beat cancellation has already persisted its successful receipt.
+        this.state.active = this.runs.size > 0 || this.queuedIds.length > 0;
         this.publish();
         return this.scanner.snapshot();
     }
@@ -563,7 +617,9 @@ export class IngestQueue {
         };
         await validate();
         await this.checkExisting(location, entry);
-        const proxy = this.proxies ? await this.proxies.asset(shot.id) : null;
+        // checkExisting has just validated a reviewed Library proxy. The
+        // shared presence index may be temporarily unverified during Refresh.
+        const proxy = this.proxies && !entry.existing[entry.names[3]] ? await this.proxies.asset(shot.id) : null;
         const staging = await mkdtemp(join(tmpdir(), 'owmo-ingest-'));
         const metadataPath = join(location.path, entry.names[2]);
         const temporaryJSON = join(location.path, `${shot.id}.metadata.${randomUUID()}.partial`);
@@ -589,8 +645,13 @@ export class IngestQueue {
                 await validate();
                 if (proxy && file.from === proxy.path && await libraryFileIdentity(proxy.path) !== proxy.identity) throw new Error('Cached proxy changed before transfer.');
                 const target = join(location.path, file.name);
-                if (await libraryFileIdentity(target) !== entry.existing[file.name]) throw new Error('Destination changed after review.');
-                await this.transfer(file.from, target, signal, percent => update(transferred + file.bytes * percent / 100), file.force);
+                const completed = entry.transferred && Object.hasOwn(entry.transferred, file.name);
+                if (await libraryFileIdentity(target) !== (completed ? entry.transferred![file.name] : entry.existing[file.name])) throw new Error('Destination changed after review.');
+                if (!completed) {
+                    await this.transfer(file.from, target, signal, percent => update(transferred + file.bytes * percent / 100), file.force);
+                    await this.location(location, undefined, configuredWait);
+                    (entry.transferred ??= {})[file.name] = await libraryFileIdentity(target);
+                }
                 transferred += file.bytes;
             }
             await validate();
@@ -628,6 +689,9 @@ export class IngestQueue {
         this.controller?.abort();
         await this.preparing;
         await Promise.all(this.runs.values());
+        this.scanner.unlockIngest(this.queuedIds);
+        this.queuedIds = []; this.pending = []; this.libraryPending = [];
+        this.state.active = false;
         this.proxies?.prioritize([]);
     }
 

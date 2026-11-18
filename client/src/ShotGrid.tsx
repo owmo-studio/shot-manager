@@ -166,7 +166,7 @@ function ShotCard({
                     data-shot-thumbnail
                     className={`relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg ring-1 ring-inset transition-opacity duration-150 ${unavailable ? "ring-red-500/30 bg-red-500/5" : skipped ? "ring-white/5 bg-black" : "ring-white/8 bg-white/4"}`}
                 >
-                    <span
+                    {!skipped && <span
                         data-media-readiness={readiness.state}
                         data-proxy-state={shot.proxyState}
                         data-proxy-location={shot.proxyLocation}
@@ -175,7 +175,7 @@ function ShotCard({
                         aria-label={indicatorBusy ? `${progressLabel}. ${readinessLabel}` : readinessLabel}
                         title={indicatorBusy ? `${progressLabel}. ${readinessLabel}` : readinessLabel}
                         className={`absolute left-1.5 top-1.5 z-10 size-3 rounded-full ${indicatorStyle}`}
-                    />
+                    />}
                     {(working || proxyEncoding) && (
                         <span data-shot-activity={working ? 'transfer' : 'proxy'} role="status" className="sr-only">
                             {working ? activity : proxyLabel}

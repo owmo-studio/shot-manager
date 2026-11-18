@@ -1,5 +1,5 @@
 import { useClipView } from "./ClipViewContext";
-import { hasPendingCommit } from "./clipState";
+import { canStopClip, hasPendingCommit } from "./clipState";
 import { errorMessage } from '../../shared/errors';
 import { useEffect, useRef, useState } from "react";
 import type { ShotCollection, ShotDetails, VideoShot } from "../../shared/shots";
@@ -10,7 +10,7 @@ import { ResizableInspector } from "./ResizableInspector";
 import { PreviewPlayer } from "./PreviewPlayer";
 import type { PreviewHandle } from "./PreviewPlayer";
 import { AttributeFields } from "./AttributeFields";
-import { EjectButton } from "./EjectButton";
+import { EjectButton, StopClipButton } from "./EjectButton";
 import { SkipSelection } from "./SkipSelection";
 import { SyncButton } from './SyncButton';
 import { DeleteButton } from './DeleteButton';
@@ -50,8 +50,9 @@ const emptyShot: VideoShot = {
 export function ClipInspector({
     shot: selectedShot,
     onEject,
+    onStop,
     onDelete,
-    ejectBusy,
+    clipActionBusy,
     width,
     onResize,
     onSkipChange,
@@ -59,8 +60,9 @@ export function ClipInspector({
 }: {
     shot?: VideoShot;
     onEject: () => void;
+    onStop: () => void;
     onDelete: () => void;
-    ejectBusy: boolean;
+    clipActionBusy: boolean;
     width: number;
     onResize: (width: number) => void;
     onSkipChange: (skipped: boolean) => void;
@@ -69,6 +71,7 @@ export function ClipInspector({
     const { api, mode } = useClipView();
     const empty = !selectedShot;
     const shot = selectedShot ?? emptyShot;
+    const stopKind = mode === 'library' ? 'sync' : 'commit';
     const skipped = !!shot.organization?.skipped;
     const thumbnailChanged = libraryThumbnailChanged(shot);
     const [tab, setTab] = useState<"metadata" | "file">("metadata");
@@ -177,11 +180,13 @@ export function ClipInspector({
                         >
                             <ThumbnailIcon />
                         </button>
-                        {mode === 'import' && <>
+                        {mode === 'import' ?
                             <SkipSelection count={empty ? 0 : 1} skippedCount={skipped ? 1 : 0} disabled={empty || locked} onChange={onSkipChange} />
-                            <EjectButton cancel={hasPendingCommit(shot)} count={empty ? 0 : 1} busy={ejectBusy} onClick={onEject} />
-                        </>}
-                        {mode === 'library' && <><SyncButton shots={empty ? [] : [shot]} /><DeleteButton shots={empty ? [] : [shot]} onClick={onDelete} /></>}
+                            : <SyncButton shots={empty ? [] : [shot]} />}
+                        <StopClipButton count={canStopClip(shot, stopKind) ? 1 : 0} busy={clipActionBusy} kind={stopKind} onClick={onStop} />
+                        {mode === 'import' ?
+                            <EjectButton count={empty ? 0 : 1} disabled={clipActionBusy || hasPendingCommit(shot)} onClick={onEject} />
+                            : <DeleteButton shots={empty ? [] : [shot]} onClick={onDelete} />}
                     </div>
                 </header>
                 {thumbnailError && (

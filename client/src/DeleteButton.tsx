@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { VideoShot } from '../../shared/shots';
 import type { LibraryDeleteReview } from '../../shared/library';
 import { errorMessage } from '../../shared/errors';
@@ -17,6 +17,8 @@ export function LibraryDeleteDialog({ shots, onClose }: { shots: VideoShot[]; on
     const [review, setReview] = useState<LibraryDeleteReview | null>(null);
     const [checking, setChecking] = useState(true);
     const [busy, setBusy] = useState(false);
+    const [confirming, setConfirming] = useState(false);
+    const deleting = useRef(false);
     const [error, setError] = useState<string | null>(null);
     const [finishedError, setFinishedError] = useState<string | null>(null);
     const [excluded, setExcluded] = useState<string[]>([]);
@@ -32,7 +34,8 @@ export function LibraryDeleteDialog({ shots, onClose }: { shots: VideoShot[]; on
         return () => { cancelled = true; };
     }, [shots]);
     async function confirm() {
-        if (!review || busy || !included.length) return;
+        if (!confirming || !review || deleting.current || !included.length) return;
+        deleting.current = true;
         setBusy(true); setError(null);
         try {
             const result = await window.desktop.deleteLibraryClips(review.token, included.map(clip => clip.id));
@@ -44,10 +47,10 @@ export function LibraryDeleteDialog({ shots, onClose }: { shots: VideoShot[]; on
         } catch (reason) {
             setError(errorMessage(reason, 'Could not delete clips.'));
             setReview(null); // Stale or failed reviews require a fresh confirmation.
-        } finally { setBusy(false); }
+        } finally { deleting.current = false; setBusy(false); setConfirming(false); }
     }
     if (finishedError) return <ErrorDialog title="Delete error" message={finishedError} onDismiss={onClose} />;
-    return <ModalDialog titleId="delete-title" title="Ready to Delete?" busy={busy} onCancel={onClose}>
+    return <><ModalDialog titleId="delete-title" title="Ready to Delete?" busy={busy} onCancel={onClose}>
         <p className="mt-3 text-sm text-zinc-400">{included.length} {included.length === 1 ? 'clip' : 'clips'}</p>
         <p className="mt-2 text-sm text-zinc-500">Delete all associated Library files and their local metadata.</p>
         <div aria-label="Affected clips" className="mt-4 max-h-[45vh] overflow-y-auto rounded-lg border border-white/10">
@@ -68,7 +71,18 @@ export function LibraryDeleteDialog({ shots, onClose }: { shots: VideoShot[]; on
         {error && <p role="alert" className="mt-3 text-xs text-red-300">{error}</p>}
         <div className="mt-5 flex justify-end gap-3">
             <button autoFocus disabled={busy} onClick={onClose} className={secondaryButton}>Cancel</button>
-            <button aria-label="Confirm delete clips" disabled={checking || busy || !review || !included.length} onClick={() => void confirm()} className={dangerButton}>{busy ? 'Deleting…' : checking ? 'Checking…' : 'Delete'}</button>
+            <button aria-label="Confirm delete clips" disabled={checking || busy || !review || !included.length} onClick={() => setConfirming(true)} className={dangerButton}>{busy ? 'Deleting…' : checking ? 'Checking…' : 'Delete'}</button>
         </div>
-    </ModalDialog>;
+    </ModalDialog>
+    {confirming && <ModalDialog titleId="delete-final-title" title="Are you sure?" width="w-[min(420px,90vw)]"
+        busy={busy} onCancel={() => setConfirming(false)}>
+        <p className="mt-3 text-sm text-zinc-400">This cannot be undone!</p>
+        <div className="mt-5 flex justify-end gap-3">
+            <button autoFocus disabled={busy} onClick={() => setConfirming(false)} className={secondaryButton}>Cancel</button>
+            <button type="button" disabled={busy} onClick={() => void confirm()} className={dangerButton}>
+                {busy ? 'Deleting…' : 'Yes, I Understand'}
+            </button>
+        </div>
+    </ModalDialog>}
+    </>;
 }

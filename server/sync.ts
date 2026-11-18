@@ -16,7 +16,7 @@ import { rsyncFile } from './rsync';
 import { DEFAULT_STORAGE_WAIT_SECONDS, withStorageRecovery } from './storageRecovery';
 import type { StorageRetryInfo } from './storageRecovery';
 
-interface FileCopy { from: string; to: string; sourceIdentity: string; targetIdentity: string | null; bytes: number }
+interface FileCopy { from: string; to: string; sourceIdentity: string; targetIdentity: string | null; bytes: number; transferred?: boolean }
 interface Capture { id: string; filename: string; files: FileCopy[]; metadataIdentity: string; plan?: ExportClipPlan; issue?: string }
 interface Review { view: SyncReview; library: LibraryLocation; destination: LibraryLocation; captures: Capture[]; directories: ExportDirectories; generation: number; created: number }
 const lifetime = 30 * 60 * 1000;
@@ -193,7 +193,12 @@ export class LibrarySync {
                         signal.throwIfAborted(); await guard(signal);
                         if (await libraryFileIdentity(file.from) !== file.sourceIdentity || await exportFileIdentity(file.to) !== file.targetIdentity) throw new Error('Export files changed after review. Review Export again.');
                         this.protectOriginal(file.to, file.targetIdentity, file.sourceIdentity);
-                        await this.transfer(file.from, file.to, signal, percent => progress((completed + file.bytes * percent / 100) / total * 99));
+                        if (!file.transferred) {
+                            await this.transfer(file.from, file.to, signal, percent => progress((completed + file.bytes * percent / 100) / total * 99));
+                            await guard();
+                            file.targetIdentity = await exportFileIdentity(file.to);
+                            file.transferred = true;
+                        }
                         completed += file.bytes;
                     }
                     // Publish the row only after this clip's media has succeeded.

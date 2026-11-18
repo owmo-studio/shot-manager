@@ -1,7 +1,7 @@
 import { useClipView } from "./ClipViewContext";
-import { hasPendingCommit } from "./clipState";
+import { canStopClip, hasPendingCommit } from "./clipState";
 import { AttributeFields } from "./AttributeFields";
-import { EjectButton } from "./EjectButton";
+import { EjectButton, StopClipButton } from "./EjectButton";
 import { SkipSelection } from "./SkipSelection";
 import { SyncButton } from './SyncButton';
 import { DeleteButton } from './DeleteButton';
@@ -10,14 +10,15 @@ import { ThumbnailIcon } from './ThumbnailIcon';
 import { ResizableInspector } from "./ResizableInspector";
 import type { ShotCollection, VideoShot } from "../../shared/shots";
 
-export function MultiClipInspector({ shots, onEject, onDelete, ejectBusy, skippedCount, disabled, width, onResize, onSkipChange, onOrganizationUpdated }: {
-    shots: VideoShot[]; onEject: () => void; onDelete: () => void; ejectBusy: boolean; skippedCount: number; disabled: boolean; width: number; onResize: (width: number) => void;
+export function MultiClipInspector({ shots, onEject, onStop, onDelete, clipActionBusy, skippedCount, disabled, width, onResize, onSkipChange, onOrganizationUpdated }: {
+    shots: VideoShot[]; onEject: () => void; onStop: () => void; onDelete: () => void; clipActionBusy: boolean; skippedCount: number; disabled: boolean; width: number; onResize: (width: number) => void;
     onSkipChange: (skipped: boolean) => void;
     onOrganizationUpdated: (collection: ShotCollection) => void;
 }) {
     const { mode } = useClipView();
     const count = shots.length;
-    const cancelCount = shots.filter(shot => hasPendingCommit(shot)).length;
+    const stopKind = mode === 'library' ? 'sync' : 'commit';
+    const stopCount = shots.filter(shot => canStopClip(shot, stopKind)).length;
     return <ResizableInspector width={width} onResize={onResize}>
         <div className="multi-clip-inspector flex h-full min-h-0 flex-col">
         <header className="mb-4 flex items-start justify-between gap-3">
@@ -25,10 +26,13 @@ export function MultiClipInspector({ shots, onEject, onDelete, ejectBusy, skippe
                 <p className="mt-1 text-xs text-zinc-500">Shared values · Counts mark differences</p></div>
             <div className="flex shrink-0 items-center gap-2">
                 <button disabled aria-label="Set current frame as thumbnail" title="Select one clip to set a thumbnail" className={inspectorButton}><ThumbnailIcon /></button>
-                {mode === 'import' ? <>
+                {mode === 'import' ?
                     <SkipSelection count={count} skippedCount={skippedCount} disabled={disabled} onChange={onSkipChange} />
-                    <EjectButton cancel={cancelCount > 0} count={cancelCount || count} busy={ejectBusy} onClick={onEject} />
-                </> : <><SyncButton shots={shots} /><DeleteButton shots={shots} onClick={onDelete} /></>}
+                    : <SyncButton shots={shots} />}
+                <StopClipButton count={stopCount} busy={clipActionBusy} kind={stopKind} onClick={onStop} />
+                {mode === 'import' ?
+                    <EjectButton count={count} disabled={clipActionBusy || shots.some(hasPendingCommit)} onClick={onEject} />
+                    : <DeleteButton shots={shots} onClick={onDelete} />}
             </div>
         </header>
         <ul aria-label="Selected clips" className="mb-4 max-h-40 overflow-y-auto rounded-lg border border-white/8 bg-black/10 py-1 text-xs text-zinc-400 divide-y divide-white/5">

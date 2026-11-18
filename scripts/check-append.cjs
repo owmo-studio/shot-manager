@@ -201,6 +201,33 @@ async function until(test, label) { for (let i = 0; i < 750; i++) { if (await te
         assert.equal(status.tasks.transfersRemaining,0);assert.equal(status.tasks.syncsRemaining,0);
         assert.equal(queuedExportRan,false);assert.equal(scanner.canEditLibrary([a.id,exportId,secondExportId]),true);
         assert.deepEqual(status.errors,[]);
+
+        hold=true; entered=false; releaseExport=undefined;
+        plan=await queue.preview([a.id]); await queue.submit(plan.token,[a.id]);
+        await until(()=>entered,'Commit active before queue pause');
+        queue.enqueueLibrary([heldExport]); await until(()=>!!releaseExport,'Export active before Commit pause');
+        await queue.controlQueue('commit',true);
+        status=await queue.status();
+        assert.equal(status.current,undefined);
+        assert.equal(status.tasks.transfersRemaining,1);
+        assert.equal(scanner.commitLock(a.id),'queued');
+        assert.equal(status.exportCurrent.id,exportId,'Pausing Commits leaves Export running');
+        await queue.refreshLibrary();
+        assert.equal((await queue.status()).pausedQueues.commit,true,'Library refresh leaves Commits paused');
+        await queue.controlQueue('sync',true);
+        assert.equal((await queue.status()).tasks.syncsRemaining,1,'Paused Export keeps the interrupted job');
+        queue.enqueueLibrary([{id:secondExportId,filename:'Paused submission',kind:'sync',execute:async()=>{queuedExportRan=true;}}]);
+        assert.equal((await queue.status()).tasks.syncsRemaining,2);
+        assert.equal(queuedExportRan,false);
+        await queue.controlQueue('commit',false);
+        await until(async()=>!(await queue.status()).tasks.transfersRemaining,'Resumed Commit publishes');
+        assert.equal((await queue.status()).exportCurrent,undefined,'Resuming Commit leaves Export paused');
+        releaseExport=undefined;
+        await queue.controlQueue('sync',false);
+        await until(()=>!!releaseExport,'Interrupted Export restarts');
+        releaseExport(); await until(async()=>!(await queue.status()).active,'Resumed Export drains');
+        assert.equal(queuedExportRan,true);
+        assert.deepEqual((await queue.status()).errors,[]);
         for (const [name, bytes] of originals) assert.deepEqual(await fs.readFile(join(input, name)), bytes);
         console.log('PASS: active Commit append, immutable reviews/conflicts, duplicate exclusion, stable progress totals, per-clip Eject, worker drain during validation, parallel Commit/Export lanes, independent progress, cancellation/Stop races, and original preservation.');
     } finally {

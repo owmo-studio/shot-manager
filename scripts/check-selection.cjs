@@ -1279,6 +1279,7 @@ if (!process.versions.electron) {
             );
             assert.deepEqual(await skipped(), [4, 5], "Saved Skip restores after renderer reload");
             assert.equal(await js(`(() => { const card=document.querySelector('button[aria-label="Inspect Clip 4.mp4"]'); return card.classList.contains('bg-black/40') && card.querySelector('[data-shot-preview]').classList.contains('opacity-15') && card.getAttribute('data-editable')==='true'; })()`), true, "Skipped cards are very dark and remain editable");
+            assert.equal(await js(`!!document.querySelector('[data-skipped="true"] [data-media-readiness]')`), false, 'Skipped clips hide the readiness indicator');
             failOrganizationSave = true;
             await click("Skip selected clips");
             await wait(`document.querySelector('#source-error-title')?.textContent==='Skip could not be saved'`);
@@ -1350,10 +1351,11 @@ if (!process.versions.electron) {
                     skipped: true,
                 });
             assert.equal(await js(`document.querySelectorAll('[data-shot-card] button[aria-label^="Eject "], [data-shot-card] button[aria-label^="Stop "]').length`),0,'Eject and Stop are inspector-only actions');
-            // First-stage Cancel leaves cards selected and editable, then offers Eject.
+            // Stop leaves cards selected and editable; Eject is a separate control.
             const readyCards=structuredClone(collection.shots);
             await push(collection.shots.map(shot=>({...shot,editable:false,ingestState:shot.filename==='Clip 4.mp4'?'queued':'processing'})));
             await inspect(4); await inspect(5,{metaKey:true});
+            assert.ok(await js(`document.querySelector('[aria-label="Eject selected clips"]').disabled`),'Eject is disabled while selected clips are committing');
             assert.equal(await js(`Array.from(document.querySelectorAll('[aria-pressed="true"].ingest-card-busy')).every(card=>getComputedStyle(card).boxShadow.includes('2px'))`),true,'Queued and active selection has a clear outline');
             await click("Stop selected clips");
             await wait(`!!document.querySelector('#stop-title')`);
@@ -1365,7 +1367,7 @@ if (!process.versions.electron) {
             await click("Stop selected clips");
             await wait(`!!document.querySelector('#stop-title')`);
             await click("Confirm stop clips");
-            await wait(`!!document.querySelector('button[aria-label="Eject selected clips"]')`);
+            await wait(`!!document.querySelector('button[aria-label="Eject selected clips"]:enabled')`);
             assert.equal(collection.shots.length,3,'Cancel preserves workspace membership');
             assert.deepEqual(await selected(),[4,5],'Cancel preserves selection');
             assert.ok(collection.shots.filter(shot=>['Clip 4.mp4','Clip 5.mp4'].includes(shot.filename)).every(shot=>shot.editable));

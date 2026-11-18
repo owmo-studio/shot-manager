@@ -30,6 +30,7 @@ const desktop: DesktopBridge = {
   getLibraryLut: id => invoke('library:lut', id),
   getIngestStatus: () => invoke('ingestion:status'),
   refreshLibrary: () => invoke('ingestion:refresh-library'),
+  controlQueue: (queue, pause) => invoke('work:control-queue', queue, pause),
   onIngestChanged: listener => {
     const handler = (_event: Electron.IpcRendererEvent, status: Parameters<typeof listener>[0]) => listener(status)
     ipcRenderer.on('ingestion:changed', handler)
@@ -66,7 +67,7 @@ const desktop: DesktopBridge = {
   chooseClips: () => invoke('workspace:choose'),
   addDroppedClips: (file) => invoke('workspace:drop', webUtils.getPathForFile(file)),
   getShots: () => invoke('shots:list'),
-  cancelClips: shotIds => invoke('workspace:cancel', shotIds),
+  cancelClips: (shotIds, kind) => invoke('workspace:cancel', shotIds, kind),
   ejectClips: shotIds => invoke('workspace:eject', shotIds),
   onShotsChanged: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, collection: Parameters<typeof listener>[0]) => listener(collection)

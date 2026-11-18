@@ -1,4 +1,5 @@
 import { inspectorButton, inspectorDangerButton } from './buttonStyles';
+import type { StoppableTransfer } from '../../shared/ingestion';
 
 export function EjectIcon({ className = "size-4" }: { className?: string }) {
     return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={className}>
@@ -13,12 +14,18 @@ export function StopIcon({ className = "size-4" }: { className?: string }) {
     </svg>;
 }
 
-export function EjectButton({ count, busy, cancel = false, onClick }: { count: number; busy: boolean; cancel?: boolean; onClick: () => void }) {
-    const action = cancel ? "Stop" : "Eject";
-    const Icon = cancel ? StopIcon : EjectIcon;
-    return <button type="button" aria-label={`${action} selected ${count === 1 ? "clip" : "clips"}`}
-        title={cancel ? "Stop selected Commits" : "Eject from workspace"} disabled={!count || busy} onClick={onClick}
-        className={cancel ? inspectorButton : inspectorDangerButton}>
-        <Icon className="size-3.5" />
+export function EjectButton({ count, disabled, onClick }: { count: number; disabled: boolean; onClick: () => void }) {
+    return <button type="button" aria-label={`Eject selected ${count === 1 ? "clip" : "clips"}`}
+        title="Eject from workspace" disabled={!count || disabled} onClick={onClick} className={inspectorDangerButton}>
+        <EjectIcon className="size-3.5" />
+    </button>;
+}
+
+export function StopClipButton({ count, busy, kind, onClick }: {
+    count: number; busy: boolean; kind: StoppableTransfer; onClick: () => void;
+}) {
+    return <button type="button" aria-label={`Stop selected ${count === 1 ? "clip" : "clips"}`}
+        title={kind === 'sync' ? 'Stop selected Exports' : 'Stop selected Commits'} disabled={!count || busy} onClick={onClick} className={inspectorButton}>
+        <StopIcon className="size-3.5" />
     </button>;
 }

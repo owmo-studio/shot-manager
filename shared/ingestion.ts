@@ -9,6 +9,9 @@ export interface IngestionReceipt {
 
 export type IngestState = 'synced' | 'changes-pending' | 'queued' | 'processing' | 'unverified';
 export type ProxyState = 'missing' | 'queued' | 'encoding' | 'ready' | 'unverified' | 'failed';
+export type WorkQueue = 'proxy' | 'commit' | 'sync';
+export type StoppableTransfer = Exclude<WorkQueue, 'proxy'>;
+export const isWorkQueue = (value: unknown): value is WorkQueue => value === 'proxy' || value === 'commit' || value === 'sync';
 export interface IngestReview {
     token: string;
     libraryPath: string;
@@ -24,6 +27,9 @@ export interface IngestStatus {
     libraryScan?: { state: 'checking' | 'ready' | 'unavailable'; scannedAt?: string; error?: string };
     active: boolean;
     stopping: boolean;
+    pausedQueues?: Partial<Record<WorkQueue, boolean>>;
+    metadataActive?: boolean;
+    metadataPending?: number;
     position: number;
     total: number;
     completed?: number;

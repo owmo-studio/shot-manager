@@ -22,7 +22,7 @@ const { build, Platform, Arch } = require('electron-builder');
     const output = await build({
         targets: Platform.MAC.createTarget('dir', Arch[process.arch]), publish: 'never',
         config: {
-            appId: 'com.owmo.shot-manager', productName: 'OWMO Shot Manager', extends: null,
+            appId: 'com.owmo.shot-manager', productName: 'Shot Manager', extends: null,
             directories: { output: 'release', buildResources: 'resources/icon' },
             electronDist: join(dirname(require.resolve('electron')), 'dist'),
             files: ['out/**/*', 'package.json'],
@@ -31,6 +31,6 @@ const { build, Platform, Arch } = require('electron-builder');
             mac: { category: 'public.app-category.video', icon: 'resources/icon/AppIcon.icns', identity: '-', hardenedRuntime: false, notarize: false },
         },
     });
-    console.log(`Application: ${join(root, 'release', process.arch === 'arm64' ? 'mac-arm64' : 'mac', 'OWMO Shot Manager.app')}`);
+    console.log(`Application: ${join(root, 'release', process.arch === 'arm64' ? 'mac-arm64' : 'mac', 'Shot Manager.app')}`);
     for (const path of output) console.log(path);
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -203,12 +203,19 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         await queue.stop();
         assert.equal(thumbnailSignal.aborted,false,'Stop does not abort active thumbnail extraction');
         assert.equal(scanner.snapshot().shots.find(shot=>shot.filename==='before.mp4').thumbnailStatus,'pending');
+        await queue.controlQueue('proxy',true);
         scanner.discover({id:'thumbnail-after',path:afterFolder,name:'After',type:'folder',available:true,cameraModels:[]});
         await until(()=>scanner.snapshot().shots.some(shot=>shot.filename==='after.mp4'&&shot.thumbnailStatus==='pending'),'new thumbnail queues after Stop');
         releaseThumbnail();
         await until(()=>['before.mp4','after.mp4'].every(name=>scanner.snapshot().shots.some(shot=>shot.filename===name&&shot.thumbnailStatus==='ready')),'active and newly queued thumbnails complete after Stop');
         thumbnails.extract=extract;
         assert.equal(proxies.status().paused,true,'Thumbnail completion does not resume proxy encoding');
+        await until(async()=> (await queue.status()).tasks.proxiesRemaining >= 2,'Paused Proxies count discovered clips');
+        const encodesBeforeRefresh = encodeCount;
+        await queue.refreshLibrary();
+        await until(async()=> (await queue.status()).tasks.proxiesRemaining >= 2,'Paused proxy count returns after verification');
+        assert.equal(proxies.status().paused,true,'Library refresh never resumes paused Proxies');
+        assert.equal(encodeCount,encodesBeforeRefresh);
         // Exercise cancellation of an actual FFmpeg child after it reports a frame.
         const abort = new AbortController();
         await assert.rejects(encodeProxy(join(source, first.filename), join(root, 'cancelled.partial'), first, abort.signal, () => abort.abort()), /stopped/);

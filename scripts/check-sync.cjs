@@ -41,9 +41,9 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         queue = new IngestQueue(scanner, async () => library, inspect);
         await queue.status();
         catalogue = new LibraryCatalogue(scanner, async () => library, inspect, queue, join(cache, 'catalogue.json'), join(cache, 'library', 'thumbnails'));
-        let gate, entered, fail = false, aborts = 0;
+        let gate, entered, fail = false, aborts = 0, holdProxy = false;
         const sync = new LibrarySync(catalogue, scanner, queue, inspect, async (...args) => {
-            if (gate) { entered?.(); await new Promise((resolve, reject) => {
+            if (gate && (!holdProxy || args[0].endsWith('.proxy.mov'))) { entered?.(); await new Promise((resolve, reject) => {
                 const abort = () => { aborts++; reject(new Error('Stopped fixture')); };
                 args[2].addEventListener('abort', abort, { once: true });
                 gate = () => { args[2].removeEventListener('abort', abort); gate = undefined; resolve(); };
@@ -106,7 +106,9 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         let view = await catalogue.snapshot(); assert.equal(view.shots.find(s => s.id === ids[0]).workKind, 'sync'); assert.equal(view.shots.find(s => s.id === ids[0]).editable, false);
         await submit([ids[1]]); assert.equal((await queue.status()).tasks.syncsRemaining, 2, 'Append preserves running Export');
         assert.equal((await queue.status()).tasks.sync.total, 2, 'Appending grows Export progress without counting Commits');
-        await queue.cancel([ids[0]]); gate = undefined; await idle();
+        await queue.cancel([ids[0]], 'commit');
+        assert.equal((await queue.status()).exportCurrent.id, ids[0], 'Import Stop cannot cancel a Library Export');
+        await queue.cancel([ids[0]], 'sync'); gate = undefined; await idle();
         assert.equal(aborts, 1); assert.equal((await catalogue.snapshot()).shots.find(s => s.id === ids[0]).editable, true);
         assert.ok(await fs.stat(join(destination, `${outputName(ids[1])}.mp4`)), 'Unrelated appended clip completes');
         const metadataBeforeStop=await fs.readFile(metadataFile);
@@ -193,6 +195,31 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         await sync.submit(r.token,[ids[0]]);await idle();r=await review([ids[0]]);
         assert.equal(r.clips[0].outputFilename,`Camera-${ids[0][0]}__${ids[0].slice(0,12)}.mp4`,'Expanded names are reused');
         assert.equal(await fs.readFile(destinationFile,'utf8'),'another clip','A different owner is not overwritten');
+        for (const changed of [false, true]) {
+            const pausedDestination = join(root, changed ? 'pause-conflict' : 'pause-resume');
+            await fs.mkdir(pausedDestination);
+            const { token } = await sync.choose(pausedDestination);
+            const pausedReview = await sync.preview([ids[0]], token);
+            const proxyStarted = new Promise(resolve => { entered = resolve; });
+            gate = true; holdProxy = true;
+            await sync.submit(pausedReview.token, [ids[0]]); await proxyStarted;
+            await queue.controlQueue('sync', true);
+            gate = undefined; holdProxy = false;
+            const source = join(pausedDestination, `${outputName(ids[0])}.mp4`);
+            const csv = join(pausedDestination, '_metadata.csv');
+            assert.deepEqual(await fs.readFile(source), original.get(`${ids[0]}.source.mp4`));
+            await assert.rejects(fs.stat(csv), { code: 'ENOENT' });
+            if (changed) await fs.writeFile(source, 'External destination edit');
+            await queue.controlQueue('sync', false);
+            await idle();
+            if (changed) {
+                assert.match((await queue.status()).errors.at(-1).message, /Destination files changed/);
+                assert.equal(await fs.readFile(source, 'utf8'), 'External destination edit');
+                await assert.rejects(fs.stat(csv), { code: 'ENOENT' });
+            } else {
+                assert.equal((await parseCSV(csv)).length, 1, 'Resume publishes CSV after the remaining media');
+            }
+        }
         const largeSource=join(root,'large-source.mp4');await fs.writeFile(largeSource,Buffer.alloc(2*1024*1024,37));
         const largeFingerprint=await fingerprints.identify(largeSource,new AbortController().signal);
         assert.equal(await readExportOwner(largeSource),largeFingerprint.value,'Export ownership uses the same sampled fingerprint for large files');

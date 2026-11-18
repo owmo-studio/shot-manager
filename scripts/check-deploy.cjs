@@ -4,15 +4,15 @@ const fs = require('node:fs');
 const child = require('node:child_process');
 const { join, basename, dirname } = require('node:path');
 const root = fs.mkdtempSync(join(require('node:os').tmpdir(), 'owmo-deploy-check-'));
-const name = 'OWMO Shot Manager.app', source = join(root, 'build', name), applications = join(root, 'Applications'), target = join(applications, name);
+const name = 'Shot Manager.app', source = join(root, 'build', name), applications = join(root, 'Applications'), target = join(applications, name);
 const originalExec = child.execFileSync, originalRename = fs.renameSync;
-let running = false, invalidSignature = false, failPromotion = false;
+let runningPath, invalidSignature = false, failPromotion = false;
 try {
     fs.mkdirSync(join(source, 'Contents'), { recursive: true }); fs.mkdirSync(applications);
     fs.writeFileSync(join(source, 'Contents/Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.owmo.shot-manager</string></dict></plist>');
     fs.writeFileSync(join(source, 'Contents/version'), 'new');
     child.execFileSync = (command, args, options) => {
-        if (command === '/bin/ps') return running ? `${target}/Contents/MacOS/OWMO Shot Manager` : '';
+        if (command === '/bin/ps') return runningPath ? `${runningPath}/Contents/MacOS/Shot Manager` : '';
         if (command === '/usr/bin/ditto') { fs.cpSync(args[0], args[1], { recursive: true }); return; }
         if (command === '/usr/bin/codesign') { if (invalidSignature) throw new Error('Invalid signature'); return; }
         return originalExec(command, args, options);
@@ -28,7 +28,11 @@ try {
     deployMac(source, applications);
     assert.equal(fs.readFileSync(join(target, 'Contents/version'), 'utf8'), 'new');
     fs.writeFileSync(join(target, 'Contents/version'), 'old');
-    running = true; assert.throws(() => deployMac(source, applications), /Quit OWMO/); running = false;
+    for (const path of [target, join(applications, 'OWMO Shot Manager.app')]) {
+        runningPath = path;
+        assert.throws(() => deployMac(source, applications), /Quit Shot Manager/);
+    }
+    runningPath = undefined;
     invalidSignature = true; assert.throws(() => deployMac(source, applications), /Invalid signature/); invalidSignature = false;
     assert.equal(fs.readFileSync(join(target, 'Contents/version'), 'utf8'), 'old');
     failPromotion = true; assert.throws(() => deployMac(source, applications), /replacement failure/);

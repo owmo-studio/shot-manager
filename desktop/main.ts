@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, protocol, shell, utilityProcess } from 'electron'
 import type { IpcMainInvokeEvent, UtilityProcess } from 'electron'
 import { randomBytes } from 'node:crypto'
+import { isWorkQueue } from '../shared/ingestion'
 import { existsSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { mkdir, realpath } from 'node:fs/promises'
@@ -17,6 +18,11 @@ import { requestBackend } from './backendRequest'
 import { AppError, errorDetails } from '../shared/errors'
 import type { ApplicationStatus, BackendHealth, BackendStatus } from '../shared/desktop'
 import type { WorkspaceRestore } from '../shared/shots'
+
+// Keep Electron's existing profile path when changing its display name.
+const profilePath = app.getPath('userData')
+app.setName('Shot Manager')
+app.setPath('userData', profilePath)
 
 let mainWindow: BrowserWindow | null = null
 let backend: UtilityProcess | null = null
@@ -144,7 +150,7 @@ function createWindow() {
     height: 1080,
     minWidth: 1100,
     minHeight: 560,
-    title: 'OWMO Shot Manager',
+    title: 'Shot Manager',
     backgroundColor: '#111318',
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
@@ -191,12 +197,13 @@ if (!app.requestSingleInstanceLock()) {
       if (!Array.isArray(value) || !value.length || value.length > 1000 || value.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id))) throw new Error('Invalid commit selection')
       return [...new Set(value)]
     }
-    handle('workspace:cancel', async (event, value: unknown) => {
+    handle('workspace:cancel', async (event, value: unknown, kind: unknown = 'commit') => {
       requireMainWindow(event)
       const shotIds = validateIngestIds(value)
+      if (kind !== 'commit' && kind !== 'sync') throw new Error('Invalid transfer selection.')
       await flushDrafts()
       return organizationWrites.run(() => backendRequest('/api/workspace/cancel', {
-        method: 'POST', body: JSON.stringify({ shotIds })
+        method: 'POST', body: JSON.stringify({ shotIds, kind })
       }))
     })
     handle('workspace:eject', async (event, value: unknown) => {
@@ -268,7 +275,12 @@ if (!app.requestSingleInstanceLock()) {
       await flushDrafts()
       return organizationWrites.run(() => backendRequest(`/api/library/${id}/thumbnail`, { method: 'PUT', body: JSON.stringify({ dataUrl }) }))
     })
-    handle('ingestion:refresh-library', event => { requireMainWindow(event); return backendRequest('/api/work/refresh', { method: 'POST' }) })
+    handle('ingestion:refresh-library', event => { requireMainWindow(event); return backendRequest('/api/ingestion/library/refresh', { method: 'POST' }) })
+    handle('work:control-queue', (event, queue: unknown, pause: unknown) => {
+      requireMainWindow(event)
+      if (!isWorkQueue(queue) || typeof pause !== 'boolean') throw new Error('Invalid queue control.')
+      return backendRequest('/api/work/queue', { method: 'POST', body: JSON.stringify({ queue, pause }) })
+    })
     handle('ingestion:review', async (event, value: unknown, includeSynced: unknown = false) => {
       requireMainWindow(event)
       const shotIds = validateIngestIds(value)

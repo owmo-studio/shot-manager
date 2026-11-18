@@ -26,6 +26,7 @@ import type { StorageRetryInfo } from './storageRecovery';
 
 interface CatalogueEntry { metadata: LibraryMetadata; source: string | null; thumbnail: boolean; proxy: boolean; thumbnailRevision?: number; thumbnailDigest?: string }
 interface CatalogueState { path: string | null; refreshedAt?: string; entries: CatalogueEntry[] }
+interface CommitAttempt { metadataIdentity?: string; thumbnail?: { identity: string | null; transferred: boolean } }
 
 export class LibraryCatalogue {
     private state: CatalogueState = { path: null, entries: [] };
@@ -402,17 +403,19 @@ export class LibraryCatalogue {
         await this.queue.status();
         if (review.generation !== this.queue.workRevision) throw new Error('Work was stopped. Commit again when ready.');
         const storageWait = await this.configuredStorageWait();
-        const result = this.queue.enqueueLibrary(captures.map(capture => ({
-            ...capture,
-            kind: capture.thumbnail ? 'commit' as const : 'metadata' as const,
-            execute: (signal, progress) => this.commit(capture, review.location, signal, progress, storageWait),
-        })), token);
+        const result = this.queue.enqueueLibrary(captures.map(capture => {
+            const attempt: CommitAttempt = {};
+            return { ...capture, kind: capture.thumbnail ? 'commit' as const : 'metadata' as const,
+                execute: (signal, progress) => this.commit(capture, review.location, signal, progress, storageWait, attempt) };
+        }), token);
         this.review = undefined; this.changed(); return result;
     }
-    private async commit(capture: { id: string; attributes: ReturnType<typeof ingestAttributes>; thumbnail?: Buffer }, location: LibraryLocation, signal: AbortSignal, progress: (percent: number) => void, configuredWait: number) {
+    private async commit(capture: { id: string; attributes: ReturnType<typeof ingestAttributes>; thumbnail?: Buffer }, location: LibraryLocation, signal: AbortSignal, progress: (percent: number) => void, configuredWait: number, attempt: CommitAttempt = {}) {
         const { id, attributes } = capture;
         signal.throwIfAborted(); await this.validateLocation(location, signal, configuredWait);
         const { metadata, identity } = await readLibraryMetadata(location, id);
+        if (attempt.metadataIdentity && identity !== attempt.metadataIdentity) throw new Error('Library metadata changed during Commit. Review again.');
+        attempt.metadataIdentity = identity;
         const thumbnail = capture.thumbnail ?? (await readLibraryAsset(location, id, 'thumb', 'jpg', 2 * 1024 * 1024)).bytes;
         const digest = createHash('sha256').update(thumbnail).digest('hex');
         const updated = { ...metadata, ...attributes };
@@ -423,12 +426,17 @@ export class LibraryCatalogue {
             signal.throwIfAborted();
             if (staging && capture.thumbnail) {
                 const target = join(location.path, libraryAssetName(id, 'thumb', 'jpg'));
-                const expected = await libraryFileIdentity(target);
+                const previous = attempt.thumbnail ??= { identity: await libraryFileIdentity(target), transferred: false };
                 const staged = join(staging, libraryAssetName(id, 'thumb', 'jpg'));
                 await writeFile(staged, capture.thumbnail, { flag: 'wx', mode: 0o600 });
                 await this.validateLocation(location, signal, configuredWait); signal.throwIfAborted();
-                if (await libraryFileIdentity(target) !== expected) throw new Error('Library thumbnail changed during Commit. Commit again.');
-                await this.transfer(staged, target, signal, percent => progress(Math.min(99, percent)), true);
+                if (await libraryFileIdentity(target) !== previous.identity) throw new Error('Library thumbnail changed during Commit. Review again.');
+                if (!previous.transferred) {
+                    await this.transfer(staged, target, signal, percent => progress(Math.min(99, percent)), true);
+                    await this.validateLocation(location, undefined, configuredWait);
+                    previous.identity = await libraryFileIdentity(target);
+                    previous.transferred = true;
+                }
             }
             await this.validateLocation(location, signal, configuredWait);
             signal.throwIfAborted();

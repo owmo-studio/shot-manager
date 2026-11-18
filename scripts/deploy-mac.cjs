@@ -2,7 +2,8 @@ const { execFileSync } = require('node:child_process');
 const { lstatSync, mkdtempSync, renameSync, rmSync } = require('node:fs');
 const { join, resolve } = require('node:path');
 
-const name = 'OWMO Shot Manager.app';
+const name = 'Shot Manager.app';
+const previousName = 'OWMO Shot Manager.app';
 function validateBundle(path) {
     const info = lstatSync(path, { throwIfNoEntry: false });
     if (!info) throw new Error(`Application not found: ${path}. Run npm run package first.`);
@@ -12,7 +13,10 @@ function validateBundle(path) {
 }
 function assertStopped(target) {
     const commands = execFileSync('/bin/ps', ['-axo', 'args='], { encoding: 'utf8' });
-    if (commands.includes(`${target}/Contents/`)) throw new Error('Quit OWMO Shot Manager, then run npm run deploy again.');
+    const previous = join(target, '..', previousName);
+    if ([target, previous].some(path => commands.includes(`${path}/Contents/`))) {
+        throw new Error('Quit Shot Manager, then run npm run deploy again.');
+    }
 }
 
 function deployMac(source, applications = '/Applications') {

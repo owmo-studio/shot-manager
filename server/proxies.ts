@@ -14,6 +14,7 @@ import { rename } from 'node:fs/promises';
 export const scratchFolder = 'Shot Manager Cache';
 export const minimumFreeBytes = 512 * 1024 * 1024;
 const priorityInterruption = Symbol('commit-priority');
+const pauseInterruption = Symbol('pause proxy queue');
 type Scratch = { location: LibraryLocation; directory: string };
 export type ProxyAsset = { path: string; identity: string; bytes: number; scratch: Scratch };
 
@@ -88,6 +89,7 @@ export class ProxyQueue {
     onChange?: () => void;
     onError?: (shot: VideoShot, message: string) => void;
     private paused = false;
+    private retainPending = false;
     private closed = false;
     private timer?: ReturnType<typeof setTimeout>;
     private reconciling = false;
@@ -162,7 +164,7 @@ export class ProxyQueue {
                 else if (this.ready.has(shot.id)) this.scanner.setProxy(shot.id, 'ready', undefined, undefined, 'cache');
                 else if (this.failed.has(shot.id)) this.scanner.setProxy(shot.id, 'failed', undefined, this.failed.get(shot.id));
                 else if (library === null) this.scanner.setProxy(shot.id, 'unverified');
-                else if (this.paused || !this.scratch || !shot.available || (shot.organization?.skipped && !this.priority.has(shot.id))) this.scanner.setProxy(shot.id, 'missing');
+                else if ((this.paused && !this.retainPending) || !this.scratch || !shot.available || (shot.organization?.skipped && !this.priority.has(shot.id))) this.scanner.setProxy(shot.id, 'missing');
                 else { this.scanner.setProxy(shot.id, 'queued'); candidates.push(shot); }
             }
             this.queued = candidates.length;
@@ -192,7 +194,7 @@ export class ProxyQueue {
         try {
             await this.validateScratch(scratch);
             const free = await statfs(scratch.directory);
-            if (free.bavail * free.bsize < minimumFreeBytes) throw new Error('Cache drive is low on free space. Free space, then Refresh to resume.');
+            if (free.bavail * free.bsize < minimumFreeBytes) throw new Error('Cache drive is low on free space. Free space, then resume Proxies.');
             const input = await this.scanner.proxyInput(shot.id);
             signal.throwIfAborted();
             if (await libraryFileIdentity(destination)) { this.ready.set(shot.id, destination); return; }
@@ -215,10 +217,13 @@ export class ProxyQueue {
             this.scanner.setProxy(shot.id, 'ready', undefined, undefined, 'cache');
         } catch (error) {
             if (!signal.aborted || spaceError) {
-                const message = spaceError ? 'Cache drive is low on free space. Free space, then Refresh to resume.' : error instanceof Error ? error.message : 'Proxy generation failed.';
+                const message = spaceError ? 'Cache drive is low on free space. Free space, then resume Proxies.' : error instanceof Error ? error.message : 'Proxy generation failed.';
                 if (spaceError || message.includes('low on free space')) { this.paused = true; this.error = message; }
                 this.failed.set(shot.id, message); this.scanner.setProxy(shot.id, 'failed', undefined, message); this.onError?.(shot, message);
-            } else this.scanner.setProxy(shot.id, signal.reason === priorityInterruption && !this.paused && !this.closed ? 'queued' : 'missing');
+            } else {
+                const retry = signal.reason === pauseInterruption || signal.reason === priorityInterruption && !this.paused && !this.closed;
+                this.scanner.setProxy(shot.id, retry ? 'queued' : 'missing', retry ? 0 : undefined);
+            }
         } finally {
             clearInterval(monitor);
             // Never unlink through a missing/replaced mount or directory.
@@ -240,7 +245,10 @@ export class ProxyQueue {
     async checkConfiguration(ids: string[]) {
         if (ids.some(id => this.scanner.libraryProxy(id) !== true)) await inspectScratch(await this.configuration(), this.scanner.mediaDirectories());
     }
-    readyFor(id: string) { return this.scanner.libraryProxy(id) === true || this.ready.has(id) || this.failed.has(id) || !!this.error; }
+    readyFor(id: string) {
+        return this.scanner.libraryProxy(id) === true || this.ready.has(id) ||
+            (!this.retainPending && (this.failed.has(id) || !!this.error));
+    }
     async asset(id: string): Promise<ProxyAsset | null> {
         if (this.scanner.libraryProxy(id) === true) return null;
         if (this.failed.has(id)) throw new Error(this.failed.get(id));
@@ -276,8 +284,11 @@ export class ProxyQueue {
             this.listeners.add(changed); signal.addEventListener('abort', abort, { once: true });
         });
     }
-    async stop() {
-        this.paused = true; this.priority.clear(); this.queued = 0; this.current?.controller.abort();
+    async stop(retainPending = false) {
+        this.paused = true;
+        this.retainPending ||= retainPending;
+        if (!this.retainPending) { this.priority.clear(); this.queued = 0; }
+        if (!this.current?.finishing) this.current?.controller.abort(retainPending ? pauseInterruption : undefined);
         await this.current?.run;
         this.schedule(); this.changed();
     }
@@ -289,6 +300,6 @@ export class ProxyQueue {
         await current?.run;
         this.changed(); this.schedule();
     }
-    resume() { this.paused = false; this.failed.clear(); this.error = undefined; this.scratchKey = ''; this.schedule(); this.changed(); }
+    resume() { this.paused = false; this.retainPending = false; this.failed.clear(); this.error = undefined; this.scratchKey = ''; this.schedule(); this.changed(); }
     async close() { await this.stop(); this.closed = true; clearTimeout(this.timer); }
 }

@@ -64,6 +64,15 @@ if (!process.versions.electron) {
     let holdCatalogueRefresh = false, releaseCatalogueRefresh;
     global.fetch = async (url, options) => {
         if (String(url).endsWith("/api/ingestion") && (!options?.method || options.method === "GET")) ingestReads++;
+        if (statusOverride && String(url).endsWith('/api/work/queue')) {
+            const { queue, pause } = JSON.parse(options.body);
+            statusOverride = { ...statusOverride, revision: statusOverride.revision + 1,
+                pausedQueues: { ...statusOverride.pausedQueues, [queue]: pause },
+                ...(queue === 'commit' && pause ? { current: undefined } : {}),
+            };
+            backend.emit('message', { type: 'ingestion:changed', status: statusOverride });
+            return Response.json(statusOverride);
+        }
         if (String(url).endsWith('/api/library/refresh') && options?.method === 'POST') {
             catalogueRefreshes++;
             if (holdCatalogueRefresh) {
@@ -81,29 +90,6 @@ if (!process.versions.electron) {
                 status: 200,
                 headers: { "Content-Type": "application/json" },
             });
-        if (
-            statusOverride &&
-            ["/api/work/stop", "/api/work/refresh"].some((path) => String(url).endsWith(path))
-        ) {
-            const all = String(url).endsWith("/api/work/stop"),
-                refresh = String(url).endsWith("/api/work/refresh");
-            statusOverride = {
-                ...statusOverride,
-                revision: statusOverride.revision + 1,
-                active: false,
-                current: undefined,
-                exportCurrent: undefined,
-                tasks: { completed: 0, total: 0, percent: 0, proxiesRemaining: 0, transfersRemaining: 0 },
-                work: {
-                    paused: all,
-                    busy: !all && !refresh,
-                    encoding: !all && !refresh,
-                    queued: 0,
-                    scratchPath: join(root, "scratch"),
-                },
-            };
-            backend.emit("message", { type: "ingestion:changed", status: statusOverride });
-        }
         return result;
     };
     const originalLoad = require("node:module")._load;
@@ -333,7 +319,7 @@ if (!process.versions.electron) {
             assert.equal(importGrouping.group,'TH01-T02');assert.equal(importGrouping.camera,'A');
             await js(`window.desktop.updateOrganization([${JSON.stringify(cardIds[0].replace('shot-',''))}],{field:'all',operation:'clear',value:''})`);
             await until(()=>js(`document.querySelector('[aria-label="Group"]').value===''&&document.querySelector('[aria-label="Camera"]').value===''&&document.querySelector('[aria-label="Quality"]').value===''`),'Clear resets grouping controls');
-            assert.equal(await js(`Array.from(document.querySelectorAll('#clip-inspector header button, #clip-inspector header input')).map(el=>el.getAttribute('aria-label')).join(',')`),'Set current frame as thumbnail,Skip selected clips,Eject selected clip','Import icon button order');
+            assert.equal(await js(`Array.from(document.querySelectorAll('#clip-inspector header button, #clip-inspector header input')).map(el=>el.getAttribute('aria-label')).join(',')`),'Set current frame as thumbnail,Skip selected clips,Stop selected clips,Eject selected clip','Import icon button order');
             await until(() => js(`document.querySelector('footer').textContent.includes('1 clip selected')`), 'Footer identifies selected Commit scope');
             await click('Commit');
             await until(() => js(`document.querySelectorAll('dialog [data-review-included]').length===1`), 'Only selected clip enters review');
@@ -454,7 +440,8 @@ if (!process.versions.electron) {
             await js(`(async()=>{ await window.desktop.updateLibraryOrganization(['${publishedId}'],{field:'notes',operation:'set',value:''}); const r=await window.desktop.reviewLibraryCommit(['${publishedId}']); await window.desktop.startLibraryCommit(r.token,['${publishedId}']); })()`);
             await until(async()=>!(await js('window.desktop.getIngestStatus()')).active,'Library reset Commit');
             await until(()=>js(`!document.querySelector('[data-shot-status="changes-pending"]')`),'Reset Library draft settles');
-            assert.equal(await js(`Array.from(document.querySelectorAll('#clip-inspector header button')).map(el=>el.getAttribute('aria-label')).join(',')`),'Set current frame as thumbnail,Export,Delete','Library icon button order');
+            assert.equal(await js(`Array.from(document.querySelectorAll('#clip-inspector header button')).map(el=>el.getAttribute('aria-label')).join(',')`),'Set current frame as thumbnail,Export,Stop selected clips,Delete','Library icon button order');
+            assert.ok(await js(`document.querySelector('#clip-inspector [aria-label^="Stop selected"]').disabled`),'Library Stop is disabled for idle clips');
             assert.equal(await js(`document.querySelector('#clip-inspector button[aria-label="Delete"]').disabled`),false,'Delete is enabled for editable Library clips');
             await click('Export');
             await until(()=>js(`document.querySelectorAll('[data-sync-included]').length===1 && document.querySelector('dialog[open]')?.textContent.includes(${JSON.stringify(join(root,'destination'))})`),'Export reviews selected Library clip and native-picked destination');
@@ -494,7 +481,22 @@ if (!process.versions.electron) {
             await until(()=>js(`document.querySelector('#clip-inspector h2')?.textContent==='2 Selected Clips'`),'Library multi-selection inspector');
             await click('Export');
             await until(()=>js(`document.querySelectorAll('dialog [data-sync-included]').length===2 && Array.from(document.querySelectorAll('dialog button')).find(el=>el.textContent.trim()==='Export')?.disabled===false`),'Export includes the full explicit multi-selection');
-            await click('Cancel');
+            await js("window.desktop.controlQueue('sync', true)");
+            await click('Export');
+            await until(()=>js(`!document.querySelector('dialog[open]') && !!document.querySelector('#clip-inspector [aria-label="Stop selected clips"]:enabled')`),'Bulk Stop is available for queued Exports');
+            await js(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
+            await js(`document.getElementById('shot-${publishedId}').click()`);
+            await click('Stop selected clip');
+            await until(()=>js(`document.querySelector('#stop-title')?.textContent==='Stop Export?'`),'Inspector confirms the selected Export');
+            await click('Confirm stop clips');
+            await until(()=>js(`!document.querySelector('dialog[open]') && document.querySelector('#clip-inspector [aria-label^="Stop selected"]').disabled`),'Stopped Export stays selected and unlocks');
+            assert.equal((await js('window.desktop.getIngestStatus()')).tasks.syncsRemaining, 1,'Stopping one Export leaves the other queued');
+            await js(`document.getElementById('shot-${syncSecondId}').click()`);
+            await click('Stop selected clip');
+            await click('Confirm stop clips');
+            await until(async()=>!(await js('window.desktop.getIngestStatus()')).active,'Removing the last paused Export clears active status');
+            await js("window.desktop.controlQueue('sync', false)");
+            assert.equal(await js(`document.querySelectorAll('[data-shot-card]').length`),2,'Inspector Stop keeps Library clips');
             for(const role of ['source.mp4','proxy.mov','thumb.jpg','metadata.json']) fs.unlinkSync(join(root,'library',`${syncSecondId}.${role}`));
             await js('window.desktop.refreshCatalogue()');
             await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===1`),'Temporary Library row removed');
@@ -575,7 +577,7 @@ if (!process.versions.electron) {
             );
             // A missing configured folder is a critical Library issue, not a raw filesystem failure.
             fs.renameSync(join(root, "library"), join(root, "library-offline"));
-            await js(`document.querySelector('header button[aria-label="Refresh assets"]').click()`);
+            await click('Refresh Library');
             await until(
                 () => js(`document.querySelector('dialog[open] h2')?.textContent==='Library unavailable'`),
                 "Missing Library did not show a focused refresh error",
@@ -587,7 +589,7 @@ if (!process.versions.electron) {
             );
             await click("Dismiss");
             fs.renameSync(join(root, "library-offline"), join(root, "library"));
-            await js(`document.querySelector('header button[aria-label="Refresh assets"]').click()`);
+            await click('Refresh Library');
             await until(
                 () => js(`document.querySelector('[data-application-level="ready"]')?.textContent==='Ready'`),
                 "Restored Library did not recover app status",
@@ -595,7 +597,8 @@ if (!process.versions.electron) {
             // Externally deleted dummy Library files must become New on an explicit refresh.
             for (const suffix of ["source.mp4", "thumb.jpg", "metadata.json"])
                 fs.unlinkSync(join(root, "library", `${ingested.id}.${suffix}`));
-            await js(`document.querySelector('header button[aria-label="Refresh assets"]').click()`);
+            await until(()=>js(`!document.querySelector('header [aria-label="Refresh Library"]').disabled`),'Library refresh settles after reconnect');
+            await click('Refresh Library');
             await until(
                 () =>
                     js(
@@ -730,7 +733,7 @@ if (!process.versions.electron) {
                 join(root, "library", `${unprocessed.id}.thumb.jpg`),
             );
             await fs.promises.writeFile(join(root, "library", `${unprocessed.id}.metadata.json`), "{}");
-            await js(`document.querySelector('header button[aria-label="Refresh assets"]').click()`);
+            await click('Refresh Library');
             await until(
                 () =>
                     js(
@@ -821,7 +824,10 @@ if (!process.versions.electron) {
             await until(() => js(`!!document.querySelector('[data-proxy-location="cache"]')`), "Local proxy indicator missing");
             assert.equal(await js(`document.querySelector('[data-proxy-location="cache"]').classList.contains('bg-yellow-400')`), true, "Local proxy is yellow");
             assert.equal(await js(`(() => { const indicator=document.querySelector('[data-shot-status="processing"] [data-proxy-state]'); return indicator.dataset.readinessWorking==='true' && getComputedStyle(indicator).animationName==='spin'; })()`), true, "Active work displays a small readiness spinner");
-            const currentStatus = await js("window.desktop.getIngestStatus()");
+            const pausedExport = await js("window.desktop.controlQueue('sync', true)");
+            assert.equal(pausedExport.pausedQueues.sync, true, 'Queue pause crosses the real preload and backend');
+            const currentStatus = await js("window.desktop.controlQueue('sync', false)");
+            assert.equal(currentStatus.pausedQueues.sync, false, 'Queue resume crosses the real preload and backend');
             statusOverride = {
                 revision: currentStatus.revision + 1000,
                 completed: 1,
@@ -918,48 +924,21 @@ if (!process.versions.electron) {
                 "/tmp/owmo-ingest-progress-narrow.png",
                 (await window.webContents.capturePage()).toPNG(),
             );
-            assert.ok(
-                await js(`!!document.querySelector('header [aria-label="Stop processing"]')`),
-                "Footer offers Stop during transfers",
-            );
-            assert.equal(await js(`!!document.querySelector('[data-work-progress] button')`),false,'Work control is in the toolbar, not the footer');
-            await js(`document.querySelector('header [aria-label="Stop processing"]').click()`);
-            await until(
-                () =>
-                    js(
-                        `document.querySelector('dialog[open] #ingest-dialog-title')?.textContent==='Stop Processing?'`,
-                    ),
-                "Stop-all confirmation missing",
-            );
-            await click("Cancel");
-            assert.equal(await js(`document.querySelector('dialog[open]')===null && !!document.querySelector('header [aria-label="Stop processing"]')`), true, 'Cancel preserves active work');
-            await js(`document.querySelector('header [aria-label="Stop processing"]').click()`);
-            await click("Stop");
-            await until(
-                () =>
-                    js(
-                        `!document.querySelector('dialog[open]') && !!document.querySelector('header [aria-label="Refresh assets"]')`,
-                    ),
-                "Footer did not return to Refresh after stopping",
-            );
-            assert.equal(
-                await js(`document.querySelector('[data-work-progress]')?.getAttribute('aria-label')`),
-                '0 proxies, 0 commits, 0 exports',
-                "Idle footer retains all three task sections",
-            );
-            statusOverride={...statusOverride,revision:statusOverride.revision+1,work:{...statusOverride.work,busy:true,encoding:false,queued:0}};
-            backend.emit('message',{type:'ingestion:changed',status:statusOverride});
-            await until(()=>js(`!!document.querySelector('header [aria-label="Refresh assets"]') && !document.querySelector('header [aria-label="Stop processing"]')`),'Thumbnail-only activity cannot be stopped from the footer');
-            await js(`document.querySelector('header [aria-label="Refresh assets"]').click()`);
-            await until(
-                () => js(`!document.querySelector('header [aria-label="Refresh assets"]').disabled`),
-                "Refresh did not finish",
-            );
-            assert.equal(
-                await js(`window.desktop.getIngestStatus().then(status => status.active)`),
-                false,
-                "Refresh never resubmits sync work",
-            );
+            assert.ok(await js(`!!document.querySelector('header [aria-label="Refresh Library"]:enabled') && !document.querySelector('header').querySelector('[aria-label^="Stop"]')`),
+                'Toolbar offers only Library refresh during queue work');
+            await click('Stop Commits');
+            await until(()=>js(`!!document.querySelector('[data-work-kind="commit"] [aria-label="Resume Commits"]:enabled')
+                && !!document.querySelector('[data-work-kind="proxy"] [aria-label="Stop Proxies"]')
+                && !document.querySelector('dialog[open]')`),'Commit Stop acts on its own queue without a confirmation');
+            assert.equal(await js(`document.querySelector('[data-work-progress]').getAttribute('aria-label')`),
+                '1 proxy, 2 commits, 0 exports','Pausing retains the pending count');
+            const beforeManualRefresh = catalogueRefreshes;
+            await click('Refresh Library');
+            await until(()=>catalogueRefreshes > beforeManualRefresh,'Toolbar refresh checks the catalogue from Import');
+            await until(()=>js(`!document.querySelector('header [aria-label="Refresh Library"]').disabled`),'Refresh did not finish');
+            assert.ok(await js(`!!document.querySelector('[aria-label="Resume Commits"]')`),'Library refresh preserves the paused lane');
+            await click('Resume Commits');
+            await until(()=>js(`!!document.querySelector('[aria-label="Stop Commits"]')`),'Resume reactivates the Commit lane');
             shotsOverride = undefined;
             statusOverride = undefined;
             // Clear Cache keeps the configured Library and never touches its assets or sources.
@@ -1111,6 +1090,16 @@ if (!process.versions.electron) {
             assert.equal(await js(`document.querySelector('[aria-label="Confirm delete clips"]').disabled`),false,'Restoring a row enables Delete');
             const deletedFirst=await js(`document.querySelector('[data-delete-included="true"] p').textContent`);
             await js(`document.querySelector('[aria-label="Confirm delete clips"]').click()`);
+            await until(()=>js(`document.querySelectorAll('dialog[open]').length===2 && !!document.querySelector('#delete-final-title')`),'Final confirmation opens over Delete review');
+            assert.ok(deleteIds.every(id=>fs.existsSync(join(root,'library',`${id}.metadata.json`))),'First confirmation leaves files intact');
+            await js(`document.querySelector('#delete-final-title').closest('dialog').querySelector('button').click()`);
+            await until(()=>js(`document.querySelectorAll('dialog[open]').length===1 && document.querySelector('[data-delete-included="true"] p').textContent===${JSON.stringify(deletedFirst)}`),'Final Cancel preserves reviewed exclusions');
+            await js(`document.querySelector('[aria-label="Confirm delete clips"]').click()`);
+            const confirmFinalDelete = async () => {
+                await until(()=>js(`!!document.querySelector('dialog[open] #delete-final-title')`),'Final Delete confirmation is ready');
+                await js(`[...document.querySelector('#delete-final-title').closest('dialog').querySelectorAll('button')].find(button=>button.textContent.trim()==='Yes, I Understand').click()`);
+            };
+            await confirmFinalDelete();
             await until(()=>js(`!document.querySelector('dialog[open]') && document.querySelectorAll('[data-shot-card]').length===1`),'Delete submits only included clips');
             const kept=await js(`window.desktop.getLibrary().then(value=>value.shots[0])`);
             assert.notEqual(kept.filename,deletedFirst);
@@ -1119,6 +1108,7 @@ if (!process.versions.electron) {
             await click('Delete');
             await until(()=>js(`!!document.querySelector('[aria-label="Confirm delete clips"]:not(:disabled)')`),'Remaining clip can be reviewed again');
             await js(`document.querySelector('[aria-label="Confirm delete clips"]').click()`);
+            await confirmFinalDelete();
             await until(()=>js(`!document.querySelector('dialog[open]') && document.querySelectorAll('[data-shot-card]').length===0`),'Confirmed Delete removes Library cards');
             for(const id of deleteIds) assert.ok(!fs.readdirSync(join(root,'library')).some(name=>name.startsWith(id+'.')),'Delete removes associated Library assets');
             const remainingDrafts=JSON.parse(fs.readFileSync(join(root,'profile','Shot Manager Cache','metadata.json'),'utf8')).drafts;
@@ -1132,7 +1122,7 @@ if (!process.versions.electron) {
             await fs.promises.writeFile(join(root, "validated"), "passed");
             clearTimeout(timer);
             console.log(
-                "PASS: native Resolve Export layout/JSON/CSV, destination/review/exclusion, pending-edit protection and multi-selection, inspector button order and confirmed multi-clip Delete, Library Thumb capture/Commit/Revert, media preservation, browsing/playback, independent filters, shared Commit, Import retirement/rediscovery, Cache/configuration, ingestion, notifications and unified Stop.",
+                "PASS: Resolve export, Library editing and deletion, independent filters, startup catalogue refresh, Import retirement, Cache, notifications, and independent queue controls.",
             );
             app.quit();
         } catch (error) {

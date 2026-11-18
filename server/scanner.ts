@@ -278,6 +278,11 @@ export class ShotScanner {
         this.ingestLocks.set(id, "processing");
         this.publish();
     }
+    requeueIngest(id: string) {
+        this.ingestLocks.set(id, 'queued');
+        this.transferProgress.delete(id);
+        this.publish();
+    }
     unlockIngest(ids: string[]) {
         ids.forEach((id) => {
             this.ingestLocks.delete(id);

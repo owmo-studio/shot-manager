@@ -1,4 +1,4 @@
-import type { IngestReview, IngestStatus } from './ingestion'
+import type { IngestReview, IngestStatus, StoppableTransfer, WorkQueue } from './ingestion'
 import type { DiscoveryRequest, ShotChange, ShotCollection, ShotDetails } from './shots'
 import type { ViewingLut } from './viewing'
 import type { OptionRemovalPlan, OrganizationAction, TagVocabulary } from './organization'
@@ -79,6 +79,7 @@ export interface DesktopAPI {
   getLibraryLut: DesktopAPI['getShotLut']
   getIngestStatus: () => Promise<IngestStatus>
   refreshLibrary: () => Promise<IngestStatus>
+  controlQueue: (queue: WorkQueue, pause: boolean) => Promise<IngestStatus>
   onIngestChanged: (listener: (status: IngestStatus) => void) => () => void
   reviewIngest: (shotIds: string[], includeSynced?: boolean) => Promise<IngestReview>
   startIngest: (token: string, shotIds: string[]) => Promise<IngestStatus>
@@ -107,7 +108,7 @@ export interface DesktopAPI {
   chooseClips: () => Promise<DiscoveryRequest | null>
   addDroppedClips: (file: File) => Promise<DiscoveryRequest>
   getShots: () => Promise<ShotCollection>
-  cancelClips: (shotIds: string[]) => Promise<ShotCollection>
+  cancelClips: (shotIds: string[], kind?: StoppableTransfer) => Promise<ShotCollection>
   ejectClips: (shotIds: string[]) => Promise<ShotCollection>
   onShotsChanged: (listener: (change: ShotChange) => void) => () => void
   getShotThumbnail: (id: string) => Promise<string | null>

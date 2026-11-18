@@ -251,10 +251,11 @@ export function Configuration({ workControlRef }: { workControlRef?: Ref<HTMLDiv
                     }}
                     className="m-auto max-h-[calc(100vh-48px)] w-[720px] max-w-[calc(100vw-48px)] overflow-y-auto rounded-2xl border border-white/10 bg-[#1b2029] p-6 text-zinc-200 shadow-2xl backdrop:bg-black/60"
                 >
-                    <div className="flex items-center justify-between">
-                        <h2 id="configuration-title" className="text-lg font-medium">
-                            Configuration
-                        </h2>
+                    <div className="flex items-start justify-between">
+                        <div>
+                            <h2 id="configuration-title" className="text-lg font-medium">Configuration</h2>
+                            <p aria-label="Application version" className="mt-1 text-xs text-zinc-400">{__APP_VERSION__}</p>
+                        </div>
                         <button
                             autoFocus
                             disabled={!!busy}
@@ -287,7 +288,7 @@ export function Configuration({ workControlRef }: { workControlRef?: Ref<HTMLDiv
                                           ? "Library Not Configured"
                                           : "Loading…")}
                             </p>
-                            {(libraryChoice || configuration?.libraryPath) && (
+                            {!clearLibrary && (libraryChoice || configuration?.libraryPath) && (
                                 <button
                                     type="button"
                                     aria-label="Clear Library location"
@@ -298,9 +299,9 @@ export function Configuration({ workControlRef }: { workControlRef?: Ref<HTMLDiv
                                         setLibraryChoice(null);
                                         setLibraryError(null);
                                     }}
-                                    className="grid size-6 shrink-0 place-items-center rounded text-zinc-500 hover:bg-white/8 hover:text-red-300 disabled:opacity-40"
+                                    className={`shrink-0 ${buttonStyle}`}
                                 >
-                                    ×
+                                    Clear
                                 </button>
                             )}
                         </div>

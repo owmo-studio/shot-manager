@@ -1,4 +1,4 @@
-# OWMO Shot Manager
+# Shot Manager
 
 A single-user macOS app for reviewing footage, editing clip metadata, committing media to a NAS Library, and exporting selected clips for DaVinci Resolve.
 
@@ -13,7 +13,7 @@ npm run package          # Build the .app for this Mac
 npm run deploy           # Copy the existing build to /Applications
 ```
 
-`npm run deploy` installs the existing `release/mac-arm64/OWMO Shot Manager.app` into `/Applications` (Intel builds use `release/mac/`). Quit the installed app first. Deployment stages and verifies the new bundle before replacing the previous copy; it does not rebuild or launch the app. The app includes its runtime, dependencies, icon, and [viewing LUTs](resources/luts/README.md); Node/npm are only needed for development. The version beside the title comes from `package.json`.
+`npm run deploy` installs the existing `release/mac-arm64/Shot Manager.app` into `/Applications` (Intel builds use `release/mac/`). Quit the installed app first. Deployment stages and verifies the new bundle before replacing the previous copy; it does not rebuild or launch the app. The app includes its runtime, dependencies, icon, and [viewing LUTs](resources/luts/README.md); Node/npm are only needed for development. The version shown in Configuration comes from `package.json`.
 
 `npm run build` produces `out/`; `npm start` opens that build. Generated `out/` and `release/` files are excluded from Git.
 

@@ -1,7 +1,8 @@
 import { ClipViewProvider } from "./ClipViewContext";
 import type { LibraryCollection } from "../../shared/library";
-import { hasPendingCommit } from "./clipState";
-import { AppError, errorMessage } from '../../shared/errors';
+import { canStopClip, hasPendingCommit } from "./clipState";
+import { errorMessage } from '../../shared/errors';
+import type { StoppableTransfer } from '../../shared/ingestion';
 import type { DragEvent } from "react";
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -144,18 +145,17 @@ function App() {
     const refreshFailed = useRef(false);
     const [communicationError, setCommunicationError] = useState(false);
     const [deleteTargets, setDeleteTargets] = useState<VideoShot[] | null>(null);
-    const [ejectTargets, setEjectTargets] = useState<VideoShot[] | null>(null);
-    const [ejectAction, setEjectAction] = useState<"eject" | "stop">("eject");
-    const [ejectError, setEjectError] = useState<string | null>(null);
-    const [ejectBusy, setEjectBusy] = useState(false);
-    const ejectMutation = useRef(false);
+    const [clipAction, setClipAction] = useState<{ kind: 'eject' | StoppableTransfer; shots: VideoShot[] } | null>(null);
+    const [clipActionError, setClipActionError] = useState<string | null>(null);
+    const [clipActionBusy, setClipActionBusy] = useState(false);
+    const clipActionMutation = useRef(false);
     const [unavailableDirectories, setUnavailableDirectories] = useState<DirectoryAvailability[]>([]);
     const notifiedUnavailable = useRef(new Set<string>());
     const [draggingClips, setDraggingClips] = useState(false);
     const dragDepth = useRef(0);
     const workspaceMutation = useRef(false);
     const workspaceStatus = applicationStatus(status, communicationError);
-    const canAcceptDroppedClips = workspaceLoaded && !addingClips && !ejectBusy && status.state === "connected"
+    const canAcceptDroppedClips = workspaceLoaded && !addingClips && !clipActionBusy && status.state === "connected"
         && !!status.application && workspaceStatus.level !== "error";
     const canAddClips = tab === "import" && canAcceptDroppedClips;
 
@@ -249,36 +249,43 @@ function App() {
     }
 
     function requestEject(ids: string[]) {
-        if (ejectMutation.current) return;
+        if (clipActionMutation.current) return;
         const selected = new Set(ids);
-        const targets = shotCollection.shots.filter(shot => selected.has(shot.id));
-        const queued = targets.filter(shot => hasPendingCommit(shot));
+        const targets = importCollection.shots.filter(shot => selected.has(shot.id));
         if (!targets.length) return;
-        setEjectError(null);
-        setEjectAction(queued.length ? "stop" : "eject");
-        setEjectTargets(queued.length ? queued : targets);
+        if (targets.some(hasPendingCommit)) {
+            setWorkspaceError("Stop queued or active work before ejecting the selected clips.");
+            return;
+        }
+        setClipActionError(null);
+        setClipAction({ kind: 'eject', shots: targets });
+    }
+
+    function requestStop() {
+        if (clipActionMutation.current) return;
+        const kind = tab === 'library' ? 'sync' : 'commit';
+        const shots = selectedShots.filter(shot => canStopClip(shot, kind));
+        if (!shots.length) return;
+        setClipActionError(null);
+        setClipAction({ kind, shots });
     }
 
     async function confirmClipAction() {
-        if (ejectMutation.current || !ejectTargets) return;
-        ejectMutation.current = true;
-        setEjectError(null);
-        setEjectBusy(true);
+        if (clipActionMutation.current || !clipAction) return;
+        clipActionMutation.current = true;
+        setClipActionError(null);
+        setClipActionBusy(true);
+        const { kind, shots } = clipAction;
         try {
-            const ids = ejectTargets.map(shot => shot.id);
-            receiveShots(await (ejectAction === "stop" ? window.desktop.cancelClips(ids) : window.desktop.ejectClips(ids)));
-            setEjectTargets(null);
+            const ids = shots.map(shot => shot.id);
+            const collection = kind === 'eject' ? await window.desktop.ejectClips(ids) : await window.desktop.cancelClips(ids, kind);
+            if (kind === 'sync') receiveLibrary(collection);
+            else receiveShots(collection);
+            setClipAction(null);
         } catch (error) {
-            // Eject authorization never authorizes stopping a newly queued Commit.
-            if (ejectAction === "eject" && error instanceof AppError && error.code === "CLIP_COMMIT_ACTIVE") {
-                const collection = await window.desktop.getShots().catch(() => null);
-                const queued = collection?.shots.filter(shot => ejectTargets.some(target => target.id === shot.id) &&
-                    (hasPendingCommit(shot)));
-                if (collection && queued?.length) {
-                    receiveShots(collection); setEjectAction("stop"); setEjectTargets(queued);
-                } else setEjectError("Clips changed. Cancel and review the action again.");
-            } else setEjectError(errorMessage(error, ejectAction === "stop" ? "Could not stop the selected commits." : "Could not eject the selected clips."));
-        } finally { setEjectBusy(false); ejectMutation.current = false; }
+            setClipActionError(errorMessage(error, kind === 'eject' ? "Could not eject the selected clips."
+                : kind === 'sync' ? "Could not stop the selected exports." : "Could not stop the selected commits."));
+        } finally { setClipActionBusy(false); clipActionMutation.current = false; }
     }
 
     function dragEnter(event: DragEvent<HTMLElement>) {
@@ -374,10 +381,7 @@ function App() {
         <ClipViewProvider mode={tab}><div className="flex h-screen flex-col bg-[#111318] text-sm text-zinc-200">
             <SaveStatusBanner />
             <header className="grid grid-cols-[1fr_auto_1fr] items-center gap-6 border-b border-white/8 px-6 py-4">
-                <h1 className="font-semibold tracking-tight">
-                    OWMO <span className="font-normal text-zinc-400">Shot Manager</span>
-                    <span aria-label="Application version" className="ml-2 text-xs font-normal tracking-normal text-zinc-400">{__APP_VERSION__}</span>
-                </h1>
+                <h1 className="font-semibold tracking-tight">Shot Manager</h1>
                 <nav aria-label="Workspace" className="flex gap-1 rounded-lg bg-white/4 p-1">
                     {(['import', 'library'] as const).map(view => <button key={view} type="button"
                         aria-current={tab === view ? 'page' : undefined} onClick={() => setTab(view)}
@@ -452,14 +456,14 @@ function App() {
                     {selectedShots.length > 1 ? <MultiClipInspector key={tab}
                         onOrganizationUpdated={receiveView}
                         onDelete={() => setDeleteTargets([...selectedShots])}
-                        onEject={() => requestEject(selectedShots.map(shot => shot.id))} ejectBusy={ejectBusy}
+                        onEject={() => requestEject(selectedShots.map(shot => shot.id))} onStop={requestStop} clipActionBusy={clipActionBusy}
                         shots={orderedShots(selectedShots, newestFirst)} skippedCount={selectedSkippedCount} disabled={selectedLocked}
                         width={inspectorWidth} onResize={setInspectorWidth}
                         onSkipChange={(skipped) => changeSkip(selectedShots.map((shot) => shot.id), skipped)}
                     /> : <ClipInspector
                         onOrganizationUpdated={receiveView}
                         onDelete={() => setDeleteTargets([...selectedShots])}
-                        onEject={() => requestEject(selectedShots.map(shot => shot.id))} ejectBusy={ejectBusy}
+                        onEject={() => requestEject(selectedShots.map(shot => shot.id))} onStop={requestStop} clipActionBusy={clipActionBusy}
                         key={`${tab}:${inspectedShot?.id ?? "empty"}`}
                         shot={inspectedShot}
                         width={inspectorWidth}
@@ -468,12 +472,12 @@ function App() {
                     />}
             </main>
             {deleteTargets && <LibraryDeleteDialog shots={deleteTargets} onClose={() => setDeleteTargets(null)} />}
-            {ejectTargets && <ClipActionDialog key={ejectAction} action={ejectAction} shots={ejectTargets} busy={ejectBusy} error={ejectError}
-                onCancel={() => { if (!ejectBusy) setEjectTargets(null); }}
+            {clipAction && <ClipActionDialog key={clipAction.kind} action={clipAction.kind} shots={clipAction.shots} busy={clipActionBusy} error={clipActionError}
+                onCancel={() => { if (!clipActionBusy) setClipAction(null); }}
                 onConfirm={() => void confirmClipAction()} />}
-            {!ejectTargets && skipError && <ErrorDialog title="Skip could not be saved" message={skipError} onDismiss={() => setSkipError(null)} />}
-            {!ejectTargets && !skipError && workspaceError && <ErrorDialog title="Workspace error" message={workspaceError} onDismiss={() => setWorkspaceError(null)} />}
-            {!ejectTargets && !skipError && !workspaceError && tab === 'import' && unavailableDirectories.length > 0 && <DirectoryUnavailableDialog
+            {!clipAction && skipError && <ErrorDialog title="Skip could not be saved" message={skipError} onDismiss={() => setSkipError(null)} />}
+            {!clipAction && !skipError && workspaceError && <ErrorDialog title="Workspace error" message={workspaceError} onDismiss={() => setWorkspaceError(null)} />}
+            {!clipAction && !skipError && !workspaceError && tab === 'import' && unavailableDirectories.length > 0 && <DirectoryUnavailableDialog
                 directories={unavailableDirectories} onDismiss={() => setUnavailableDirectories([])}
                 onEject={ids => { setUnavailableDirectories([]); requestEject(ids); }} />}
             <footer className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-5 border-t border-white/8 px-5 py-2.5 text-xs text-zinc-500">

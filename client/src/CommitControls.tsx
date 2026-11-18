@@ -1,12 +1,11 @@
 import { useClipView } from "./ClipViewContext";
-import { secondaryButton as button, primaryButton, dangerButton as destructiveButton } from "./buttonStyles";
+import { primaryButton } from "./buttonStyles";
 import { useState } from "react";
 import { errorMessage } from "../../shared/errors";
-import type { IngestReview, IngestStatus } from "../../shared/ingestion";
+import type { IngestReview, IngestStatus, WorkQueue } from "../../shared/ingestion";
 import type { VideoShot } from "../../shared/shots";
 import { ErrorDialog } from "./ErrorDialog";
 import { CommitReviewDialog } from "./CommitReviewDialog";
-import { ModalDialog } from "./ModalDialog";
 import { hasPendingCommit } from "./clipState";
 import { WorkActivity } from "./WorkActivity";
 
@@ -33,7 +32,7 @@ export function CommitControls({
 }) {
     const { api, mode } = useClipView();
     const [review, setReview] = useState<IngestReview | null>(null);
-    const [stopConfirm, setStopConfirm] = useState(false);
+    const [busyQueues, setBusyQueues] = useState<ReadonlySet<WorkQueue>>(new Set());
     const [refreshing, setRefreshing] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -93,18 +92,15 @@ export function CommitControls({
         }
     }
 
-    async function stop() {
-        setBusy(true);
-        setErrorTitle("Stop error");
+    async function controlQueue(queue: WorkQueue, pause: boolean) {
+        setBusyQueues(current => new Set(current).add(queue));
         try {
-            receiveStatus(await api.stopAllWork());
-            setStopConfirm(false);
-            await onRefresh();
+            receiveStatus(await api.controlQueue(queue, pause));
         } catch (reason) {
-            setStopConfirm(false);
-            setError(errorMessage(reason, "Could not stop the queue."));
+            setErrorTitle(pause ? "Stop error" : "Resume error");
+            setError(errorMessage(reason, pause ? "Could not pause the queue." : "Could not resume the queue."));
         } finally {
-            setBusy(false);
+            setBusyQueues(current => new Set([...current].filter(item => item !== queue)));
         }
     }
 
@@ -115,12 +111,12 @@ export function CommitControls({
         try {
             const next = await api.refreshLibrary();
             receiveStatus(next);
-            if (mode === "library") await api.refreshCatalogue();
+            const catalogue = await api.refreshCatalogue();
             await onRefresh();
-            if (next.libraryScan?.state === "unavailable") {
+            if (next.libraryScan?.state === "unavailable" || catalogue.error) {
                 setErrorTitle("Library unavailable");
                 setError(
-                    next.libraryScan.error ??
+                    next.libraryScan?.error ?? catalogue.error ??
                         "The configured Library folder is unavailable. Check its location in Configuration.",
                 );
             }
@@ -135,8 +131,8 @@ export function CommitControls({
     const failure = status.errors[0];
     return (
         <>
-            <WorkActivity status={status} controlTarget={workControlTarget} disabled={busy || !connected} checking={checkingLibrary || refreshing}
-                onRefresh={() => void refreshLibrary()} onStop={() => setStopConfirm(true)} />
+            <WorkActivity status={status} controlTarget={workControlTarget} disabled={!connected} checking={checkingLibrary || refreshing}
+                onRefresh={() => void refreshLibrary()} onQueueControl={(queue, pause) => void controlQueue(queue, pause)} busyQueues={busyQueues} />
             <div className="col-start-3 row-start-1 flex min-w-0 flex-wrap items-center justify-end gap-x-4 gap-y-2">
                 <span role="status" aria-label="Clip selection summary">
                     {scope.length} {scope.length === 1 ? "clip" : "clips"} {selected ? "selected" : "total"}
@@ -181,24 +177,10 @@ export function CommitControls({
                     onStart={(ids) => void start(ids)}
                 />
             )}
-            {stopConfirm && (
-                <ModalDialog titleId="ingest-dialog-title" title="Stop Processing?" width="w-[min(420px,90vw)]" busy={busy} onCancel={() => setStopConfirm(false)}>
-                    <p className="mt-3 text-sm leading-6 text-zinc-400">Stop all queued and active Commits, Exports, and proxy encoding?</p>
-                    <p className="mt-2 text-xs text-zinc-500">Thumbnails will continue. Completed work is kept.</p>
-                    <div className="mt-5 flex justify-end gap-3">
-                        <button autoFocus disabled={busy} onClick={() => setStopConfirm(false)} className={button}>
-                            Cancel
-                        </button>
-                        <button disabled={busy} onClick={() => void stop()} className={destructiveButton}>
-                            {busy ? "Stopping…" : "Stop"}
-                        </button>
-                    </div>
-                </ModalDialog>
-            )}
-            {!review && !stopConfirm && error && (
+            {!review && error && (
                 <ErrorDialog title={errorTitle} message={error} onDismiss={() => setError(null)} />
             )}
-            {!review && !stopConfirm && !error && failure && (
+            {!review && !error && failure && (
                 <ErrorDialog
                     title={failure.kind === "sync" ? "Export failed" : "Commit failed"}
                     message={`${failure.filename}: ${failure.message}`}

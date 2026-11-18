@@ -5,7 +5,7 @@ const { spawnSync, execFileSync } = require('node:child_process');
 const version = require('../package.json').version;
 if (!process.versions.electron) {
     const root = fs.realpathSync(fs.mkdtempSync(join(require('node:os').tmpdir(), 'owmo-package-check-')));
-    const bundle = resolve(process.argv[2] || `release/${process.arch === 'arm64' ? 'mac-arm64' : 'mac'}/OWMO Shot Manager.app`);
+    const bundle = resolve(process.argv[2] || `release/${process.arch === 'arm64' ? 'mac-arm64' : 'mac'}/Shot Manager.app`);
     try {
         for (const name of ['profile','library','source']) fs.mkdirSync(join(root,name));
         execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','color=c=blue:s=160x90:r=10','-t','0.3','-c:v','libx264','-pix_fmt','yuv420p',join(root,'source','sample.mp4')]);
@@ -48,6 +48,12 @@ if (!process.versions.electron) {
         const until=async(test,label)=>{for(let i=0;i<750;i++){if(await test())return;await sleep(20);}throw new Error(label);};
         const js=code=>window.webContents.executeJavaScript(code,true).catch(error=>{console.error('Failed renderer check:',code);throw error;});
         try {
+            const plist = join(resources, '..', 'Info.plist');
+            for (const key of ['CFBundleName', 'CFBundleDisplayName']) {
+                assert.equal(execFileSync('/usr/libexec/PlistBuddy', ['-c', `Print :${key}`, plist], { encoding: 'utf8' }).trim(), 'Shot Manager');
+            }
+            assert.equal(app.getName(), 'Shot Manager');
+            assert.equal(app.getPath('userData'), join(root, 'profile'));
             assert.equal(JSON.parse(fs.readFileSync(join(archive,'package.json'),'utf8')).version,version);
             assert.equal(JSON.parse(fs.readFileSync(join(archive,'package.json'),'utf8')).name,'owmo-shot-manager','Keep the existing app-data directory name');
             await until(()=>window&&!window.webContents.isLoadingMainFrame(),'Renderer did not load');
@@ -58,13 +64,19 @@ if (!process.versions.electron) {
             await until(()=>js(`document.querySelector('section[aria-label="Shot cards"] h2')?.textContent==='Library Not Configured'`),'Library must show its unconfigured placeholder');
             assert.equal(await js(`!!document.querySelector('section[aria-label="Shot cards"] [aria-label="Add clips"]')`),false,'Library placeholder has no add button');
             await js(`(async()=>{const choice=await window.desktop.chooseLibrary();await window.desktop.saveConfigurationLocations({library:choice.token});})()`);
-            await until(()=>js(`document.querySelector('[data-application-level="ready"]') && document.querySelector('header [aria-label="Application version"]')?.textContent==='${version}'`),'Ready/version missing');
+            await until(()=>js(`!!document.querySelector('[data-application-level="ready"]')`),'Ready status missing');
+            assert.equal(await js(`document.title==='Shot Manager' && document.querySelector('header h1')?.textContent==='Shot Manager'`), true);
             await js('window.desktop.refreshCatalogue()');
             await until(()=>js(`document.querySelector('section[aria-label="Shot cards"] h2')?.textContent==='Library Empty'`),'Configured empty Library must show its empty placeholder');
             assert.equal(await js(`!!document.querySelector('section[aria-label="Shot cards"] [aria-label="Add clips"]')`),false,'Empty Library has no add button');
             await js(`Array.from(document.querySelectorAll('header button')).find(button=>button.textContent==='Import').click()`);
             await js(`document.querySelector('[aria-label="Configuration"]').click()`);
             await until(()=>js(`!!document.querySelector('dialog[open] #configuration-title')`),'Configuration did not open');
+            assert.equal(await js(`document.querySelector('#configuration-title + [aria-label="Application version"]')?.textContent`), version);
+            assert.equal(await js(`document.querySelector('[aria-label="Clear Library location"]')?.textContent.trim()`), 'Clear');
+            await js(`document.querySelector('[aria-label="Clear Library location"]').click()`);
+            assert.equal(await js(`document.querySelector('[aria-label="Configured Library location"]')?.textContent.trim()`), 'Clears on Save');
+            assert.equal((await js('window.desktop.getConfiguration()')).libraryPath, join(root, 'library'));
             assert.equal(await js(`Array.from(document.querySelectorAll('dialog[open] h2, dialog[open] p, dialog[open] span')).every(el=>getComputedStyle(el).userSelect==='none')`),true,'Dialog labels and paths cannot be selected');
             const heading=await js(`(()=>{window.getSelection().removeAllRanges();const r=document.getElementById('configuration-title').getBoundingClientRect();return {x:Math.round(r.left+2),end:Math.round(r.right-2),y:Math.round(r.top+r.height/2)};})()`);
             window.webContents.sendInputEvent({type:'mouseDown',x:heading.x,y:heading.y,button:'left',clickCount:1});
@@ -81,7 +93,7 @@ if (!process.versions.electron) {
             assert.equal(await js(`getComputedStyle(document.querySelector('input[aria-label="Scene"]')).userSelect`),'text','Editable text fields still allow selection');
             for(const name of ['sony-s709.cube','apple-log-rec709.cube'])assert.ok(fs.statSync(join(resources,'luts',name)).size>1000,'Real LUT files live outside ASAR');
             fs.writeFileSync(join(root,'validated'),'passed');
-            console.log('PASS: shipped renderer/preload/backend/dependencies, header version, external LUT assets, Finder PATH, thumbnail/proxy generation, and isolated app data.');
+            console.log('PASS: shipped Shot Manager bundle and title, Configuration version and Clear action, external LUTs, Finder PATH, and isolated media processing.');
             clearTimeout(timer);app.quit();
         }catch(error){console.error(error);clearTimeout(timer);backend?.kill();app.exit(1);}
     });
