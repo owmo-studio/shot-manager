@@ -630,7 +630,10 @@ if (!process.versions.electron) {
                 `Array.from(document.querySelectorAll('dialog button')).find(b=>b.textContent==='Clear Cache').click()`,
             );
             await wait(`!!document.querySelector('[aria-label="Confirm clear cache"]')`);
-            await js(`document.querySelector('[aria-label="Keep proxies"]').click()`);
+            assert.equal(await js(`document.querySelectorAll('[role="alertdialog"] input:checked').length`), 5, 'All categories start checked for deletion');
+            await js(`document.querySelectorAll('[role="alertdialog"] input:checked').forEach(input=>input.click())`);
+            assert.ok(await js(`document.querySelector('[aria-label="Confirm clear cache"]').disabled`),'Clear Cache requires a category');
+            await js(`document.querySelectorAll('[role="alertdialog"] input:not([aria-label="Delete proxies"])').forEach(input=>input.click())`);
             failReset = true;
             await click("Confirm clear cache");
             await wait(`!!document.querySelector('[role="alertdialog"] [role="alert"]')`);

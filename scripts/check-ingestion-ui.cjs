@@ -960,8 +960,8 @@ if (!process.versions.electron) {
                 () => js(`!!document.querySelector('[aria-label="Confirm clear cache"]')`),
                 "Clear Cache confirmation missing",
             );
-            await js(`document.querySelector('[aria-label="Keep proxies"]').click()`);
-            await js(`document.querySelector('[aria-label="Keep library catalogue"]').click()`);
+            await js(`document.querySelector('[aria-label="Delete proxies"]').click()`);
+            await js(`document.querySelector('[aria-label="Delete library catalogue"]').click()`);
             const beforeSelectiveClear = rendererLoads;
             const beforeStartupRefresh = catalogueRefreshes;
             holdCatalogueRefresh = true;
@@ -989,7 +989,7 @@ if (!process.versions.electron) {
             assert.equal(
                 fs.readFileSync(retainedProxy, "utf8"),
                 "synthetic cached proxy",
-                "Keep proxies preserves cached proxies",
+                "Unchecking proxies preserves cached proxies",
             );
             assert.deepEqual(
                 fs.readdirSync(join(root, "library")),
@@ -1044,7 +1044,7 @@ if (!process.versions.electron) {
             const loadsBeforeEjectedClear=rendererLoads;
             await openConfiguration(); await click("Clear Cache");
             await until(()=>js(`!!document.querySelector('[aria-label="Confirm clear cache"]')`),'Eject Cache confirmation missing');
-            await js(`document.querySelector('[aria-label="Keep metadata"]').click()`);
+            await js(`document.querySelector('[aria-label="Delete metadata"]').click()`);
             await js(`document.querySelector('[aria-label="Confirm clear cache"]').click()`);
             await until(()=>rendererLoads>loadsBeforeEjectedClear,'Cache clear after Eject did not reload');
             await until(()=>js(`document.querySelectorAll('[data-shot-card]').length===1`),'Cache clear reintroduced an ejected clip');

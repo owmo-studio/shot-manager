@@ -10,6 +10,9 @@ const cacheKinds = [
     { key: 'fingerprints', label: 'Fingerprints', detail: 'Source lookup records' },
     { key: 'proxies', label: 'Proxies', detail: 'Local encoded proxies' },
 ] as const;
+const allSelected: Required<CacheSelection> = {
+    catalogue: true, metadata: true, thumbnails: true, fingerprints: true, proxies: true,
+};
 
 export function ClearCacheButton({ disabled, onBusyChange, onReset }: {
     disabled: boolean;
@@ -17,10 +20,11 @@ export function ClearCacheButton({ disabled, onBusyChange, onReset }: {
     onReset: () => void;
 }) {
     const [open, setOpen] = useState(false);
-    const [keep, setKeep] = useState<Record<keyof CacheSelection, boolean>>({ catalogue: false, metadata: false, thumbnails: false, fingerprints: false, proxies: false });
+    const [selected, setSelected] = useState(allSelected);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const dialog = useRef<HTMLDialogElement>(null);
+    const hasSelection = cacheKinds.some(kind => selected[kind.key]);
 
     useEffect(() => {
         if (!open) return;
@@ -36,14 +40,10 @@ export function ClearCacheButton({ disabled, onBusyChange, onReset }: {
     }
 
     async function clear() {
-        if (busy || cacheKinds.every(kind => keep[kind.key])) return;
+        if (busy || !hasSelection) return;
         setBusy(true); setError(null);
         try {
-            await window.desktop.clearLocalData({
-                catalogue: !keep.catalogue,
-                metadata: !keep.metadata, thumbnails: !keep.thumbnails,
-                fingerprints: !keep.fingerprints, proxies: !keep.proxies,
-            });
+            await window.desktop.clearLocalData(selected);
             setOpen(false);
             onReset();
         } catch (reason) {
@@ -53,25 +53,26 @@ export function ClearCacheButton({ disabled, onBusyChange, onReset }: {
 
     return <>
         <button type="button" disabled={disabled} onClick={() => {
-            setKeep({ catalogue: false, metadata: false, thumbnails: false, fingerprints: false, proxies: false });
+            setSelected(allSelected);
             setError(null); setOpen(true); onBusyChange(true);
         }} className={dangerSecondaryButton}>Clear Cache</button>
-        {open && <dialog ref={dialog} role="alertdialog" aria-labelledby="clear-cache-title" aria-describedby="clear-cache-description"
+        {open && <dialog ref={dialog} role="alertdialog" aria-labelledby="clear-cache-title"
             onCancel={event => { event.preventDefault(); event.stopPropagation(); close(); }}
             className="m-auto max-h-[calc(100vh-48px)] w-[480px] max-w-[calc(100vw-48px)] overflow-y-auto rounded-2xl border border-white/10 bg-[#1b2029] p-6 text-zinc-200 shadow-2xl backdrop:bg-black/60">
             <h2 id="clear-cache-title" className="text-lg font-medium">Clear Cache?</h2>
-            <p id="clear-cache-description" className="mt-3 text-sm leading-6 text-zinc-300">Delete cached data in unchecked categories.</p>
             <div className="mt-4 space-y-3">
                 {cacheKinds.map(kind => <label key={kind.key} className="flex cursor-pointer items-start gap-3 rounded-lg border border-white/10 p-3 text-sm hover:bg-white/5">
-                    <input type="checkbox" checked={keep[kind.key]} disabled={busy} onChange={event => setKeep(current => ({ ...current, [kind.key]: event.target.checked }))}
-                        aria-label={`Keep ${kind.label.toLowerCase()}`} className="mt-0.5 accent-blue-500" />
-                    <span><span className="block text-zinc-200">Keep {kind.label.toLowerCase()}</span><span className="block text-xs text-zinc-500">{kind.detail}</span></span>
+                    <input type="checkbox" checked={selected[kind.key]} disabled={busy} onChange={event => {
+                        const checked = event.currentTarget.checked;
+                        setSelected(current => ({ ...current, [kind.key]: checked }));
+                    }} aria-label={`Delete ${kind.label.toLowerCase()}`} className="mt-0.5 accent-blue-500" />
+                    <span><span className="block text-zinc-200">{kind.label}</span><span className="block text-xs text-zinc-500">{kind.detail}</span></span>
                 </label>)}
             </div>
             {error && <p role="alert" className="mt-3 text-sm text-red-300">{error}</p>}
             <div className="mt-6 flex justify-end gap-3">
                 <button autoFocus type="button" disabled={busy} onClick={close} className={secondaryButton}>Cancel</button>
-                <button type="button" aria-label="Confirm clear cache" disabled={busy || cacheKinds.every(kind => keep[kind.key])} onClick={() => void clear()}
+                <button type="button" aria-label="Confirm clear cache" disabled={busy || !hasSelection} onClick={() => void clear()}
                     className={dangerButton}>{busy ? 'Clearing…' : 'Clear Cache'}</button>
             </div>
         </dialog>}
