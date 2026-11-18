@@ -14,6 +14,8 @@ import { AppError } from '../shared/errors';
 import type { ProxyQueue } from './proxies';
 import { DEFAULT_STORAGE_WAIT_SECONDS, withStorageRecovery } from './storageRecovery';
 import type { StorageRetryInfo } from './storageRecovery';
+import { reconcileQueueTasks, summarizeQueueTasks } from './queueProgress';
+import type { QueueTask } from './queueProgress';
 
 type TransferKind = 'commit' | 'metadata' | 'sync';
 type Capture = Awaited<ReturnType<ShotScanner['captureIngest']>>;
@@ -44,7 +46,7 @@ export class IngestQueue {
     private libraryPending: LibraryTransferJob[] = [];
     onPublished?: (metadata: LibraryMetadata, location: LibraryLocation, names: string[]) => Promise<void>;
     private wakeWorker?: () => void;
-    private tasks = new Map<string, { kind: 'proxy' | 'transfer' | 'sync'; percent: number }>();
+    private tasks = new Map<string, QueueTask>();
     private progressTimer?: ReturnType<typeof setTimeout>;
     private libraryScanVersion = 0;
     private workGeneration = 0;
@@ -175,7 +177,7 @@ export class IngestQueue {
     private updateTaskProgress() {
         const shots = this.scanner.snapshot().shots;
         const ready = new Set(shots.filter(shot => shot.proxyState === 'ready').map(shot => `proxy:${shot.id}`));
-        const pending = new Map<string, { kind: 'proxy' | 'transfer' | 'sync'; percent: number }>();
+        const pending = new Map<string, QueueTask>();
         for (const shot of shots) {
             if (!this.scanner.isEjecting(shot.id) && shot.available && (!shot.organization?.skipped || this.queuedIds.includes(shot.id)) &&
                 (shot.proxyState === 'queued' || shot.proxyState === 'encoding')) {
@@ -190,26 +192,8 @@ export class IngestQueue {
                 percent: [this.state.current, this.state.exportCurrent].find(current => current?.id === id)?.percent ?? 0,
             });
         }
-        // Retain completed work while a session is running. New work after idle starts a fresh count.
-        if (![...this.tasks.values()].some(task => task.percent < 100) && [...pending.keys()].some(key => !this.tasks.has(key))) this.tasks.clear();
-        for (const [key, task] of this.tasks) {
-            if (task.kind === 'proxy' && ready.has(key)) task.percent = 100;
-            // Skipped, removed, failed, or cancelled work leaves the remaining task list.
-            if (task.percent < 100 && !pending.has(key)) this.tasks.delete(key);
-        }
-        for (const [key, task] of pending) this.tasks.set(key, { ...task, percent: Math.max(task.percent, this.tasks.get(key)?.percent ?? 0) });
-        const tasks = [...this.tasks.values()];
-        const completed = tasks.filter(task => task.percent === 100).length;
-        const syncs = tasks.filter(task => task.kind === 'sync');
-        this.state.tasks = {
-            completed, total: tasks.length,
-            percent: tasks.length ? Math.min(completed === tasks.length ? 100 : 99, Math.floor(tasks.reduce((sum, task) => sum + task.percent, 0) / tasks.length)) : 0,
-            proxiesRemaining: tasks.filter(task => task.kind === 'proxy' && task.percent < 100).length,
-            transfersRemaining: tasks.filter(task => task.kind === 'transfer' && task.percent < 100).length,
-            syncsRemaining: tasks.filter(task => task.kind === 'sync' && task.percent < 100).length,
-            sync: { completed: syncs.filter(task => task.percent === 100).length, total: syncs.length,
-                percent: syncs.length ? Math.floor(syncs.reduce((sum, task) => sum + task.percent, 0) / syncs.length) : 0 },
-        };
+        this.tasks = reconcileQueueTasks(this.tasks, pending, ready);
+        this.state.tasks = summarizeQueueTasks(this.tasks);
     }
 
     // Progress notifications are bounded and carry snapshots, avoiding HTTP/config reads.

@@ -176,17 +176,23 @@ function App() {
     const receiveView = tab === 'library' ? receiveLibrary : receiveShots;
 
     useEffect(() => {
-        if (tab !== 'library' || status.state !== 'connected' || !window.desktop.getLibrary) return;
+        // Keep the Library snapshot subscribed independently of tab navigation.
+        // Switching views should reveal the cached catalogue, not start another
+        // remote scan; explicit Refresh and configuration changes own scans.
+        if (status.state !== 'connected' || !window.desktop.getLibrary) return;
         let disposed = false;
         const receive = (collection: ShotCollection) => { if (!disposed) receiveLibrary(collection); };
         const updates = new CollectionUpdates(() => window.desktop.getLibrary(), receive, () => latestLibraryRevision.current);
         const unsubscribe = window.desktop.onLibraryChanged(change => updates.notify(change.revision));
         const refresh = () => void window.desktop.getLibrary().then(receive).then(() => window.desktop.refreshCatalogue()).then(receive)
             .catch(error => { if (!disposed) setWorkspaceError(errorMessage(error, 'Could not refresh the Library.')); });
-        window.addEventListener('configuration-changed', refresh);
-        refresh();
-        return () => { disposed = true; updates.dispose(); unsubscribe(); window.removeEventListener('configuration-changed', refresh); };
-    }, [tab, status.state]);
+        const load = () => void window.desktop.getLibrary().then(receive)
+            .catch(error => { if (!disposed) setWorkspaceError(errorMessage(error, 'Could not load the Library.')); });
+        const configurationChanged = () => refresh();
+        window.addEventListener('configuration-changed', configurationChanged);
+        load();
+        return () => { disposed = true; updates.dispose(); unsubscribe(); window.removeEventListener('configuration-changed', configurationChanged); };
+    }, [status.state]);
 
     useEffect(() => {
         const updates = new CollectionUpdates(() => window.desktop.getShots(), receiveShots, () => latestShotRevision.current);

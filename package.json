@@ -12,6 +12,8 @@
         "build": "npm run typecheck && electron-vite build && node scripts/copy-luts.cjs",
         "check:selection": "npm run build && node scripts/check-selection.cjs",
         "check:filters": "node scripts/check-filters.cjs",
+        "check:clip-state": "node scripts/check-clip-state.cjs",
+        "check:queue-progress": "node scripts/check-queue-progress.cjs",
         "check:application": "node scripts/check-application-status.cjs",
         "check:configuration": "node scripts/check-configuration.cjs",
         "check:cache": "node scripts/check-cache-files.cjs",

@@ -17,6 +17,7 @@ import type { LibraryPresence } from "./library";
 import { OrganizationStore } from "./organization";
 import { ThumbnailQueue } from "./thumbnails";
 import { mediaReadiness } from '../shared/mediaReadiness';
+import { publishedClipState, receiptMatchesLibrary } from '../shared/clipState';
 
 interface ScanJob {
     request: DiscoveryRequest;
@@ -745,19 +746,19 @@ export class ShotScanner {
     }
 
     private savedIngestState(shot: VideoShot): IngestState | undefined {
-        const receipt = shot.ingestion?.libraryPath === this.ingestLibrary ? shot.ingestion : undefined;
-        if (!this.libraryPresence) return receipt ? "unverified" : undefined;
-        // Presence determines New versus Update, even without a local receipt.
-        // Only a complete asset set and matching receipt can prove Synced.
-        if (!this.libraryPresence.existing.has(shot.id)) return undefined;
-        return this.libraryPresence.complete.has(shot.id) &&
-            (!this.requireProxy || this.libraryPresence.proxies.has(shot.id)) &&
-            receipt &&
-            shot.organization &&
-            shot.thumbnailDigest &&
-            receipt.signature === ingestionSignature(shot.organization, shot.thumbnailDigest)
-            ? "synced"
-            : "changes-pending";
+        const receipt = receiptMatchesLibrary(shot.ingestion, this.ingestLibrary) ? shot.ingestion : undefined;
+        const state = publishedClipState({
+            libraryConfigured: !!this.ingestLibrary,
+            presenceKnown: !!this.libraryPresence,
+            existing: !!this.libraryPresence?.existing.has(shot.id),
+            complete: !!this.libraryPresence?.complete.has(shot.id),
+            proxyRequired: this.requireProxy,
+            proxyPresent: !!this.libraryPresence?.proxies.has(shot.id),
+            receiptMatches: !!receipt,
+            signatureMatches: !!receipt && !!shot.organization && !!shot.thumbnailDigest &&
+                receipt.signature === ingestionSignature(shot.organization, shot.thumbnailDigest),
+        });
+        return state === 'new' ? undefined : state;
     }
 
     snapshot(): ShotCollection {

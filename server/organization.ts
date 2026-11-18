@@ -9,6 +9,7 @@ import type { VideoFingerprint } from '../shared/shots';
 import { ingestAttributes } from '../shared/ingestion';
 import type { LibraryMetadata } from '../shared/library';
 import { ingestionSignature } from './processingState';
+import { attributesChanged, receiptMatchesLibrary } from '../shared/clipState';
 
 const draftKeyPattern = new RegExp(`^${VIDEO_SAMPLE_SCHEME}:[a-f0-9]{64}$`);
 
@@ -219,7 +220,7 @@ export class OrganizationStore {
                         : record.data[action.field].filter(tag => tag !== action.value);
                 }
                 record.lastEditedAt = this.now();
-                if (action.field !== 'skip') record.pendingAttributes = !record.libraryBaseline || JSON.stringify(ingestAttributes(record.data)) !== JSON.stringify(record.libraryBaseline);
+                if (action.field !== 'skip') record.pendingAttributes = attributesChanged(record.data, record.libraryBaseline);
             }
             if ((action.field === 'identity' || action.field === 'project' || action.field === 'tags') && action.operation === 'add') {
                 next.vocabulary[action.field] = [...new Set([...next.vocabulary[action.field], action.value])].sort();
@@ -283,7 +284,7 @@ export class OrganizationStore {
                 const record = next.drafts[organizationKey(fingerprint)];
                 if (!record) continue;
                 const localEdit = record.pendingAttributes === true ||
-                    (record.libraryBaseline !== undefined && JSON.stringify(ingestAttributes(record.data)) !== JSON.stringify(record.libraryBaseline));
+                    (record.libraryBaseline !== undefined && attributesChanged(record.data, record.libraryBaseline));
                 delete record.libraryBaseline;
                 delete record.ingestion;
                 // Preserve an uncommitted local edit even though there is no
@@ -346,9 +347,9 @@ export class OrganizationStore {
                 const pending = previous && (previous.pendingAttributes ?? previous.lastEditedAt > 0);
                 const record = previous ?? { data: emptyOrganization(), lastScannedAt: 0, lastEditedAt: 0 };
                 if (!pending) record.data = { ...ingestAttributes(metadata), skipped: record.data.skipped };
-                record.pendingAttributes = JSON.stringify(ingestAttributes(record.data)) !== JSON.stringify(ingestAttributes(metadata));
+                record.pendingAttributes = attributesChanged(record.data, metadata);
                 record.libraryBaseline = ingestAttributes(metadata);
-                if (!pending && libraryPath && record.ingestion?.libraryPath === libraryPath && record.ingestion.thumbnailDigest) {
+                if (!pending && receiptMatchesLibrary(record.ingestion, libraryPath ?? null) && record.ingestion?.thumbnailDigest) {
                     record.ingestion.signature = ingestionSignature(metadata, record.ingestion.thumbnailDigest);
                 }
                 record.lastScannedAt = this.now();
@@ -396,7 +397,7 @@ export class OrganizationStore {
                 record.data.tags = record.data.tags.filter(value => !removals.tags.includes(value));
                 if (record.previousProjects) record.previousProjects = record.previousProjects.filter(value => !removals.project.includes(value));
                 record.lastEditedAt = this.now();
-                record.pendingAttributes = !record.libraryBaseline || JSON.stringify(ingestAttributes(record.data)) !== JSON.stringify(record.libraryBaseline);
+                record.pendingAttributes = attributesChanged(record.data, record.libraryBaseline);
             }
             await this.save(next, validate);
             return { vocabulary: this.options(next), drafts: Object.fromEntries(Object.entries(next.drafts).map(([key, record]) => [key, structuredClone(record.data)])) };

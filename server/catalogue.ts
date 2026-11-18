@@ -18,6 +18,7 @@ import type { IngestQueue } from './ingestion';
 import { isJpeg } from './thumbnails';
 import { rsyncFile } from './rsync';
 import { mediaReadiness } from '../shared/mediaReadiness';
+import { attributesChanged, receiptMatchesLibrary, thumbnailDraftChanged } from '../shared/clipState';
 import { listDeleteAssets } from './libraryDeletion';
 import type { DeleteAsset } from './libraryDeletion';
 import { DEFAULT_STORAGE_WAIT_SECONDS, withStorageRecovery } from './storageRecovery';
@@ -115,9 +116,9 @@ export class LibraryCatalogue {
             const draft = drafts[organizationKey(m.fingerprint)];
             const organization = draft?.data ?? { ...ingestAttributes(m), skipped: false };
             const lock = this.scanner.commitLock(m.id);
-            const baselineDigest = entry.thumbnailDigest ?? (draft?.ingestion?.libraryPath === path ? draft.ingestion.thumbnailDigest : undefined);
-            const pendingThumbnail = !!draft?.thumbnailDraft && (!entry.thumbnail || draft.thumbnailDraft.digest !== baselineDigest);
-            const changed = JSON.stringify(ingestAttributes(organization)) !== JSON.stringify(ingestAttributes(m)) || pendingThumbnail;
+            const baselineDigest = entry.thumbnailDigest ?? (receiptMatchesLibrary(draft?.ingestion, path) ? draft?.ingestion?.thumbnailDigest : undefined);
+            const pendingThumbnail = thumbnailDraftChanged(draft?.thumbnailDraft?.digest, entry.thumbnail, baselineDigest);
+            const changed = attributesChanged(organization, m) || pendingThumbnail;
             const verification = this.verified.get(m.id);
             const checked = verification?.path === path;
             const thumbnailReady = entry.thumbnail || !!draft?.thumbnailDraft;
@@ -383,7 +384,7 @@ export class LibraryCatalogue {
         const captures = await Promise.all(ids.map(async id => {
             const shot = current.shots.find(shot => shot.id === id);
             const entry = review.entries.find(entry => entry.id === id)!;
-            if (!shot?.editable || JSON.stringify(ingestAttributes(shot.organization!)) !== JSON.stringify(entry.attributes) ||
+            if (!shot?.editable || attributesChanged(shot.organization, entry.attributes) ||
                 (shot.hasCustomThumbnail ? shot.thumbnailDigest : undefined) !== entry.thumbnailDigest) throw new Error('Local edits changed. Review again.');
             const thumbnail = entry.thumbnailDigest ? await this.scanner.cachedThumbnail(id, shot.metadata) : null;
             if (entry.thumbnailDigest && (!thumbnail || createHash('sha256').update(thumbnail).digest('hex') !== entry.thumbnailDigest)) throw new Error('Pending thumbnail is missing or changed. Set Thumb again.');
