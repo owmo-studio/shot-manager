@@ -34,6 +34,7 @@ export class LibraryCatalogue {
     private refreshRun?: Promise<LibraryCollection>;
     private refreshing = false;
     private revision = 0;
+    private commitRevisions = new Map<string, number>();
     private error?: string;
     private warnings: string[] = [];
     private verified = new Map<string, { path: string; error?: string }>();
@@ -84,7 +85,7 @@ export class LibraryCatalogue {
         })();
         return this.loaded;
     }
-    private async save(state: CatalogueState) {
+    private async save(state: CatalogueState, committedId?: string) {
         if (this.file) {
             await this.assertWritable?.();
             await mkdir(dirname(this.file), { recursive: true, mode: 0o700 });
@@ -94,6 +95,11 @@ export class LibraryCatalogue {
                 await this.assertWritable?.(); await rename(temporary, this.file);
             } finally { await unlink(temporary).catch(() => undefined); }
         }
+        const revisions = this.state.path === state.path ? this.commitRevisions : new Map<string, number>();
+        this.commitRevisions = new Map(state.entries.flatMap(({ metadata: { id } }) => {
+            const revision = id === committedId ? this.revision + 1 : revisions.get(id);
+            return revision === undefined ? [] : [[id, revision] as const];
+        }));
         this.state = state; this.changed();
     }
     private async touchCache(path: string) {
@@ -110,6 +116,8 @@ export class LibraryCatalogue {
         await this.load();
         const path = await this.configured();
         const entries = this.state.path === path ? this.state.entries : [];
+        const revision = this.revision;
+        const commitRevisions = this.commitRevisions;
         const drafts = await this.scanner.organization.draftsFor(entries.map(entry => entry.metadata.fingerprint));
         const shots: VideoShot[] = entries.map(entry => {
             const m = entry.metadata;
@@ -129,6 +137,7 @@ export class LibraryCatalogue {
                 durationSeconds: m.durationSeconds, metadata: m.metadata, fingerprint: m.fingerprint,
                 organization: { ...organization, skipped: false },
                 libraryBaseline: draft?.libraryBaseline ?? ingestAttributes(m),
+                libraryCommitRevision: commitRevisions.get(m.id),
                 ingestion: draft?.ingestion,
                 hasThumbnail: entry.thumbnail || !!draft?.thumbnailDraft,
                 hasCustomThumbnail: pendingThumbnail,
@@ -146,7 +155,7 @@ export class LibraryCatalogue {
                 }),
             };
         });
-        return { revision: this.revision, shots, scans: [], libraryPath: path, refreshing: this.refreshing,
+        return { revision, shots, scans: [], libraryPath: path, refreshing: this.refreshing,
             refreshedAt: this.state.path === path ? this.state.refreshedAt : undefined, error: this.error, warnings: [...this.warnings] };
     }
     refresh(): Promise<LibraryCollection> {
@@ -284,7 +293,7 @@ export class LibraryCatalogue {
             if (await this.configured() !== location.path) return;
             const entries = this.state.path === location.path ? this.state.entries.filter(entry => entry.metadata.id !== metadata.id) : [];
             entries.push({ metadata, source: names[0], thumbnail: true, proxy: names.length > 3, thumbnailRevision: Date.now() });
-            await this.save({ path: location.path, refreshedAt: new Date().toISOString(), entries });
+            await this.save({ path: location.path, refreshedAt: new Date().toISOString(), entries }, metadata.id);
             this.verified.set(metadata.id, { path: location.path });
         });
     }
@@ -433,7 +442,7 @@ export class LibraryCatalogue {
                 signature: ingestionSignature(attributes, digest), thumbnailDigest: digest, ingestedAt: new Date().toISOString() });
             await this.serialize(async () => {
                 const entries = this.state.entries.map(entry => entry.metadata.id === id ? { ...entry, metadata: updated, thumbnail: true, thumbnailDigest: digest, thumbnailRevision: capture.thumbnail ? Date.now() : entry.thumbnailRevision } : entry);
-                await this.save({ ...this.state, entries });
+                await this.save({ ...this.state, entries }, id);
             });
         } finally {
             await this.validateLocation(location, undefined, configuredWait).then(() => unlink(temporary)).catch(() => undefined);

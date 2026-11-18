@@ -19,11 +19,26 @@ export function facetValues(shot: VideoShot, facet: Facet): string[] {
     if (facet === 'devices') return [deviceLabel(shot.metadata.device, true) ?? 'Unknown'];
     return data?.tags ?? [];
 }
-export function matchesClipFilters(shot: VideoShot, filters: ClipFilters, except?: Facet) {
+function searchableText(shot: VideoShot) {
     const data = shot.organization;
-    const text = [shot.filename, data?.scene, data?.group, data?.camera, data?.notes, data?.project, ...(data?.tags ?? [])].filter(Boolean).join(' ').normalize('NFC').toLowerCase();
+    return [shot.filename, data?.scene, data?.group, data?.camera, data?.notes, data?.project, ...(data?.tags ?? [])].filter(Boolean).join(' ').normalize('NFC').toLowerCase();
+}
+
+export function clipQueryDataChanged(previous: VideoShot, current: VideoShot) {
+    if (previous === current) return false;
+    return searchableText(previous) !== searchableText(current) || cascadeOrder.some(facet => {
+        const before = facetValues(previous, facet);
+        const after = facetValues(current, facet);
+        return before.length !== after.length || before.some((value, index) => value !== after[index]);
+    });
+}
+
+export function matchesClipFilters(shot: VideoShot, filters: ClipFilters, except?: Facet) {
     const words = filters.search.normalize('NFC').toLowerCase().split(/\s+/).filter(Boolean);
-    if (!words.every(word => text.includes(word))) return false;
+    if (words.length) {
+        const text = searchableText(shot);
+        if (!words.every(word => text.includes(word))) return false;
+    }
     return (['identity', 'projects', 'devices', 'tags'] as const).every(facet => {
         if (facet === except) return true;
         const selected = facet === 'identity' ? (filters.identity ? [filters.identity] : []) : filters[facet];

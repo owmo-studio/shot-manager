@@ -58,6 +58,8 @@ export interface VideoShot {
     // The last descriptive attributes read from the published Library JSON.
     // Kept separate from the editable local organization draft for comparison UI.
     libraryBaseline?: ClipAttributes;
+    // Session revision of the last successful publication of this Library row.
+    libraryCommitRevision?: number;
     hasThumbnail: boolean;
     hasCustomThumbnail?: boolean;
     thumbnailRevision?: number;

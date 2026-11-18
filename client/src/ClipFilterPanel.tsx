@@ -5,8 +5,9 @@ import type { ClipFilters, Facet } from './clipFilters';
 import { FilterDropdown } from './FilterDropdown';
 
 const inputStyle = 'w-full min-w-0 rounded-md border border-white/15 bg-[#1b2029] px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-blue-400 placeholder:text-zinc-600';
-export function ClipFilterPanel({ shots, filters, onChange }: {
-    shots: VideoShot[]; filters: ClipFilters; onChange: (filters: ClipFilters) => void;
+const queryActionStyle = 'text-xs text-zinc-400 transition enabled:cursor-pointer enabled:hover:text-white focus-visible:outline-2 focus-visible:outline-blue-400 disabled:cursor-default disabled:opacity-40';
+export function ClipFilterPanel({ shots, filters, onChange, onReapply, canReapply }: {
+    shots: VideoShot[]; filters: ClipFilters; onChange: (filters: ClipFilters) => void; onReapply: () => void; canReapply: boolean;
 }) {
     const [resetRevision, setResetRevision] = useState(0);
     const toggle = (field: 'projects' | 'devices' | 'tags', value: string) => onChange({
@@ -42,8 +43,12 @@ export function ClipFilterPanel({ shots, filters, onChange }: {
         </div>
         <div className="flex items-center justify-between gap-2">
             <h2 className="text-sm font-medium text-zinc-200">Filter By</h2>
-            <button type="button" aria-label="Clear filters" className="text-xs text-zinc-400 transition enabled:cursor-pointer enabled:hover:text-white focus-visible:outline-2 focus-visible:outline-blue-400 disabled:cursor-default disabled:opacity-40" disabled={!hasFilters}
-                onClick={() => { onChange({ ...emptyClipFilters(), search: filters.search }); setResetRevision(value => value + 1); }}>Clear</button>
+            <div className="flex items-center gap-3">
+                <button type="button" aria-label="Refresh search and filters" className={queryActionStyle}
+                    disabled={!canReapply} onClick={onReapply}>Refresh</button>
+                <button type="button" aria-label="Clear filters" className={queryActionStyle} disabled={!hasFilters}
+                    onClick={() => { onChange({ ...emptyClipFilters(), search: filters.search }); setResetRevision(value => value + 1); }}>Clear</button>
+            </div>
         </div>
         <div className="space-y-2">
             <span className="block text-xs text-zinc-400">Identity</span>

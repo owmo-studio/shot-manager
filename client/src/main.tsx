@@ -15,8 +15,7 @@ import { CollectionUpdates } from "./collectionUpdates";
 import { MultiClipInspector } from "./MultiClipInspector";
 import { orderedShots, useShotSelection } from "./shotSelection";
 import { ClipFilterPanel } from './ClipFilterPanel';
-import { emptyClipFilters, matchesClipFilters } from './clipFilters';
-import type { ClipFilters } from './clipFilters';
+import { useClipWorklist } from './clipWorklist';
 import { MIN_INSPECTOR_WIDTH } from "./ResizableInspector";
 import { ApplicationIndicator, applicationStatus } from "./ApplicationIndicator";
 import { CommitControls } from "./CommitControls";
@@ -34,20 +33,18 @@ function App() {
     const workStatus = useWorkStatus(status.state === 'connected');
     const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
     const [tab, setTab] = useState<'import' | 'library'>('import');
-    const [filters, setFilters] = useState<Record<'import' | 'library', ClipFilters>>({ import: emptyClipFilters(), library: emptyClipFilters() });
     const newestFirst = true;
     const [workControlTarget, setWorkControlTarget] = useState<HTMLDivElement | null>(null);
     const [inspectorWidth, setInspectorWidth] = useState(MIN_INSPECTOR_WIDTH);
-    const [importCollection, setShotCollection] = useState<ShotCollection>({ revision: 0, shots: [], scans: [] });
-    const [libraryCollection, setLibraryCollection] = useState<LibraryCollection>({ revision: 0, shots: [], scans: [], libraryPath: null, refreshing: false, warnings: [] });
+    const { collection: importCollection, visible: importVisible, receive: setShotCollection, ...importQuery } =
+        useClipWorklist<ShotCollection>({ revision: 0, shots: [], scans: [] });
+    const { collection: libraryCollection, visible: libraryVisible, receive: setLibraryCollection, ...libraryQuery } =
+        useClipWorklist<LibraryCollection>({ revision: 0, shots: [], scans: [], libraryPath: null, refreshing: false, warnings: [] });
+    const activeQuery = tab === 'import' ? importQuery : libraryQuery;
+    const [libraryStarting, setLibraryStarting] = useState(true);
     const latestLibraryRevision = useRef(-1);
     const shotCollection = tab === 'import' ? importCollection : libraryCollection;
     const latestShotRevision = useRef(-1);
-    const filtered = (collection: ShotCollection, criteria: ClipFilters) => ({
-        ...collection, shots: collection.shots.filter(shot => matchesClipFilters(shot, criteria)),
-    });
-    const importVisible = filtered(importCollection, filters.import);
-    const libraryVisible = filtered(libraryCollection, filters.library);
     const visibleCollection = tab === 'import' ? importVisible : libraryVisible;
     const importSelection = useShotSelection(importCollection.shots, importVisible.shots);
     const librarySelection = useShotSelection(libraryCollection.shots, libraryVisible.shots);
@@ -176,21 +173,39 @@ function App() {
     const receiveView = tab === 'library' ? receiveLibrary : receiveShots;
 
     useEffect(() => {
-        // Keep the Library snapshot subscribed independently of tab navigation.
-        // Switching views should reveal the cached catalogue, not start another
-        // remote scan; explicit Refresh and configuration changes own scans.
+        // Verify the startup catalogue before publishing its rows to the UI.
+        // Subsequent tab switches use the subscribed snapshot.
         if (status.state !== 'connected' || !window.desktop.getLibrary) return;
         let disposed = false;
+        let initializing = true;
+        let latestNotice = -1;
         const receive = (collection: ShotCollection) => { if (!disposed) receiveLibrary(collection); };
         const updates = new CollectionUpdates(() => window.desktop.getLibrary(), receive, () => latestLibraryRevision.current);
-        const unsubscribe = window.desktop.onLibraryChanged(change => updates.notify(change.revision));
-        const refresh = () => void window.desktop.getLibrary().then(receive).then(() => window.desktop.refreshCatalogue()).then(receive)
-            .catch(error => { if (!disposed) setWorkspaceError(errorMessage(error, 'Could not refresh the Library.')); });
-        const load = () => void window.desktop.getLibrary().then(receive)
-            .catch(error => { if (!disposed) setWorkspaceError(errorMessage(error, 'Could not load the Library.')); });
-        const configurationChanged = () => refresh();
+        const unsubscribe = window.desktop.onLibraryChanged(change => {
+            if (initializing) latestNotice = Math.max(latestNotice, change.revision);
+            else updates.notify(change.revision);
+        });
+        async function refresh() {
+            const cached = await window.desktop.getLibrary();
+            if (disposed) return;
+            try {
+                receive(cached.libraryPath ? await window.desktop.refreshCatalogue() : cached);
+            } catch (error) {
+                receive(cached);
+                throw error;
+            }
+        }
+        const reportError = (error: unknown) => {
+            if (!disposed) setWorkspaceError(errorMessage(error, 'Could not refresh the Library.'));
+        };
+        const configurationChanged = () => void refresh().catch(reportError);
         window.addEventListener('configuration-changed', configurationChanged);
-        load();
+        void refresh().catch(reportError).finally(() => {
+            if (disposed) return;
+            initializing = false;
+            setLibraryStarting(false);
+            updates.notify(latestNotice);
+        });
         return () => { disposed = true; updates.dispose(); unsubscribe(); window.removeEventListener('configuration-changed', configurationChanged); };
     }, [status.state]);
 
@@ -374,8 +389,8 @@ function App() {
             </header>
             <main className="flex min-h-0 flex-1">
                 <aside className="w-60 shrink-0 overflow-y-auto border-r border-white/8 bg-white/1.5 p-3">
-                    <ClipFilterPanel key={tab} shots={shotCollection.shots} filters={filters[tab]}
-                        onChange={next => setFilters(current => ({ ...current, [tab]: next }))} />
+                    <ClipFilterPanel key={tab} shots={activeQuery.facetShots} filters={activeQuery.filters}
+                        onChange={activeQuery.query} onReapply={() => activeQuery.query()} canReapply={activeQuery.canReapply} />
                 </aside>
                 <section
                     aria-label="Shot cards"
@@ -394,7 +409,9 @@ function App() {
                     onDrop={dropClips}
                     className={`relative flex min-w-0 flex-1 items-center justify-center overflow-y-auto text-center transition ${draggingClips ? "bg-blue-400/5 outline-2 -outline-offset-4 outline-dashed outline-blue-400/50" : ""}`}
                 >
-                    {tab === 'library' ? (
+                    {tab === 'library' && libraryStarting && status.state !== 'unavailable' ? (
+                        <h2 role="status" className="text-xl font-medium tracking-tight">Refreshing Library…</h2>
+                    ) : tab === 'library' ? (
                         <div className={`w-full ${libraryCollection.shots.length ? 'self-start' : 'self-stretch flex flex-col'}`} aria-busy={libraryCollection.refreshing}>
                             {libraryCollection.refreshing && <p role="status" className="sr-only">Refreshing Library…</p>}
                             {libraryCollection.libraryPath && libraryCollection.error && <p role="status" className="px-5 pt-4 text-left text-xs text-red-300">{libraryCollection.error}</p>}
@@ -461,7 +478,7 @@ function App() {
                 onEject={ids => { setUnavailableDirectories([]); requestEject(ids); }} />}
             <footer className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-5 border-t border-white/8 px-5 py-2.5 text-xs text-zinc-500">
                 <ApplicationIndicator backend={status} communicationError={communicationError} />
-                <CommitControls key={tab} workControlTarget={workControlTarget} status={workStatus.status} receiveStatus={workStatus.receiveStatus} dismissError={workStatus.dismissError} selectedShotIds={selectedShots.map(shot => shot.id)} shots={visibleCollection.shots} catalogueRefreshing={tab === 'library' && libraryCollection.refreshing} connected={status.state === 'connected'} onRefresh={async () => receiveView(await (tab === 'library' ? window.desktop.getLibrary() : window.desktop.getShots()))} />
+                <CommitControls key={tab} workControlTarget={workControlTarget} status={workStatus.status} receiveStatus={workStatus.receiveStatus} dismissError={workStatus.dismissError} selectedShotIds={selectedShots.map(shot => shot.id)} shots={visibleCollection.shots} catalogueRefreshing={tab === 'library' && (libraryStarting || libraryCollection.refreshing)} connected={status.state === 'connected'} onRefresh={async () => receiveView(await (tab === 'library' ? window.desktop.getLibrary() : window.desktop.getShots()))} />
             </footer>
         </div></ClipViewProvider>
     );

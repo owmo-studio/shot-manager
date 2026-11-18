@@ -80,6 +80,7 @@ async function until(test, label) {
         thumbReview=await catalogue.preview([id]);await catalogue.submit(thumbReview.token,[id]);
         await until(async()=>!(await queue.status()).active,'failed thumbnail Commit');
         assert.equal((await catalogue.snapshot()).shots.find(shot=>shot.id===id).ingestState,'changes-pending');
+        assert.equal((await catalogue.snapshot()).shots.find(shot=>shot.id===id).libraryCommitRevision,undefined,'Failed Commit does not trigger a worklist recheck');
         assert.deepEqual(await fs.readFile(join(library,`${id}.thumb.jpg`)),originalThumb);
         for(const error of (await queue.status()).errors) queue.dismissError(error.eventId);
         const metadataBeforeThumb=await fs.readFile(join(library,`${id}.metadata.json`));
@@ -96,6 +97,9 @@ async function until(test, label) {
         assert.deepEqual(await fs.readFile(join(library,`${id}.thumb.jpg`)),thumb);
         assert.equal((await catalogue.snapshot()).shots.find(shot=>shot.id===id).ingestState,undefined);
         assert.equal((await catalogue.snapshot()).shots.find(shot=>shot.id===id).mediaReadiness.state,'committed','Thumbnail publication restores committed readiness');
+        view=await catalogue.refresh();
+        assert.ok(view.shots.find(shot=>shot.id===id).libraryCommitRevision > 0,'Successful Commit remains observable after Refresh');
+        assert.equal(view.shots.find(shot=>shot.id===second).libraryCommitRevision,undefined,'Other Library rows do not receive a Commit revision');
         assert.deepEqual(await fs.readFile(join(library,`${id}.source.mp4`)),originalSource);
         assert.deepEqual(await fs.readFile(join(library,`${id}.proxy.mov`)),originalProxy);
         catalogue.transfer=transfer;

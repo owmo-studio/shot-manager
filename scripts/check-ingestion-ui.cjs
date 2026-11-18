@@ -56,12 +56,21 @@ if (!process.versions.electron) {
         statusOverride,
         shotsOverride,
         ingestReads = 0,
+        catalogueRefreshes = 0,
         rendererLoads = 0,
         browsedPath;
     const originalFetch = global.fetch;
     let holdLibraryThumbnail = false, libraryThumbnailHeld = false, releaseLibraryThumbnail;
+    let holdCatalogueRefresh = false, releaseCatalogueRefresh;
     global.fetch = async (url, options) => {
         if (String(url).endsWith("/api/ingestion") && (!options?.method || options.method === "GET")) ingestReads++;
+        if (String(url).endsWith('/api/library/refresh') && options?.method === 'POST') {
+            catalogueRefreshes++;
+            if (holdCatalogueRefresh) {
+                holdCatalogueRefresh = false;
+                await new Promise(resolve => { releaseCatalogueRefresh = resolve; });
+            }
+        }
         const result = await originalFetch(url, options);
         if (holdLibraryThumbnail && /\/api\/library\/[a-f0-9]{64}\/thumbnail$/.test(String(url))) {
             holdLibraryThumbnail = false; libraryThumbnailHeld = true;
@@ -429,10 +438,17 @@ if (!process.versions.electron) {
             await until(()=>js(`document.querySelector('[aria-label="Group"]').value===''&&document.querySelector('[aria-label="Camera"]').value===''&&document.querySelector('[aria-label="Quality"]').value===''`),'Library Revert restores blank grouping fields');
             await js(`window.desktop.updateLibraryOrganization(['${publishedId}'],{field:'notes',operation:'set',value:'Library committed edit'})`);
             await until(()=>js(`!!document.querySelector('[data-shot-status="changes-pending"]')`),'Library update ready');
+            await fillAttribute('Search clips', 'Library committed edit');
+            await js(`window.desktop.updateLibraryOrganization(['${publishedId}'],{field:'notes',operation:'set',value:'Library committed update'})`);
+            await until(()=>js(`document.querySelector('[aria-label="Notes"]')?.value==='Library committed update' && !!document.getElementById('shot-${publishedId}')`),'Library draft edit stays visible and selected');
             await click('Commit');await until(()=>js(`document.querySelector('dialog[open]')?.textContent.includes('Ready to Commit?')`),'Library Commit review');
             assert.equal(await js(`document.querySelectorAll('dialog details').length`),0,'Library review omits per-file destinations');
             await click('Commit');
-            await until(async()=>!(await js('window.desktop.getIngestStatus()')).active && fs.readFileSync(join(root,'library',`${publishedId}.metadata.json`),'utf8').includes('Library committed edit'),'Library metadata Commit');
+            await until(async()=>!(await js('window.desktop.getIngestStatus()')).active && fs.readFileSync(join(root,'library',`${publishedId}.metadata.json`),'utf8').includes('Library committed update'),'Library metadata Commit');
+            await until(()=>js(`!document.getElementById('shot-${publishedId}')`),'Successful Commit rechecks the Library clip against Search');
+            await fillAttribute('Search clips', '');
+            await until(()=>js(`!!document.getElementById('shot-${publishedId}')`),'Clearing Search brings back the committed clip');
+            await js(`document.getElementById('shot-${publishedId}').click()`);
             for(const [role,bytes] of Object.entries(beforeLibraryEdit)) assert.deepEqual(fs.readFileSync(join(root,'library',`${publishedId}.${role}`)),bytes,'Metadata Commit preserves media assets');
             // Restore empty Notes for the remaining Import regression checks.
             await js(`(async()=>{ await window.desktop.updateLibraryOrganization(['${publishedId}'],{field:'notes',operation:'set',value:''}); const r=await window.desktop.reviewLibraryCommit(['${publishedId}']); await window.desktop.startLibraryCommit(r.token,['${publishedId}']); })()`);
@@ -966,7 +982,10 @@ if (!process.versions.electron) {
                 "Clear Cache confirmation missing",
             );
             await js(`document.querySelector('[aria-label="Keep proxies"]').click()`);
+            await js(`document.querySelector('[aria-label="Keep library catalogue"]').click()`);
             const beforeSelectiveClear = rendererLoads;
+            const beforeStartupRefresh = catalogueRefreshes;
+            holdCatalogueRefresh = true;
             await js(`document.querySelector('[aria-label="Confirm clear cache"]').click()`);
             await until(() => rendererLoads > beforeSelectiveClear, "Selective Clear Cache did not reload the renderer");
             await until(
@@ -976,6 +995,18 @@ if (!process.versions.electron) {
                     ),
                 "Clear Cache did not restore workspace",
             );
+            await until(() => releaseCatalogueRefresh, "Startup did not refresh the Library from Import");
+            const cachedLibrary = await js('window.desktop.getLibrary()');
+            assert.ok(cachedLibrary.shots.some(shot => shot.proxyState === 'ready' && shot.mediaReadiness.state === 'unchecked'));
+            await click('Library');
+            await until(() => js(`document.querySelector('section[aria-label="Shot cards"] h2')?.textContent==='Refreshing Library…' && !document.querySelector('[data-shot-card]')`), 'Startup should hide unchecked cached cards');
+            releaseCatalogueRefresh();
+            await until(() => js(`!!document.querySelector('[data-media-readiness="committed"][data-proxy-location="library"]')`), 'Startup Library scan should show verified readiness');
+            await click('Import');
+            await click('Library');
+            await until(() => js(`!!document.querySelector('[data-media-readiness="committed"][data-proxy-location="library"]')`), 'Tab switch should reuse the verified catalogue');
+            assert.equal(catalogueRefreshes, beforeStartupRefresh + 1, 'Tab switches should not request another catalogue refresh');
+            await click('Import');
             assert.equal(
                 fs.readFileSync(retainedProxy, "utf8"),
                 "synthetic cached proxy",
@@ -1106,6 +1137,7 @@ if (!process.versions.electron) {
             app.quit();
         } catch (error) {
             releaseLibraryThumbnail?.();
+            releaseCatalogueRefresh?.();
             console.error(error);
             clearTimeout(timer);
             backend?.kill();

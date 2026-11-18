@@ -377,6 +377,18 @@ if (!process.versions.electron) {
             } })));
             await js(`(() => { const select=document.querySelector('[aria-label="Filter by Identity"]'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select,Array.from(select.options).find(o=>o.textContent.startsWith('Unassigned')).value); select.dispatchEvent(new Event('change',{bubbles:true})); })()`);
             await wait(`document.querySelectorAll('[data-shot-card]').length===2`);
+            const reapplyDisabled = () => js(`document.querySelector('[aria-label="Refresh search and filters"]').disabled`);
+            assert.equal(await reapplyDisabled(), true, 'A fresh query dims Reapply');
+            await inspect(1);
+            await push(collection.shots.map((shot, index) => index === 0
+                ? { ...shot, organization: { ...shot.organization, identity: 'Example' } } : shot));
+            assert.deepEqual(await selected(), [1], 'An edited clip stays selected in the Unassigned worklist');
+            assert.equal(await js(`document.querySelectorAll('[data-shot-card]').length`), 2);
+            assert.equal(await reapplyDisabled(), false, 'An Identity edit enables Reapply');
+            await click('Refresh search and filters');
+            await wait(`document.querySelectorAll('[data-shot-card]').length===1 && !document.querySelector('[aria-label="Inspect Clip 1.mp4"]')`);
+            assert.equal(await reapplyDisabled(), true, 'Reapply dims again after rerunning the query');
+            assert.equal(collection.shots[0].organization.identity, 'Example', 'Reapply keeps the local edit');
             await click('Clear filters');
             await click('Choose filter project');
             await click('Filter by project: Tour');
