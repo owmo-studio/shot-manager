@@ -32,6 +32,7 @@ export function ClipFilterPanel({ shots, filters, onChange }: {
         </ul>;
     }
     const identities = filterOptions(shots, filters, 'identity');
+    const availableIdentities = identities.filter(([, count]) => count > 0);
     const hasFilters = !!filters.identity || !!filters.projects.length || !!filters.tags.length || !!filters.devices.length;
     return <section aria-label="Filters" className="space-y-5">
         <div className="space-y-2">
@@ -46,8 +47,8 @@ export function ClipFilterPanel({ shots, filters, onChange }: {
         </div>
         <div className="space-y-2">
             <span className="block text-xs text-zinc-400">Identity</span>
-            <select aria-label="Filter by Identity" className={`${inputStyle} disabled:opacity-40 disabled:cursor-not-allowed`} value={filters.identity}
-                disabled={!filters.identity && identities.filter(([, count]) => count > 0).length <= 1}
+            <select aria-label="Filter by Identity" className={`${inputStyle} disabled:opacity-40 disabled:cursor-not-allowed`} value={filters.identity || (availableIdentities.length === 1 ? availableIdentities[0][0] : '')}
+                disabled={!filters.identity && availableIdentities.length <= 1}
                 onChange={event => onChange({ ...filters, identity: event.target.value })}>
                 <option value="">All</option>
                 {identities.map(([value]) => <option key={value} value={value}>{value === UNASSIGNED_IDENTITY ? 'Unassigned' : value}</option>)}

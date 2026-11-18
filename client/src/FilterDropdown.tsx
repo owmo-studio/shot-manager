@@ -8,7 +8,8 @@ export function FilterDropdown({ label, options, selected, onToggle }: {
     const [open, setOpen] = useState(false);
     const [query, setQuery] = useState('');
     const [highlight, setHighlight] = useState(0);
-    const disabled = options.filter(([, count]) => count > 0).length <= 1;
+    const available = options.filter(([, count]) => count > 0);
+    const disabled = available.length <= 1;
     useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
     const matches = options.filter(([name]) => name.toLowerCase().includes(query.normalize('NFC').toLowerCase()));
     const active = Math.min(highlight, Math.max(0, matches.length - 1));
@@ -24,7 +25,9 @@ export function FilterDropdown({ label, options, selected, onToggle }: {
                 disabled={disabled} aria-expanded={open && !disabled} aria-controls={`${id}-options`}
                 onClick={() => { setQuery(''); setHighlight(0); setOpen(!open); }}
                 className="flex min-h-10 w-full items-center justify-between rounded-lg border border-white/10 bg-black/10 px-3 text-xs text-zinc-400 enabled:hover:bg-white/4 focus-visible:outline-blue-400 disabled:opacity-40 disabled:cursor-not-allowed">
-                Choose {label.toLowerCase()}… <span aria-hidden="true">⌄</span>
+                <span className="min-w-0 truncate" title={available.length === 1 ? available[0][0] : undefined}>
+                    {available.length === 1 ? available[0][0] : `Choose ${label.toLowerCase()}…`}
+                </span><span aria-hidden="true">⌄</span>
             </button>
             {open && !disabled && <div className="absolute top-full z-30 mt-1 w-full rounded-lg border border-white/15 bg-[#242a34] p-1 shadow-xl">
                 <input autoFocus data-tag-input role="combobox" aria-label={`Find filter ${label.toLowerCase()}`}
