@@ -24,6 +24,13 @@ const desktop: DesktopBridge = {
   startLibraryCommit: (token, ids) => invoke('library:commit', token, ids),
   reviewLibraryDelete: ids => invoke('library:delete-review', ids),
   deleteLibraryClips: (token, ids) => invoke('library:delete', token, ids),
+  onOrphanCleanupRequested: listener => {
+    const handler = () => listener()
+    ipcRenderer.on('library:open-orphan-cleanup', handler)
+    return () => ipcRenderer.removeListener('library:open-orphan-cleanup', handler)
+  },
+  reviewOrphanedData: () => invoke('library:orphans-review'),
+  deleteOrphanedData: (token, ids) => invoke('library:orphans-delete', token, ids),
   getLibraryThumbnail: id => invoke('library:thumbnail', id),
   setLibraryThumbnail: (id, dataUrl) => invoke('library:set-thumbnail', id, dataUrl),
   getLibraryDetails: id => invoke('library:details', id),

@@ -26,6 +26,7 @@ import { scrollShotIntoView } from "./scrollShotIntoView";
 import { ErrorDialog } from "./ErrorDialog";
 import { ClipActionDialog } from "./ClipActionDialog";
 import { LibraryDeleteDialog } from "./DeleteButton";
+import { OrphanCleanupDialog } from "./OrphanCleanupDialog";
 import { DirectoryUnavailableDialog } from "./DirectoryUnavailableDialog";
 import "./styles.css";
 
@@ -149,6 +150,8 @@ function App() {
     const refreshFailed = useRef(false);
     const [communicationError, setCommunicationError] = useState(false);
     const [deleteTargets, setDeleteTargets] = useState<VideoShot[] | null>(null);
+    const [orphanCleanupOpen, setOrphanCleanupOpen] = useState(false);
+    useEffect(() => window.desktop.onOrphanCleanupRequested(() => setOrphanCleanupOpen(true)), []);
     const [clipAction, setClipAction] = useState<{ kind: 'eject' | StoppableTransfer; shots: VideoShot[] } | null>(null);
     const [clipActionError, setClipActionError] = useState<string | null>(null);
     const [clipActionBusy, setClipActionBusy] = useState(false);
@@ -477,6 +480,7 @@ function App() {
                     />}
             </main>
             {deleteTargets && <LibraryDeleteDialog shots={deleteTargets} onClose={() => setDeleteTargets(null)} />}
+            {orphanCleanupOpen && <OrphanCleanupDialog onClose={() => setOrphanCleanupOpen(false)} />}
             {clipAction && <ClipActionDialog key={clipAction.kind} action={clipAction.kind} shots={clipAction.shots} busy={clipActionBusy} error={clipActionError}
                 onCancel={() => { if (!clipActionBusy) setClipAction(null); }}
                 onConfirm={() => void confirmClipAction()} />}

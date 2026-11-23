@@ -35,6 +35,68 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
         catalogue=new LibraryCatalogue(scanner,async()=>library,inspect,queue,join(cache,'catalogue.json'),join(cache,'library','thumbnails'));
         scanner.organization.onChange=()=>catalogue.changed();
         await queue.status();await catalogue.refresh();
+        const orphanId = 'e'.repeat(64);
+        const [abandonedSource, abandonedProxy, abandonedPartial, abandonedTransfer] = [
+            `${orphanId}.source.mp4`, `${orphanId}.proxy.mov`, `${orphanId}.metadata.interrupted.partial`, `.${orphanId}.thumb.jpg.A1B2C3D4E5`,
+        ];
+        const orphanNames = [abandonedSource, abandonedProxy, abandonedPartial, abandonedTransfer];
+        const orphanMetadata = `${orphanId}.metadata.json`;
+        const libraryFile = name => join(library, name);
+        for (const name of orphanNames) await fs.writeFile(libraryFile(name), 'abandoned data');
+        await fs.symlink(source, libraryFile(`${orphanId}.linked.mp4`));
+        await fs.mkdir(libraryFile(`${orphanId}.folder`));
+        await fs.writeFile(libraryFile('README.txt'), 'unrelated');
+        const readOrphans = () => catalogue.previewOrphanedData();
+        const cleanOrphans = (review, names = review.files.map(file => file.filename)) =>
+            catalogue.deleteOrphanedData(review.token, names.map(name => review.files.find(file => file.filename === name).id));
+        scanner.lockLibraryCommit([orphanId]);
+        assert.deepEqual((await readOrphans()).files, [], 'Files for an active Commit are excluded');
+        scanner.unlockIngest([orphanId]);
+        let orphanReview = await readOrphans();
+        assert.deepEqual(new Set(orphanReview.files.map(file => file.filename)), new Set(orphanNames));
+        assert.ok(await fs.stat(libraryFile(abandonedSource)), 'Scanning is read-only');
+        await assert.rejects(catalogue.deleteOrphanedData(orphanReview.token, [orphanNames.length]), /Invalid reviewed file selection/);
+        scanner.lockLibraryCommit([orphanId]);
+        assert.match((await cleanOrphans(orphanReview)).stopped, /Wait for work/);
+        scanner.unlockIngest([orphanId]);
+        orphanReview = await readOrphans();
+        changedMount = true;
+        assert.match((await cleanOrphans(orphanReview)).stopped, /mounted volume changed/);
+        changedMount = false;
+        orphanReview = await readOrphans();
+        await fs.writeFile(libraryFile(orphanMetadata), 'malformed published marker');
+        assert.match((await cleanOrphans(orphanReview)).stopped, /now has Library metadata/);
+        assert.deepEqual((await readOrphans()).files, [], 'Even malformed published metadata protects its data');
+        await fs.unlink(libraryFile(orphanMetadata));
+        orphanReview = await readOrphans();
+        await fs.unlink(libraryFile(abandonedProxy));
+        await fs.symlink(source, libraryFile(abandonedProxy));
+        assert.match((await cleanOrphans(orphanReview, [abandonedSource, abandonedProxy])).stopped, /regular file/);
+        assert.ok(await fs.stat(libraryFile(abandonedSource)), 'Preflight catches a substitution before any deletion');
+        await fs.unlink(libraryFile(abandonedProxy));
+        await fs.writeFile(libraryFile(abandonedProxy), 'abandoned proxy');
+        orphanReview = await readOrphans();
+        const newOrphan = `${orphanId}.new.partial`;
+        await fs.writeFile(libraryFile(newOrphan), 'unreviewed');
+        const removeOrphan = catalogue.removeAsset;
+        catalogue.removeAsset = async path => {
+            if (path === libraryFile(abandonedProxy)) throw new Error('Synthetic unlink failure');
+            await removeOrphan(path);
+        };
+        try {
+            const cleanup = await cleanOrphans(orphanReview, [abandonedProxy, abandonedSource, abandonedTransfer]);
+            assert.equal(cleanup.deleted, 2);
+            assert.deepEqual(cleanup.errors, [{ filename: abandonedProxy, message: 'Synthetic unlink failure' }]);
+        } finally { catalogue.removeAsset = removeOrphan; }
+        await assert.rejects(cleanOrphans(orphanReview), /Review orphaned files again/);
+        for (const name of [abandonedProxy, abandonedPartial, newOrphan, 'README.txt', `${ids[0]}.source.mp4`]) assert.ok(await fs.stat(libraryFile(name)));
+        assert.equal(await fs.readFile(source, 'utf8'), 'original source');
+        assert.equal((await fs.lstat(libraryFile(`${orphanId}.linked.mp4`))).isSymbolicLink(), true);
+        assert.equal((await fs.stat(libraryFile(`${orphanId}.folder`))).isDirectory(), true);
+        assert.equal((await catalogue.snapshot()).shots.length, ids.length, 'Committed catalogue rows are preserved');
+        assert.equal((await cleanOrphans(await readOrphans())).deleted, 3);
+        console.log('PASS: reviewed orphan files, publication and lock guards, mount validation, exclusions, and partial failures.');
+
         await assert.rejects(catalogue.previewDelete(['../bad']),/Invalid Delete/);
         const executeDelete=(review, selected=review.clips.map(clip=>clip.id))=>catalogue.deleteClips(review.token, selected);
         let review=await catalogue.previewDelete([ids[0]]);

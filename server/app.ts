@@ -104,6 +104,13 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
   server.post<{ Body: { token: string; shotIds: string[] } }>('/api/library/delete', {
     schema: { body: { type: 'object', required: ['token', 'shotIds'], additionalProperties: false, properties: { shotIds: ids, token: { type: 'string', minLength: 1, maxLength: 64 } } } }
   }, request => catalogue.deleteClips(request.body.token, request.body.shotIds))
+  server.get('/api/library/orphans/review', () => catalogue.previewOrphanedData())
+  server.post<{ Body: { token: string; fileIds: number[] } }>('/api/library/orphans', {
+    schema: { body: { type: 'object', required: ['token', 'fileIds'], additionalProperties: false, properties: {
+      token: { type: 'string', minLength: 1, maxLength: 64 },
+      fileIds: { type: 'array', minItems: 1, uniqueItems: true, items: { type: 'integer', minimum: 0 } }
+    } } }
+  }, request => catalogue.deleteOrphanedData(request.body.token, request.body.fileIds))
   server.patch<{ Body: { shotIds: string[]; action: OrganizationAction } }>('/api/library/organization', {
     schema: { body: { type: 'object', required: ['shotIds', 'action'], additionalProperties: false, properties: { shotIds: ids,
       action: { type: 'object', required: ['field', 'operation', 'value'], additionalProperties: false, properties: {

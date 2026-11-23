@@ -150,7 +150,9 @@ export class IngestQueue {
         return refresh.promise;
     }
 
-    async refreshLibrary() {
+    async refreshLibrary(afterMutation = false) {
+        // A scan already in progress may have listed files before the mutation.
+        if (afterMutation) await this.libraryRefresh?.promise;
         await this.status();
         await this.scanLibrary();
         return structuredClone(this.state);

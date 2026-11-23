@@ -201,7 +201,9 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(() => {
-    installApplicationMenu(lutDirectory)
+    installApplicationMenu(lutDirectory, () => {
+      if (!quitting && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('library:open-orphan-cleanup')
+    })
     const validateIngestIds = (value: unknown): string[] => {
       if (!Array.isArray(value) || !value.length || value.length > 1000 || value.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id))) throw new Error('Invalid commit selection')
       return [...new Set(value)]
@@ -262,6 +264,17 @@ if (!app.requestSingleInstanceLock()) {
       await flushDrafts()
       // Serialize with Cache clearing and location changes, as well as draft writes.
       return organizationWrites.run(() => backendRequest('/api/library/delete', { method: 'POST', body: JSON.stringify({ token, shotIds }) }))
+    })
+    handle('library:orphans-review', event => {
+      requireMainWindow(event)
+      return viewRequest('/api/library/orphans/review')
+    })
+    handle('library:orphans-delete', async (event, token: unknown, fileIds: unknown) => {
+      requireMainWindow(event)
+      if (typeof token !== 'string' || !token || token.length > 64 || !Array.isArray(fileIds) ||
+          !fileIds.length || fileIds.some(id => !Number.isSafeInteger(id) || id < 0)) throw new Error('Invalid orphan cleanup selection')
+      await flushDrafts()
+      return organizationWrites.run(() => backendRequest('/api/library/orphans', { method: 'POST', body: JSON.stringify({ token, fileIds }) }))
     })
     handle('library:update', (event, value: unknown, action: OrganizationAction) => {
       requireMainWindow(event); const shotIds = validateIngestIds(value); const normalized = validateOrganizationAction(action)

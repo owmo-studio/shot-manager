@@ -3,7 +3,7 @@ import type { DiscoveryRequest, ShotChange, ShotCollection, ShotDetails } from '
 import type { ViewingLut } from './viewing'
 import type { OptionRemovalPlan, OrganizationAction, TagVocabulary } from './organization'
 import type { IPCResult } from './errors'
-import type { LibraryCollection, LibraryDeleteReview, LibraryDeleteResult } from './library'
+import type { LibraryCollection, LibraryDeleteReview, LibraryDeleteResult, OrphanDataReview, OrphanDataResult } from './library'
 import type { SyncReview } from './sync'
 
 export interface BackendHealth {
@@ -73,6 +73,9 @@ export interface DesktopAPI {
   startLibraryCommit: DesktopAPI['startIngest']
   reviewLibraryDelete: (shotIds: string[]) => Promise<LibraryDeleteReview>
   deleteLibraryClips: (token: string, shotIds: string[]) => Promise<LibraryDeleteResult>
+  onOrphanCleanupRequested: (listener: () => void) => () => void
+  reviewOrphanedData: () => Promise<OrphanDataReview>
+  deleteOrphanedData: (token: string, fileIds: number[]) => Promise<OrphanDataResult>
   getLibraryThumbnail: DesktopAPI['getShotThumbnail']
   setLibraryThumbnail: DesktopAPI['setShotThumbnail']
   getLibraryDetails: DesktopAPI['getShotDetails']

@@ -52,6 +52,17 @@ export interface LibraryDeleteResult {
     errors: { id: string; filename: string; message: string }[];
 }
 
+export interface OrphanDataReview {
+    token: string;
+    files: { id: number; filename: string }[];
+}
+
+export interface OrphanDataResult {
+    deleted: number;
+    errors: { filename: string; message: string }[];
+    stopped?: string;
+}
+
 export function validateLibraryMetadata(value: unknown, id: string): LibraryMetadata {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid Library metadata.');
     const data = value as LibraryMetadata;

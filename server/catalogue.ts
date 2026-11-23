@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, mkdtemp, open, realpath, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { LibraryCollection, LibraryMetadata, LibraryDeleteReview, LibraryDeleteResult } from '../shared/library';
+import type { LibraryCollection, LibraryMetadata, LibraryDeleteReview, LibraryDeleteResult, OrphanDataReview, OrphanDataResult } from '../shared/library';
 import { libraryAssetName, parseLibraryAssetName, validateLibraryMetadata } from '../shared/library';
 import type { IngestReview } from '../shared/ingestion';
 import { ingestAttributes } from '../shared/ingestion';
@@ -19,8 +19,8 @@ import { isJpeg } from './thumbnails';
 import { rsyncFile } from './rsync';
 import { mediaReadiness } from '../shared/mediaReadiness';
 import { attributesChanged, receiptMatchesLibrary, thumbnailDraftChanged } from '../shared/clipState';
-import { listDeleteAssets } from './libraryDeletion';
-import type { DeleteAsset } from './libraryDeletion';
+import { hasLibraryMetadata, listDeleteAssets, listOrphanAssets } from './libraryDeletion';
+import type { DeleteAsset, OrphanAsset } from './libraryDeletion';
 import { DEFAULT_STORAGE_WAIT_SECONDS, withStorageRecovery } from './storageRecovery';
 import type { StorageRetryInfo } from './storageRecovery';
 
@@ -33,7 +33,7 @@ export class LibraryCatalogue {
     private loaded?: Promise<void>;
     private pending: Promise<unknown> = Promise.resolve();
     private refreshRun?: Promise<LibraryCollection>;
-    private readonly refreshShutdown = new AbortController();
+    private readonly scanShutdown = new AbortController();
     private refreshing = false;
     private revision = 0;
     private commitRevisions = new Map<string, number>();
@@ -45,6 +45,7 @@ export class LibraryCatalogue {
     private removeAsset = unlink;
     private deleteReview?: { token: string; location: LibraryLocation; generation: number; created: number;
         entries: { metadata: LibraryMetadata; assets: DeleteAsset[] }[] };
+    private orphanReview?: { token: string; location: LibraryLocation; created: number; assets: OrphanAsset[] };
     onChange?: () => void;
     constructor(private scanner: ShotScanner, private configured: () => Promise<string | null>,
         private inspect: () => Promise<LibraryLocation>, private queue: IngestQueue, private file?: string,
@@ -162,7 +163,7 @@ export class LibraryCatalogue {
     }
     refresh(): Promise<LibraryCollection> {
         if (this.refreshRun) return this.refreshRun;
-        const { signal } = this.refreshShutdown;
+        const { signal } = this.scanShutdown;
         if (signal.aborted) return this.snapshot();
         this.refreshing = true; this.changed();
         const run = this.serialize(async () => {
@@ -293,6 +294,79 @@ export class LibraryCatalogue {
             } finally { this.scanner.unlockIngest(ids); this.changed(); }
         });
     }
+
+    private async validateOrphanLocation(location: LibraryLocation, signal?: AbortSignal) {
+        await this.validateLocation(location, signal, 0);
+        if (this.scanner.mediaDirectories().includes(location.path)) throw new Error('The Library folder is also in use as an Import source.');
+    }
+
+    previewOrphanedData(): Promise<OrphanDataReview> {
+        return this.serialize(async () => {
+            const { signal } = this.scanShutdown;
+            signal.throwIfAborted();
+            const location = await this.inspect();
+            const unlocked = (id: string) => this.scanner.canEditLibrary([id]);
+            const candidates = await listOrphanAssets(location, unlocked, signal);
+            await this.validateOrphanLocation(location, signal);
+            const assets = candidates.filter(asset => unlocked(asset.fingerprint));
+            const token = randomUUID();
+            this.orphanReview = { token, location, created: Date.now(), assets };
+            return { token, files: assets.map((asset, id) => ({ id, filename: asset.name })) };
+        });
+    }
+
+    deleteOrphanedData(token: string, ids: number[]): Promise<OrphanDataResult> {
+        return this.serialize(async () => {
+            const review = this.orphanReview;
+            if (!review || review.token !== token || Date.now() - review.created > 30 * 60_000) {
+                throw Object.assign(new Error('Review orphaned files again.'), { statusCode: 409 });
+            }
+            if (!ids.length || new Set(ids).size !== ids.length ||
+                ids.some(id => !Number.isSafeInteger(id) || id < 0 || id >= review.assets.length)) {
+                throw Object.assign(new Error('Invalid reviewed file selection.'), { statusCode: 400 });
+            }
+            this.orphanReview = undefined;
+            const assets = ids.map(id => review.assets[id]);
+            const fingerprints = [...new Set(assets.map(asset => asset.fingerprint))];
+            const result: OrphanDataResult = { deleted: 0, errors: [] };
+            const { location } = review;
+            const checkedPath = async (asset: OrphanAsset) => {
+                const path = join(location.path, asset.name);
+                if (await libraryFileIdentity(path) !== asset.identity) throw new Error('The reviewed file changed. Review orphaned files again.');
+                if (await hasLibraryMetadata(location, asset.fingerprint)) throw new Error('The clip now has Library metadata. Review orphaned files again.');
+                return path;
+            };
+            if (!this.scanner.canEditLibrary(fingerprints)) return { ...result, stopped: 'Wait for work on the selected clips to finish, then review orphaned files again.' };
+            this.scanner.lockLibraryCommit(fingerprints);
+            try {
+                // Verify the entire selection before deleting any files.
+                try {
+                    await this.validateOrphanLocation(location);
+                    for (const asset of assets) await checkedPath(asset);
+                } catch (error) {
+                    return { ...result, stopped: error instanceof Error ? error.message : String(error) };
+                }
+                for (const asset of assets) {
+                    try { await this.validateOrphanLocation(location); }
+                    catch (error) {
+                        result.stopped = error instanceof Error ? error.message : String(error);
+                        break;
+                    }
+                    try {
+                        await this.removeAsset(await checkedPath(asset));
+                        result.deleted++;
+                    } catch (error) {
+                        result.errors.push({ filename: asset.name, message: error instanceof Error ? error.message : String(error) });
+                    }
+                }
+                return result;
+            } finally {
+                this.scanner.unlockIngest(fingerprints);
+                if (result.deleted || result.errors.length) await this.queue.refreshLibrary(true).catch(() => undefined);
+            }
+        });
+    }
+
     async published(metadata: LibraryMetadata, location: LibraryLocation, names: string[]) {
         return this.serialize(async () => {
             await this.load();
@@ -530,6 +604,6 @@ export class LibraryCatalogue {
         return { file: { filename: m.originalFilename, path: join(this.state.path!, source ?? ''), bytes: m.bytes },
             metadata: m.metadata, fingerprint: m.fingerprint, embeddedMetadata: [{ label: 'Library metadata', format: 'json', text: JSON.stringify(m, null, 2) }], mediaInfo: null, errors: [] };
     }
-    stopRefreshing() { this.refreshShutdown.abort(); }
+    stopRefreshing() { this.scanShutdown.abort(); }
     async close() { this.stopRefreshing(); await this.refreshRun; await this.pending; }
 }
