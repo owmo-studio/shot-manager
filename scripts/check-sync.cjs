@@ -166,7 +166,7 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         await fs.unlink(join(destination,'Proxy'));await fs.rename(join(destination,'Proxy-saved'),join(destination,'Proxy'));
         // Formatting preserves multiline/quoted values and source format, including blank fields.
         const full=validateLibraryMetadata(JSON.parse(original.get(`${ids[0]}.metadata.json`)),ids[0]);
-        Object.assign(full,{identity:'OWMO',project:'Studio, \"Tour\"',scene:'Synthesizer pan',group:'TH01-T02',camera:'A',rating:'preferred',notes:'First line\nSecond \"quoted\" line',tags:['b-roll','synth']});
+        Object.assign(full,{identity:'STUDIO',project:'Studio, \"Tour\"',scene:'Synthesizer pan',group:'TH01-T02',camera:'A',rating:'preferred',notes:'First line\nSecond \"quoted\" line',tags:['b-roll','synth']});
         const formatted=resolveFormatter.clip(full,'mov',8);assert.equal(formatted.source,`${outputName(ids[0])}.mov`);
         const csvFixture=join(root,'format.csv'),csvText=resolveFormatter.manifest([formatted],destination);
         assert.ok(csvText.startsWith('File Name,Clip Directory,Clip Name,'),'Resolve matching headers are plain text');
@@ -174,7 +174,7 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         await fs.writeFile(csvFixture,csvText);
         const csvHeaders=csvText.split('\r\n')[0].split(',');
         assert.deepEqual(csvHeaders.slice(-5),['Identity','Project','Group','Camera','Quality'],'Custom headers match the user-facing Resolve fields');
-        const csvRow=(await parseCSV(csvFixture))[0];assert.equal(csvRow.Description,full.scene);assert.equal(csvRow.Scene,full.group);assert.equal(csvRow['Camera #'],'A');assert.equal(csvRow['Good Take'],'1');assert.equal(csvRow.Comments,full.notes);assert.equal(csvRow.Identity,full.identity);assert.equal(csvRow.Project,full.project);assert.equal(csvRow.Group,full.group);assert.equal(csvRow.Camera,full.camera);assert.equal(csvRow.Quality,full.rating);assert.ok(csvRow['Clip Name'].includes('OWMO'));
+        const csvRow=(await parseCSV(csvFixture))[0];assert.equal(csvRow.Description,full.scene);assert.equal(csvRow.Scene,full.group);assert.equal(csvRow['Camera #'],'A');assert.equal(csvRow['Good Take'],'1');assert.equal(csvRow.Comments,full.notes);assert.equal(csvRow.Identity,full.identity);assert.equal(csvRow.Project,full.project);assert.equal(csvRow.Group,full.group);assert.equal(csvRow.Camera,full.camera);assert.equal(csvRow.Quality,full.rating);assert.ok(csvRow['Clip Name'].includes('STUDIO'));
         const other=resolveFormatter.clip(validateLibraryMetadata(JSON.parse(original.get(`${ids[1]}.metadata.json`)),ids[1]),'mp4',8);
         const combined=resolveFormatter.manifest([other],destination,csvText);
         await fs.writeFile(csvFixture,combined);const cumulative=await parseCSV(csvFixture);

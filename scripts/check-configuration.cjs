@@ -99,6 +99,25 @@ const { tmpdir } = require('node:os');
             require('node:child_process').execFileSync('ffmpeg', ['-nostdin', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=64x36:d=0.1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', generatedVideo]);
             const extract = (input, source) => new Promise(resolve => contentQueue.enqueue([input], source, new AbortController().signal, async () => true, resolve));
             assert.ok(await extract(generatedVideo, 'first-source'));
+            const appleLog = { color: { transfer: 'apple-log', primaries: 'bt2020' } };
+            process.env.SHOT_MANAGER_LUT_DIRECTORY = join(root, 'user-luts');
+            process.env.SHOT_MANAGER_BUNDLED_LUT_DIRECTORY = join(root, 'embedded-luts');
+            const applePaths = () => contentQueue.cachePaths(generatedVideo, 'source', appleLog, new AbortController().signal);
+            const passthrough = await applePaths();
+            assert.equal(passthrough.lutPath, undefined);
+            await fs.unlink(passthrough.generated);
+            assert.ok(await new Promise(resolve => contentQueue.enqueue([generatedVideo], 'source', new AbortController().signal, async () => true, resolve, appleLog)), 'Log clips get thumbnails without a LUT');
+            await contentQueue.setCustomImage(generatedVideo, 'source', customUrl, async () => true, appleLog);
+            const cube = 'LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n';
+            for (const directory of [process.env.SHOT_MANAGER_BUNDLED_LUT_DIRECTORY, process.env.SHOT_MANAGER_LUT_DIRECTORY]) {
+                await fs.mkdir(directory);
+                const path = join(directory, 'apple-log-rec709.cube');
+                await fs.writeFile(path, cube);
+                const configured = await applePaths();
+                assert.equal(configured.lutPath, path);
+                assert.notEqual(configured.generated, passthrough.generated);
+                assert.equal(configured.custom, passthrough.custom, 'A manual capture survives LUT changes');
+            }
             const paths = await contentQueue.cachePaths(generatedVideo, 'first-source', undefined, new AbortController().signal);
             await fs.writeFile(paths.generated, customBytes);
             const relocated = join(root, 'relocated.mp4');

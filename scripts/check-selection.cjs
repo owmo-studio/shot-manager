@@ -90,8 +90,8 @@ if (!process.versions.electron) {
             ipcMain.handle("fixture:sources", () => sources);
             ipcMain.handle("fixture:shots", () => collection);
             const vocabulary = {
-                identity: ["cmsh", "owmo"],
-                project: ["crystal-brigade"],
+                identity: ["acme", "studio"],
+                project: ["demo-project"],
                 tags: [
                     "music",
                     "music/edm",
@@ -459,7 +459,7 @@ if (!process.versions.electron) {
             );
             await click("Configuration");
             await wait(`!!document.querySelector('dialog[open] [aria-label="Identity options"]')`);
-            await wait(`!!document.querySelector('[aria-label="Delete Identity option cmsh"]')`);
+            await wait(`!!document.querySelector('[aria-label="Delete Identity option acme"]')`);
             assert.deepEqual(await js(`Array.from(document.querySelectorAll('dialog h3')).map(e=>e.textContent)`), [
                 "Identity",
                 "Project",
@@ -474,30 +474,30 @@ if (!process.versions.electron) {
                     `document.querySelector('[aria-label="Configured Library location"]').getBoundingClientRect().left > Array.from(document.querySelectorAll('dialog button')).find(b=>b.textContent==='Set Library Location').getBoundingClientRect().right`,
                 ),
             );
-            await click("Delete Identity option cmsh");
-            assert.ok(vocabulary.identity.includes("cmsh"), "Deletion is staged until Save");
+            await click("Delete Identity option acme");
+            assert.ok(vocabulary.identity.includes("acme"), "Deletion is staged until Save");
             await js(
                 `Array.from(document.querySelectorAll('dialog button')).find(b=>b.textContent==='Cancel').click()`,
             );
             await wait(`!document.querySelector('dialog[open]')`);
             await click("Configuration");
-            await wait(`!!document.querySelector('[aria-label="Delete Identity option cmsh"]')`);
-            await click("Delete Identity option cmsh");
-            await click("Delete Project option crystal-brigade");
+            await wait(`!!document.querySelector('[aria-label="Delete Identity option acme"]')`);
+            await click("Delete Identity option acme");
+            await click("Delete Project option demo-project");
             const organizationBeforeSave = collection.shots.map((shot) => structuredClone(shot.organization));
             failOptionsSave = true;
             await click("Save configuration");
             await wait(`document.querySelector('dialog [role="alert"]')?.textContent.includes('Could not save')`);
             assert.equal(
-                await js(`!!document.querySelector('[aria-label="Delete Identity option cmsh"]')`),
+                await js(`!!document.querySelector('[aria-label="Delete Identity option acme"]')`),
                 false,
                 "Failure retains staged deletions",
             );
             await click("Save configuration");
             await wait(`!document.querySelector('dialog[open]')`);
             assert.equal(optionSaves, 1);
-            assert.ok(!vocabulary.identity.includes("cmsh"));
-            assert.ok(!vocabulary.project.includes("crystal-brigade"));
+            assert.ok(!vocabulary.identity.includes("acme"));
+            assert.ok(!vocabulary.project.includes("demo-project"));
             assert.ok(vocabulary.tags.includes("topic-00"));
             assert.deepEqual(
                 collection.shots.map((shot) => shot.organization),
@@ -505,7 +505,7 @@ if (!process.versions.electron) {
                 "Configuration never changes clip information",
             );
             await click("Configuration");
-            await wait(`!!document.querySelector('[aria-label="Delete Identity option owmo"]')`);
+            await wait(`!!document.querySelector('[aria-label="Delete Identity option studio"]')`);
             collection = {
                 ...collection,
                 revision: collection.revision + 1,
@@ -515,7 +515,7 @@ if (!process.versions.electron) {
                               ...shot,
                               organization: {
                                   ...shot.organization,
-                                  identity: "owmo",
+                                  identity: "studio",
                                   tags: ["music", "studio"],
                                   notes: "Keep notes",
                               },
@@ -524,7 +524,7 @@ if (!process.versions.electron) {
                 ),
             };
             const affectedBefore = structuredClone(collection.shots.map((shot) => shot.organization));
-            await click("Delete Identity option owmo");
+            await click("Delete Identity option studio");
             await click("Save configuration");
             await wait(
                 `document.querySelector('[role="alertdialog"]')?.textContent.includes('saved options and 2 clip drafts')`,
@@ -535,7 +535,7 @@ if (!process.versions.electron) {
             );
             assert.ok(
                 await js(
-                    `document.querySelector('[aria-label="Clips affected by removal"]').textContent.includes('Identity: owmo')`,
+                    `document.querySelector('[aria-label="Clips affected by removal"]').textContent.includes('Identity: studio')`,
                 ),
             );
             assert.equal(await js(`document.querySelectorAll('[aria-label="Active clip"]').length`), 2);
@@ -555,13 +555,13 @@ if (!process.versions.electron) {
                 affectedBefore,
                 "Cancel preserves all assignments",
             );
-            await wait(`!!document.querySelector('[aria-label="Delete Identity option owmo"]')`);
+            await wait(`!!document.querySelector('[aria-label="Delete Identity option studio"]')`);
             assert.equal(
                 await js(`document.querySelector('[aria-label="Save configuration"]').disabled`),
                 true,
                 "Cancel restores the list and clears staged changes",
             );
-            await click("Delete Identity option owmo");
+            await click("Delete Identity option studio");
             await click("Save configuration");
             await wait(`!!document.querySelector('[aria-label="Clips affected by removal"]')`);
             if (process.env.SHOT_MANAGER_OPTIONS_SCREENSHOT)
@@ -574,7 +574,7 @@ if (!process.versions.electron) {
             assert.equal(collection.shots[0].organization.identity, null);
             assert.deepEqual(collection.shots[0].organization.tags, ["music", "studio"]);
             assert.equal(collection.shots[0].organization.notes, "Keep notes");
-            assert.ok(!vocabulary.identity.includes("owmo"));
+            assert.ok(!vocabulary.identity.includes("studio"));
             await click("Configuration");
             await wait(`!!document.querySelector('[aria-label="Identity options"]')`);
             assert.equal(await js(`!!document.querySelector('[aria-label="Tags options"]')`), false);
@@ -943,8 +943,8 @@ if (!process.versions.electron) {
                 true,
             );
             Object.assign(vocabulary, {
-                identity: ["cmsh", "owmo"],
-                project: ["crystal-brigade"],
+                identity: ["acme", "studio"],
+                project: ["demo-project"],
                 tags: [
                     "music",
                     "music/edm",
@@ -1037,7 +1037,7 @@ if (!process.versions.electron) {
             await wait(`!!document.querySelector('[role="listbox"][aria-label="Project suggestions"]')`);
             assert.ok(
                 await js(
-                    `document.querySelector('[role="listbox"][aria-label="Project suggestions"]').textContent.includes('crystal-brigade')`,
+                    `document.querySelector('[role="listbox"][aria-label="Project suggestions"]').textContent.includes('demo-project')`,
                 ),
             );
             if (process.env.SHOT_MANAGER_DROPDOWN_SCREENSHOT)
@@ -1064,9 +1064,9 @@ if (!process.versions.electron) {
             await click("Clear Project");
             await wait(`!document.querySelector('[data-tag="retry-me"]')`);
             await tag("Project", "Alpha Project");
-            await tag("Identity", "OWMO");
-            await tag("Identity", "CMSH");
-            assert.equal(collection.shots.find((shot) => shot.filename === "Clip 4.mp4").organization.identity, "cmsh");
+            await tag("Identity", "STUDIO");
+            await tag("Identity", "ACME");
+            assert.equal(collection.shots.find((shot) => shot.filename === "Clip 4.mp4").organization.identity, "acme");
             await fill("Tags", "topic-1");
             await js(
                 `document.querySelector('[aria-label="Tags"]').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))`,
@@ -1193,11 +1193,11 @@ if (!process.versions.electron) {
             );
             assert.equal(await js(`document.querySelector('[data-tag="Alpha Project"]')`), null);
             assert.ok(vocabulary.project.includes("Alpha Project"));
-            await tag("Identity", "owmo");
+            await tag("Identity", "studio");
             assert.ok(
                 collection.shots
                     .filter((shot) => ["Clip 4.mp4", "Clip 5.mp4"].includes(shot.filename))
-                    .every((shot) => shot.organization.identity === "owmo"),
+                    .every((shot) => shot.organization.identity === "studio"),
             );
             await tag("Tags", "studio");
             await wait(`!!document.querySelector('[data-tag="studio"][data-shared="true"]')`);

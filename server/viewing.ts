@@ -9,13 +9,24 @@ const files: Record<ViewingProfile, string> = {
 }
 const loaded = new Map<string, Promise<ViewingLut>>()
 
-export function viewingLutPath(profile: ViewingProfile) {
-  return join(process.env.SHOT_MANAGER_LUT_DIRECTORY ?? join(process.cwd(), 'resources', 'luts'), files[profile])
+// A user-installed table takes precedence over an optional build-time copy.
+export async function resolveViewingLut(profile: ViewingProfile) {
+  for (const directory of [process.env.SHOT_MANAGER_LUT_DIRECTORY, process.env.SHOT_MANAGER_BUNDLED_LUT_DIRECTORY]) {
+    if (!directory) continue
+    const path = join(directory, files[profile])
+    try { return { path, table: await readTable(profile, path) } }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  }
+  return null
 }
 
-export async function loadViewingLut(profile: ViewingProfile): Promise<ViewingLut> {
-  const path = viewingLutPath(profile)
+export async function loadViewingLut(profile: ViewingProfile) {
+  return (await resolveViewingLut(profile))?.table ?? null
+}
+
+async function readTable(profile: ViewingProfile, path: string): Promise<ViewingLut> {
   const info = await stat(path)
+  if (!info.isFile()) throw new Error('Invalid viewing LUT file.')
   if (info.size > 24 * 1024 * 1024) throw new Error('Viewing LUT is too large.')
   const key = `${path}:${info.size}:${info.mtimeMs}`
   if (!loaded.has(key)) {

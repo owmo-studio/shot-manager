@@ -9,7 +9,7 @@ import { readSmallFile } from "./discovery";
 import { VideoFingerprintStore } from "./fingerprints";
 import type { VideoMetadata } from "../shared/shots";
 import { viewingProfile } from "../shared/viewing";
-import { loadViewingLut, viewingLutPath } from "./viewing";
+import { resolveViewingLut } from "./viewing";
 
 const execute = promisify(execFile);
 const maximumImageBytes = 2 * 1024 * 1024;
@@ -72,6 +72,15 @@ export function isJpeg(bytes: Buffer): boolean {
 
 const customPreviewKey = (transform: string, fingerprint: string) => `custom-preview-rec709-sampled-v4:${transform}:${fingerprint}`;
 
+// Existing manual captures used these shipped transform digests in their cache keys.
+// A chosen frame belongs to the clip even when the user changes or removes a LUT.
+function customTransform(metadata?: VideoMetadata) {
+    const profile = metadata && viewingProfile(metadata);
+    if (profile === 'sony-slog3-cine') return '79f33e0dba22f5e2e9710ef58c6ca3d331304a6dc2b66b5ed5047145acc37a4d';
+    if (profile === 'apple-log') return 'dbe58994751c1ef3e9d6220fd2f5829a84b6dea2b14a26ff194c1d4c133d53bb';
+    return 'passthrough';
+}
+
 function fileIdentity(info: Stats): string {
     return `${info.dev}:${info.ino}:${info.birthtimeMs}:${info.size}:${info.mtimeMs}`;
 }
@@ -123,7 +132,8 @@ export class ThumbnailQueue {
         const fingerprint = await this.fingerprints.identify(input, signal);
         const digest = fingerprint.value;
         const profile = metadata ? viewingProfile(metadata) : null;
-        const transform = profile ? (await loadViewingLut(profile)).fingerprint : "passthrough";
+        const lut = profile ? await resolveViewingLut(profile).catch(() => null) : null;
+        const transform = lut?.table.fingerprint ?? "passthrough";
         const filename = (key: string) => join(this.cacheDirectory, `${createHash("sha256").update(key).digest("hex")}.jpg`);
         const identity = fileIdentity(info);
         const legacy = [{ input, sourceIdentity }, ...(this.legacyLocations.get(identity) ?? [])];
@@ -131,7 +141,8 @@ export class ThumbnailQueue {
             identity,
             fingerprint,
             ctimeMs: info.ctimeMs,
-            custom: filename(customPreviewKey(transform, digest)),
+            lutPath: lut?.path,
+            custom: filename(customPreviewKey(customTransform(metadata), digest)),
             generated: filename(`first-frame-rec709-sampled-v4:${transform}:480x270:${digest}`),
             legacyCustom: legacy.map((location) => filename(`custom-preview-rec709-v2:${transform}:${location.sourceIdentity}:${location.input}:${identity}`)),
             legacyGenerated: legacy.map((location) => filename(`first-frame-rec709-v2:${transform}:480x270:${location.sourceIdentity}:${location.input}:${identity}`)),
@@ -204,8 +215,7 @@ export class ThumbnailQueue {
             if (await realpath(this.cacheDirectory) !== this.cacheDirectory) throw new Error('Thumbnail Cache must be a regular folder.');
             for (const entry of entries) {
                 if (!/^[a-f0-9]{64}$/.test(entry.id) || entry.bytes.length > maximumImageBytes || !isJpeg(entry.bytes)) throw new Error('Invalid Revert thumbnail.');
-                const profile = viewingProfile(entry.metadata);
-                const transform = profile ? (await loadViewingLut(profile)).fingerprint : 'passthrough';
+                const transform = customTransform(entry.metadata);
                 const name = createHash('sha256').update(customPreviewKey(transform, entry.id)).digest('hex');
                 const path = join(this.cacheDirectory, `${name}.jpg`);
                 const item = { path, temporary: join(this.cacheDirectory, `${name}.${randomUUID()}.tmp`), backup: join(this.cacheDirectory, `${name}.${randomUUID()}.tmp`), previous: null as string | null, published: false };
@@ -246,8 +256,7 @@ export class ThumbnailQueue {
 
     async customByFingerprint(id: string, metadata: VideoMetadata): Promise<Buffer | null> {
         if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid thumbnail identifier.');
-        const profile = viewingProfile(metadata);
-        const transform = profile ? (await loadViewingLut(profile)).fingerprint : 'passthrough';
+        const transform = customTransform(metadata);
         const name = createHash('sha256').update(customPreviewKey(transform, id)).digest('hex');
         let file;
         try {
@@ -296,7 +305,6 @@ export class ThumbnailQueue {
         if (await realpath(input) !== input) return null;
         const paths = await this.cachePaths(input, sourceIdentity, metadata, signal);
         const identity = paths.identity;
-        const profile = metadata ? viewingProfile(metadata) : null;
         const cachedPath = paths.generated;
         const cached = await this.cachedImage(paths.custom, paths.legacyCustom) ?? await this.cachedImage(cachedPath, paths.legacyGenerated);
         signal.throwIfAborted();
@@ -305,7 +313,7 @@ export class ThumbnailQueue {
         if (cached) return `data:image/jpeg;base64,${cached.toString("base64")}`;
 
         // Escape filter-language characters; execFile still receives an argument array.
-        const lutPath = profile ? viewingLutPath(profile).replace(/[\\':,;\[\]]/g, "\\$&") : null;
+        const lutPath = paths.lutPath?.replace(/[\\':,;\[\]]/g, "\\$&");
         const matrix = metadata?.color.matrix === "bt2020nc" ? "bt2020" : "bt709";
         const range = metadata?.color.range === "pc" ? "full" : metadata?.color.range === "tv" ? "limited" : "auto";
         const filters = lutPath ? [

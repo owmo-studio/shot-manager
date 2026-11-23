@@ -13,7 +13,7 @@ npm run package          # Build the .app for this Mac
 npm run deploy           # Copy the existing build to /Applications
 ```
 
-`npm run deploy` installs the existing `release/mac-arm64/Shot Manager.app` into `/Applications` (Intel builds use `release/mac/`). Quit the installed app first. Deployment stages and verifies the new bundle before replacing the previous copy; it does not rebuild or launch the app. The app includes its runtime, dependencies, icon, and [viewing LUTs](resources/luts/README.md); Node/npm are only needed for development. The version shown in Configuration comes from `package.json`.
+`npm run deploy` installs the existing `release/mac-arm64/Shot Manager.app` into `/Applications` (Intel builds use `release/mac/`). Quit the installed app first. Deployment stages and verifies the new bundle before replacing the previous copy; it does not rebuild or launch the app. The app includes its runtime, dependencies, and icon; Node/npm are only needed for development. The version shown in Configuration comes from `package.json`. Personal Rec.709 LUTs can be installed through **Shot Manager → Open LUT Folder…** or embedded with `npm run package:with-luts`. [LUT setup](resources/luts/README.md)
 
 `npm run build` produces `out/`; `npm start` opens that build. Generated `out/` and `release/` files are excluded from Git.
 
@@ -21,8 +21,8 @@ npm run deploy           # Copy the existing build to /Applications
 
 - **Import:** add folders or drop video files. Edit optional attributes and thumbnails; Skip excludes a clip without removing it. Commit uses selected clips, or all eligible clips when nothing is selected. Completed clips leave Import and appear in Library. Reviewed Synced rows only remove workspace cards.
 - **Library:** browse the local catalogue, refresh remote metadata, and stage edits locally. Commit publishes changes; Revert restores Library attributes and thumbnails. Export requires an explicit selection with no pending edits and opens a destination picker before review.
-- **Delete:** review selected Library clips, excluding/restoring rows as needed. Confirmation removes associated Library files and local metadata. Original source-card files and prior Exports are kept; any recycle behavior belongs to the NAS.
-- **Work:** proxy encoding, Commits, and Exports run independently. The toolbar Stop clears those queues; thumbnails continue. Refresh resumes preparation; cancelled transfers need another submission. Queues and workspace membership are session-only, while drafts and successful Commit receipts persist.
+- **Delete:** review selected Library clips, excluding/restoring rows as needed. Confirmation removes associated Library files and the local catalogue entry. Local drafts are retained. Original source-card files and prior Exports are kept; any recycle behavior belongs to the NAS.
+- **Work:** proxy encoding, Commits, and Exports run independently. Each queue can be paused and resumed independently. Pausing keeps pending jobs, and toolbar Refresh updates the Library catalogue. Queues and workspace membership are session-only, while drafts and successful Commit receipts persist.
 
 ## Storage
 

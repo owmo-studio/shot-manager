@@ -9,7 +9,7 @@ const { resolve } = require('node:path');
     const loaded = new (require('node:module'))(__filename, module); loaded.paths = module.paths;
     loaded._compile(bundle.output.find(item => item.type === 'chunk' && item.isEntry).code, __filename);
     const { attributesEqual, attributesChanged, thumbnailChanged, thumbnailDraftChanged, descriptiveStateChanged, publishedClipState } = loaded.exports;
-    const base = { identity: 'OWMO', project: 'Tour', scene: 'Intro', notes: 'Keep', tags: ['talk'], group: 'TH-01', camera: 'A', rating: 'usable' };
+    const base = { identity: 'STUDIO', project: 'Tour', scene: 'Intro', notes: 'Keep', tags: ['talk'], group: 'TH-01', camera: 'A', rating: 'usable' };
     assert.equal(attributesEqual(base, { ...base }), true);
     assert.equal(attributesEqual(base, { ...base, skipped: true }), true, 'Skip is excluded from descriptive state');
     assert.equal(attributesChanged(base, { ...base, notes: 'Changed' }), true);

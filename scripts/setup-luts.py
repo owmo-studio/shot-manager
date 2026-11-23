@@ -1,32 +1,36 @@
-"""Install local viewing tables; originals and NAS media are never accessed."""
-from pathlib import Path
+"""Fetch Sony's s709 V200 for an optional local installation."""
+import argparse
 import hashlib
 import io
-import struct
+import os
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 import urllib.request
 import zipfile
 
-root = Path(__file__).resolve().parent.parent / 'resources' / 'luts'
-root.mkdir(parents=True, exist_ok=True)
-url = 'https://77snszqv.media.zestyio.com/Slog3-S-Gamut3.Cine_To_s709_V200.zip'
-if not (root / 'sony-s709.cube').exists():
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--destination', type=Path,
+                    default=Path(__file__).resolve().parents[1] / 'resources' / 'luts')
+folder = parser.parse_args().destination.expanduser()
+target = folder / 'sony-s709.cube'
+if target.exists():
+    print(f'Already installed: {target}')
+else:
+    url = 'https://77snszqv.media.zestyio.com/Slog3-S-Gamut3.Cine_To_s709_V200.zip'
     with urllib.request.urlopen(url, timeout=30) as response:
-        archive = response.read(10 * 1024 * 1024)
-    with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
-        sony = bundle.read('Slog3-S-Gamut3.Cine_To_s709_V200.cube')
-    (root / 'sony-s709.cube').write_bytes(sony)
-
-# Apple's local Helium resource is a red-fastest 65^3 big-endian RGB16 table.
-# Keep the original fingerprint alongside the converted local-use .cube.
-apple = Path('/Applications/iMovie.app/Contents/Frameworks/Helium.framework/Versions/A/Resources/AppleLogToRec709_v1.0.3dlut')
-if not (root / 'apple-log-rec709.cube').exists():
-    data = apple.read_bytes()
-    if len(data) != 65 ** 3 * 6:
-        raise ValueError('Unrecognized Apple LUT resource. Supply an official Apple Log .cube instead.')
-    values = list(struct.iter_unpack('>3H', data))
-    if values[0] != (0, 0, 0) or values[64] != (65535, 0, 0) or values[64 * 65] != (0, 65535, 0):
-        raise ValueError('Unrecognized Apple LUT ordering.')
-    header = '# Converted locally from Apple iMovie Helium AppleLogToRec709_v1.0.3dlut\nLUT_3D_SIZE 65\n'
-    (root / 'apple-log-rec709.cube').write_text(header + ''.join(' '.join(f'{v / 65535:.8f}' for v in row) + '\n' for row in values))
-    (root / 'apple-resource.sha256').write_text(hashlib.sha256(data).hexdigest() + '\n')
-print('Local Sony and Apple viewing LUTs are ready.')
+        data = response.read(10 * 1024 * 1024 + 1)
+    if len(data) > 10 * 1024 * 1024:
+        raise ValueError('Sony archive exceeds the expected size.')
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        entry = archive.getinfo('Slog3-S-Gamut3.Cine_To_s709_V200.cube')
+        if entry.file_size > 2 * 1024 * 1024:
+            raise ValueError('Unexpected Sony table size.')
+        table = archive.read(entry)
+    if hashlib.sha256(table).hexdigest() != '79f33e0dba22f5e2e9710ef58c6ca3d331304a6dc2b66b5ed5047145acc37a4d':
+        raise ValueError('Sony download differs from the expected s709 V200 table.')
+    folder.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile(dir=folder) as temporary:
+        temporary.write(table)
+        temporary.flush()
+        os.link(temporary.name, target)
+    print(f'Installed: {target}')

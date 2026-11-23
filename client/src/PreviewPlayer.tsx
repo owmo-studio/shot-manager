@@ -9,14 +9,15 @@ import { ViewingRenderer } from './viewingRenderer'
 
 export interface PreviewHandle { captureThumbnail: () => string }
 
-export function PreviewPlayer({ shot, lutEnabled, ref, onReady, onScrubbing }: {
-  shot: VideoShot; lutEnabled: boolean; ref: Ref<PreviewHandle>; onReady: (ready: boolean) => void; onScrubbing: (scrubbing: boolean) => void
+export function PreviewPlayer({ shot, ref, onReady, onScrubbing }: {
+  shot: VideoShot; ref: Ref<PreviewHandle>; onReady: (ready: boolean) => void; onScrubbing: (scrubbing: boolean) => void
 }) {
   const { api, mediaURL } = useClipView();
   const video = useRef<HTMLVideoElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
   const container = useRef<HTMLDivElement>(null)
   const renderer = useRef<ViewingRenderer | null>(null)
+  const [lutEnabled, setLutEnabled] = useState(true)
   const enabled = useRef(lutEnabled)
   enabled.current = lutEnabled
   const readyCallback = useRef(onReady)
@@ -57,7 +58,7 @@ export function PreviewPlayer({ shot, lutEnabled, ref, onReady, onScrubbing }: {
     if (!profile) { setLut(null); return }
     api.getShotLut(shot.id).then((table) => {
       if (disposed) return
-      if (!table || table.profile !== profile) throw new Error('Missing LUT')
+      if (table && table.profile !== profile) throw new Error('Missing LUT')
       setLut(table)
     }).catch(() => {
       if (!disposed) { setLut(null); setLutError('Viewing LUT is unavailable. Showing the original video.') }
@@ -73,7 +74,7 @@ export function PreviewPlayer({ shot, lutEnabled, ref, onReady, onScrubbing }: {
     try { renderer.current = new ViewingRenderer(output, lut, shot.metadata) }
     catch { setGpuError(true); return }
     const draw = () => {
-      try { if (renderer.current?.draw(player, enabled.current)) readyCallback.current(!profile || !!lut) }
+      try { if (renderer.current?.draw(player, enabled.current)) readyCallback.current(true) }
       catch { disposed = true; setGpuError(true); readyCallback.current(false) }
     }
     const tick = () => { if (disposed) return; draw(); if (!disposed) callback = player.requestVideoFrameCallback(tick) }
@@ -113,7 +114,7 @@ export function PreviewPlayer({ shot, lutEnabled, ref, onReady, onScrubbing }: {
 
   useImperativeHandle(ref, () => ({ captureThumbnail() {
     const player = video.current, output = canvas.current, gpu = renderer.current
-    if (!player || !output || !gpu || gpuError || scrubbing.current || player.seeking || (profile && !lut) || !gpu.draw(player, true)) throw new Error('Wait for a transformed frame.')
+    if (!player || !output || !gpu || gpuError || scrubbing.current || player.seeking || !gpu.draw(player, true)) throw new Error('Wait for a transformed frame.')
     const image = document.createElement('canvas')
     const scale = Math.min(1, 480 / output.width, 270 / output.height)
     image.width = Math.max(1, Math.round(output.width * scale))
@@ -129,6 +130,12 @@ export function PreviewPlayer({ shot, lutEnabled, ref, onReady, onScrubbing }: {
   const unsupportedColor = !profile && shot.metadata.color.transfer !== 'bt709'
   return <div ref={container} className="preview-player bg-black">
     <div className="preview-image relative aspect-video overflow-hidden">
+      {lut && !gpuError && <button type="button" aria-label="Toggle viewing LUT" aria-pressed={lutEnabled}
+        title={lutEnabled ? "LUT on — view in Rec.709" : "LUT off — view original"}
+        onClick={() => setLutEnabled((enabled) => !enabled)}
+        className={"absolute left-2 top-2 z-20 flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] font-medium transition duration-75 focus-visible:outline-2 focus-visible:outline-blue-400 " + (lutEnabled ? "border-white/15 bg-black/70 text-zinc-200 hover:border-white/25 hover:bg-white/15 hover:text-white" : "border-white/10 bg-black/70 text-zinc-500 hover:bg-white/8")}>
+        <span aria-hidden="true" className={"size-1.5 rounded-full " + (lutEnabled ? "bg-green-400" : "bg-zinc-600")} />LUT
+      </button>}
       <video ref={video} crossOrigin="anonymous" src={mediaURL(shot.id)}
         className={'absolute inset-0 size-full object-contain ' + (gpuError ? '' : 'opacity-0')}
         controls={gpuError} controlsList="nodownload noplaybackrate noremoteplayback"

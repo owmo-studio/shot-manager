@@ -1,22 +1,14 @@
-Local viewing LUTs
-=================
+# Optional viewing LUTs
 
-The viewing LUTs are included in this repository and copied to `out/resources/luts/`
-by `npm run build`. `scripts/setup-luts.py` documents how they were prepared: it downloads Sony's official
-S-Log3/S-Gamut3.Cine → s709 V2 table from
-https://sony-cinematography.com/resources/luts/ and converts the Apple Log →
-Rec.709 table from the installed iMovie Helium framework into a local `.cube`.
-The Apple resource must be `AppleLogToRec709_v1.0.3dlut`, not Apple Log 2.
-Its RGB16 grid layout, length, and primary corner ordering are checked before
-conversion; this conversion is our implementation, not an Apple-provided .cube
-download. If iMovie is absent, provide an official original Apple Log transform
-as `apple-log-rec709.cube` (unit domain, up to 65³ entries).
+Choose **Shot Manager → Open LUT Folder…** in the macOS menu. Copy your Rec.709 transform into that folder with the matching filename, then reselect the clip. Tables must be unit-domain 3D `.cube` files, up to 65 points per axis. A personal LUT takes precedence over an embedded one.
 
-The app reads these tables from the repository or the build output.
-No LUT is downloaded at application startup. Missing or
-invalid tables produce a visible preview message and do not modify originals.
+| Capture profile | Filename | Source |
+| --- | --- | --- |
+| Sony S-Log3 / S-Gamut3.Cine | `sony-s709.cube` | [Sony Cine s709 V200](https://sony-cinematography.com/resources/luts/) |
+| Apple Log / BT.2020 (original Apple Log) | `apple-log-rec709.cube` | Supply your own compatible transform. [Apple Developer Downloads](https://developer.apple.com/download/all/?q=Apple%20Log) |
 
-Supported automatic transforms are explicitly declared S-Log3/S-Gamut3.Cine
-and Apple Log/BT.2020. Rec.709 passes through. Unknown gamuts, other log curves,
-HLG, and PQ are not guessed or silently mapped through an unrelated LUT.
-This is a viewing aid, not a calibrated grading/export pipeline.
+With no matching table, previews and thumbnails use the original image. LUTs are viewing aids. Proxy encoding and media transfers always use the original colors.
+
+For development, put either table in this directory. To fetch the Sony table from its publisher, run `python3 scripts/setup-luts.py` from the repo root. Pass `--destination "/path/to/LUTs"` to install directly into the folder opened by the app. For Apple, copy in a compatible table you have permission to use.
+
+`npm run package` creates a release without LUTs. `npm run package:with-luts` embeds available tables from this directory for a personal build. Vendor tables retain their own license terms.

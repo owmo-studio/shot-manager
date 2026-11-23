@@ -4,7 +4,6 @@ import { errorMessage } from '../../shared/errors';
 import { useEffect, useRef, useState } from "react";
 import type { ShotCollection, ShotDetails, VideoShot } from "../../shared/shots";
 import { emptyVideoMetadata } from "../../shared/shots";
-import { viewingProfile } from "../../shared/viewing";
 import { durationRow, primaryMetadataRows, quickMediaSummary } from "./mediaInfo";
 import { ResizableInspector } from "./ResizableInspector";
 import { PreviewPlayer } from "./PreviewPlayer";
@@ -77,7 +76,6 @@ export function ClipInspector({
     const [tab, setTab] = useState<"metadata" | "file">("metadata");
     const [details, setDetails] = useState<ShotDetails | null>(null);
     const [detailsError, setDetailsError] = useState<string | null>(null);
-    const [lutEnabled, setLutEnabled] = useState(true);
     const [thumbnailBusy, setThumbnailBusy] = useState(false);
     const [thumbnailError, setThumbnailError] = useState<string | null>(null);
     const [frameReady, setFrameReady] = useState(false);
@@ -107,7 +105,7 @@ export function ClipInspector({
         }
     }
 
-    useEffect(() => { setLutEnabled(true); setFrameReady(false); setThumbnailError(null); }, [shot.id]);
+    useEffect(() => { setFrameReady(false); setThumbnailError(null); }, [shot.id]);
 
     useEffect(() => {
         if (!frameReady || scrubbing) {
@@ -195,13 +193,7 @@ export function ClipInspector({
                     </p>
                 )}
                 <div data-inspector-preview className={`relative shrink-0 overflow-hidden rounded-lg border ${!empty && unavailable ? "border-red-500/30 bg-red-500/8" : "border-white/8 bg-black"}`}>
-                        {viewingProfile(shot.metadata) && <button type="button" aria-label="Toggle viewing LUT" aria-pressed={lutEnabled}
-                            disabled={empty || unavailable || locked}
-                            title={lutEnabled ? "LUT on — view in Rec.709" : "LUT off — view original"}
-                            onClick={() => setLutEnabled((enabled) => !enabled)}
-                            className={"absolute left-2 top-2 z-20 flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] font-medium transition duration-75 focus-visible:outline-2 focus-visible:outline-blue-400 disabled:opacity-40 " + (lutEnabled ? "border-white/15 bg-black/70 text-zinc-200 hover:border-white/25 hover:bg-white/15 hover:text-white" : "border-white/10 bg-black/70 text-zinc-500 hover:bg-white/8")}>
-                            <span aria-hidden="true" className={"size-1.5 rounded-full " + (lutEnabled ? "bg-green-400" : "bg-zinc-600")} />LUT
-                        </button>}
+
                     {empty ? (
                         <div className="aspect-video" aria-label="No clip selected" />
                     ) : unavailable || locked ? (
@@ -219,7 +211,7 @@ export function ClipInspector({
                                   : "Preparing clip…"}
                         </div>
                     ) : (
-                        <PreviewPlayer key={shot.id} ref={preview} shot={shot} lutEnabled={lutEnabled} onReady={setFrameReady} onScrubbing={setScrubbing} />
+                        <PreviewPlayer key={shot.id} ref={preview} shot={shot} onReady={setFrameReady} onScrubbing={setScrubbing} />
                     )}
                 </div>
                 <div role="tablist" aria-label="Clip information" className="mt-3 flex shrink-0 rounded-lg bg-white/4 p-1">

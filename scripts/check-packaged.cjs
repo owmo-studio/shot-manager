@@ -10,7 +10,7 @@ if (!process.versions.electron) {
         for (const name of ['profile','library','source']) fs.mkdirSync(join(root,name));
         execFileSync('ffmpeg',['-v','error','-f','lavfi','-i','color=c=blue:s=160x90:r=10','-t','0.3','-c:v','libx264','-pix_fmt','yuv420p',join(root,'source','sample.mp4')]);
         const env={...process.env,OWMO_PACKAGE_CHECK_ROOT:root,OWMO_PACKAGE_CHECK_BUNDLE:bundle,PATH:'/usr/bin:/bin:/usr/sbin:/sbin'};
-        delete env.ELECTRON_RUN_AS_NODE; delete env.ELECTRON_RENDERER_URL;
+        delete env.ELECTRON_RUN_AS_NODE; env.ELECTRON_RENDERER_URL='about:blank';
         const result=spawnSync(require('electron'),[__filename],{env,stdio:'inherit',timeout:35000});
         if(result.error)console.error(result.error);
         if(result.status!==0 || !fs.existsSync(join(root,'validated')))process.exitCode=1;
@@ -35,7 +35,8 @@ if (!process.versions.electron) {
         },
         utilityProcess:{...electron.utilityProcess,fork(path,args,options){
             assert.ok(options.env.PATH.split(':').includes('/opt/homebrew/bin'));
-            assert.equal(options.env.SHOT_MANAGER_LUT_DIRECTORY,join(resources,'luts'));
+            assert.equal(options.env.SHOT_MANAGER_LUT_DIRECTORY,join(root,'profile','LUTs'));
+            assert.equal(options.env.SHOT_MANAGER_BUNDLED_LUT_DIRECTORY,join(resources,'luts'));
             backend=fork(path,args,options);return backend;
         }},
         dialog:{...electron.dialog,showOpenDialog:async(_window,options)=>({canceled:false,filePaths:[join(root,options.title==='Set Library Location'?'library':'source')]})},
@@ -57,6 +58,7 @@ if (!process.versions.electron) {
             assert.equal(JSON.parse(fs.readFileSync(join(archive,'package.json'),'utf8')).version,version);
             assert.equal(JSON.parse(fs.readFileSync(join(archive,'package.json'),'utf8')).name,'owmo-shot-manager','Keep the existing app-data directory name');
             await until(()=>window&&!window.webContents.isLoadingMainFrame(),'Renderer did not load');
+            assert.equal(require('node:url').fileURLToPath(window.webContents.getURL()), join(archive,'out/renderer/index.html'), 'Packaged app uses its own renderer');
             await until(()=>js(`!!window.desktop && window.desktop.getBackendStatus().then(s=>s.state==='connected')`),'Bundled backend did not start');
             assert.equal((await js('window.desktop.getConfiguration()')).libraryPath,null,'Never load real configuration');
             await until(()=>js(`document.querySelector('section[aria-label="Shot cards"] h2')?.textContent==='Library Not Configured'`),'Import must use the unconfigured Library wording');
@@ -73,7 +75,7 @@ if (!process.versions.electron) {
             await js(`document.querySelector('[aria-label="Configuration"]').click()`);
             await until(()=>js(`!!document.querySelector('dialog[open] #configuration-title')`),'Configuration did not open');
             assert.equal(await js(`document.querySelector('#configuration-title + [aria-label="Application version"]')?.textContent`), version);
-            assert.equal(await js(`document.querySelector('[aria-label="Clear Library location"]')?.textContent.trim()`), 'Clear');
+            await until(()=>js(`document.querySelector('[aria-label="Clear Library location"]')?.textContent.trim()==='Clear'`), 'Configured Library location did not load');
             await js(`document.querySelector('[aria-label="Clear Library location"]').click()`);
             assert.equal(await js(`document.querySelector('[aria-label="Configured Library location"]')?.textContent.trim()`), 'Clears on Save');
             assert.equal((await js('window.desktop.getConfiguration()')).libraryPath, join(root, 'library'));
@@ -91,9 +93,9 @@ if (!process.versions.electron) {
             await js(`document.querySelector('[data-shot-card] > button').click()`);
             await until(()=>js(`!!document.querySelector('input[aria-label="Scene"]:not(:disabled)')`),'Editable Scene field missing');
             assert.equal(await js(`getComputedStyle(document.querySelector('input[aria-label="Scene"]')).userSelect`),'text','Editable text fields still allow selection');
-            for(const name of ['sony-s709.cube','apple-log-rec709.cube'])assert.ok(fs.statSync(join(resources,'luts',name)).size>1000,'Real LUT files live outside ASAR');
+            assert.equal(fs.existsSync(join(archive,'out/resources/luts')),false,'Development LUT output must never leak into the archive');
             fs.writeFileSync(join(root,'validated'),'passed');
-            console.log('PASS: shipped Shot Manager bundle and title, Configuration version and Clear action, external LUTs, Finder PATH, and isolated media processing.');
+            console.log('PASS: shipped Shot Manager bundle and title, Configuration version and Clear action, optional local LUT support, Finder PATH, and isolated media processing.');
             clearTimeout(timer);app.quit();
         }catch(error){console.error(error);clearTimeout(timer);backend?.kill();app.exit(1);}
     });

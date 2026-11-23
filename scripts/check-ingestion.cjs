@@ -11,9 +11,10 @@ async function until(test, description) {
     throw new Error(`Timed out: ${description}`);
 }
 
+process.exitCode = 1; // An unresolved fixture promise must never produce a passing exit.
 (async () => {
     const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'owmo-ingest-check-')));
-    let scanner, queue, server, releaseRefresh;
+    let scanner, queue, server, releaseRefresh, releasePreparation;
     try {
         const entry = join(root, 'entry.ts');
         await fs.writeFile(entry, ['server/ingestion.ts', 'server/scanner.ts', 'server/library.ts', 'server/rsync.ts', 'server/app.ts', 'server/workspace.ts'].map(path => `export * from ${JSON.stringify(join(__dirname, '..', path))};`).join('\n'));
@@ -199,11 +200,18 @@ async function until(test, description) {
         assert.equal(scanner.snapshot().shots.find(shot => shot.id === a.id).ingestState, 'synced', 'Skip does not alter receipt');
         await scanner.updateOrganization([a.id], { field: 'skip', operation: 'set', value: 'false' });
         await scanner.updateOrganization([a.id], { field: 'notes', operation: 'set', value: 'Later notes' });
+        const extended = JSON.parse(await fs.readFile(jsonPath));
+        extended.otherTool = { labels: ['keep'] };
+        extended.metadata.device.serial = 'external';
+        await fs.writeFile(jsonPath, JSON.stringify(extended));
         const replacement = await queue.preview([a.id]);
         assert.equal(replacement.clips[0].mode, 'replace');
         await queue.submit(replacement.token, [a.id]); await finish();
         assert.equal((await fs.stat(join(library, `${a.id}.source.mp4`))).ino, sourceBefore.ino, 'Unchanged source is not recopied');
-        assert.equal(JSON.parse(await fs.readFile(jsonPath)).notes, 'Later notes');
+        const replaced = JSON.parse(await fs.readFile(jsonPath));
+        assert.equal(replaced.notes, 'Later notes');
+        assert.deepEqual(replaced.otherTool, extended.otherTool);
+        assert.deepEqual(replaced.metadata, extended.metadata);
         assert.equal(await fs.readFile(join(library, `${a.id}.proxy.mov`), 'utf8'), 'leave proxy untouched');
 
         // Stale reviews and newly arrived conflicts require another review.
@@ -233,7 +241,7 @@ async function until(test, description) {
         // A renderer can see and stop a queue even while submission validation is still running.
         plan = await queue.preview([c.id]);
         const capture = scanner.captureIngest.bind(scanner);
-        let preparingEntered = false, releasePreparation;
+        let preparingEntered = false;
         scanner.captureIngest = async id => {
             const result = await capture(id);
             preparingEntered = true;
@@ -245,9 +253,9 @@ async function until(test, description) {
         await until(() => preparingEntered, 'submission preparation');
         assert.equal((await queue.status()).active, true, 'Preparing queue is visible after renderer reload');
         const stoppingPreparation = queue.stop();
-        assert.equal(scanner.snapshot().shots.find(shot => shot.id === c.id).editable, true);
         releasePreparation();
         await rejectedSubmission; await stoppingPreparation;
+        assert.equal(scanner.snapshot().shots.find(shot => shot.id === c.id).editable, true);
         scanner.captureIngest = capture;
         assert.equal((await queue.status()).active, false);
         assert.ok(!await fs.stat(join(library, `${c.id}.source.mp4`)).catch(() => null));
@@ -258,9 +266,8 @@ async function until(test, description) {
         entered = false; gate = true;
         await queue.submit(plan.token, [a.id, c.id]);
         await until(() => entered, 'cancellable transfer');
-        const stop = queue.stop();
-        assert.equal(scanner.snapshot().shots.find(shot => shot.id === c.id).editable, true, 'Waiting clip immediately unlocked');
-        await stop; gate = false;
+        await queue.stop(); gate = false;
+        assert.equal(scanner.snapshot().shots.find(shot => shot.id === c.id).editable, true, 'Stopped clip is unlocked');
         assert.equal(scanner.snapshot().shots.find(shot => shot.id === a.id).ingestState, 'changes-pending');
         assert.equal(scanner.snapshot().shots.find(shot => shot.id === b.id).ingestState, 'synced');
         assert.equal(JSON.parse(await fs.readFile(jsonPath)).notes, 'Later notes', 'Cancelled replacement preserves old JSON');
@@ -428,8 +435,9 @@ async function until(test, description) {
         for (const [name, contents] of originals) assert.deepEqual(await fs.readFile(join(source, name)), contents, 'Original synthetic footage untouched');
         console.log('PASS: rsync ingestion, empty attributes, review/removal/replacement, locks, quick-check reuse, cancellation, failures, stale conflicts/mount changes, source reload, receipts, Library deletion/startup/offline checks, concurrent refresh/publication, and API access checks.');
     } finally {
+        releasePreparation?.();
         releaseRefresh?.();
         await queue?.close(); await scanner?.close(); await server?.close();
         await fs.rm(root, { recursive: true, force: true });
     }
-})().catch(error => { console.error(error); process.exitCode = 1; });
+})().then(() => { process.exitCode = 0; }).catch(error => { console.error(error); process.exitCode = 1; });

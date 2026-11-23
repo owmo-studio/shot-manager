@@ -9,14 +9,14 @@ const { resolve } = require('node:path');
     const { emptyClipFilters, matchesClipFilters, filterOptions, UNASSIGNED_IDENTITY } = loaded.exports;
     const shot = (name, identity, project, model, tags, notes = '') => ({ filename: name,
         metadata: { device: { manufacturer: 'Sony', model } }, organization: { identity, project, tags, notes, scene: '', group: '', camera: '' } });
-    const shots = [shot('Intro.mp4', 'OWMO', 'Tour', 'ILME-FX30', ['talk', 'studio'], 'Bright room'),
-        shot('Desk.mp4', 'OWMO', 'Build', 'ILME-FX30', ['studio']),
+    const shots = [shot('Intro.mp4', 'AGENCY', 'Tour', 'ILME-FX30', ['talk', 'studio'], 'Bright room'),
+        shot('Desk.mp4', 'AGENCY', 'Build', 'ILME-FX30', ['studio']),
         shot('Outside.mp4', 'Other', 'Tour', 'ZV-E10M2', ['talk'])];
     const match = filters => shots.filter(shot => matchesClipFilters(shot, { ...emptyClipFilters(), ...filters })).map(shot => shot.filename);
     assert.deepEqual(match({ search: 'INTRO bright' }), ['Intro.mp4']);
     assert.deepEqual(match({ search: 'tour studio' }), ['Intro.mp4'], 'Search matches words across Project and Tags');
-    assert.deepEqual(match({ search: 'OWMO' }), [], 'Search does not duplicate Identity filtering');
-    assert.deepEqual(match({ identity: 'OWMO', projects: ['Tour'], tags: ['talk'] }), ['Intro.mp4']);
+    assert.deepEqual(match({ search: 'AGENCY' }), [], 'Search does not duplicate Identity filtering');
+    assert.deepEqual(match({ identity: 'AGENCY', projects: ['Tour'], tags: ['talk'] }), ['Intro.mp4']);
     assert.deepEqual(match({ projects: ['Tour', 'Build'], tags: ['studio'] }), ['Intro.mp4', 'Desk.mp4'], 'Choices within a facet use OR; facets use AND');
     assert.deepEqual(match({ tags: ['talk', 'studio'] }), shots.map(shot => shot.filename));
     const filters = { ...emptyClipFilters(), identity: 'Other', projects: ['Build'] };

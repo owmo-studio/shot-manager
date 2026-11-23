@@ -6,7 +6,7 @@ import { ingestAttributes } from '../shared/ingestion';
 import type { IngestReview, IngestStatus } from '../shared/ingestion';
 import type { StoppableTransfer, WorkQueue } from '../shared/ingestion';
 import { ShotScanner } from './scanner';
-import { inspectLibrary, libraryAssetName, libraryFileIdentity, listLibrary, readLibraryRevertAssets } from './library';
+import { inspectLibrary, libraryAssetName, libraryFileIdentity, listLibrary, readLibraryMetadata, readLibraryRevertAssets } from './library';
 import type { LibraryListing, LibraryLocation } from './library';
 import { parseLibraryAssetName } from '../shared/library';
 import type { LibraryMetadata } from '../shared/library';
@@ -617,6 +617,8 @@ export class IngestQueue {
         };
         await validate();
         await this.checkExisting(location, entry);
+        const previous = entry.existing[entry.names[2]] ? await readLibraryMetadata(location, shot.id) : null;
+        if (previous && previous.identity !== entry.existing[entry.names[2]]) throw new Error('Library metadata changed after review.');
         // checkExisting has just validated a reviewed Library proxy. The
         // shared presence index may be temporarily unverified during Refresh.
         const proxy = this.proxies && !entry.existing[entry.names[3]] ? await this.proxies.asset(shot.id) : null;
@@ -660,11 +662,14 @@ export class IngestQueue {
             this.scanner.setTransferProgress(shot.id, 99);
             this.publish();
             const ingestedAt = new Date().toISOString();
-            const metadata: LibraryMetadata = {
+            const original = previous?.metadata ?? {
                 id: shot.id, fingerprint: shot.fingerprint!, originalFilename: shot.filename, bytes: shot.bytes,
                 recordedAt: shot.timestamp, dateSource: shot.dateSource, dateEvidence: shot.dateEvidence, dateConfidence: shot.dateConfidence,
                 durationSeconds: shot.durationSeconds, metadata: shot.metadata, warnings: shot.warnings,
-                ...ingestAttributes(shot.organization!), ingestion: { completedAt: ingestedAt, transfer: 'rsync' },
+            };
+            const metadata: LibraryMetadata = {
+                ...original, ...ingestAttributes(shot.organization!),
+                ingestion: { ...previous?.metadata.ingestion, completedAt: ingestedAt, transfer: 'rsync' },
             };
             await writeFile(temporaryJSON, JSON.stringify(metadata, null, 2) + '\n', { flag: 'wx', flush: true });
             await validate();

@@ -2,7 +2,6 @@ import { app, BrowserWindow, dialog, ipcMain, protocol, shell, utilityProcess } 
 import type { IpcMainInvokeEvent, UtilityProcess } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { isWorkQueue } from '../shared/ingestion'
-import { existsSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { mkdir, realpath } from 'node:fs/promises'
 import type { LibraryLocation } from '../server/library'
@@ -91,8 +90,7 @@ function requireMainWindow(event: IpcMainInvokeEvent): BrowserWindow {
 }
 
 async function startBackend(): Promise<void> {
-  const sourceLuts = app.isPackaged ? join(process.resourcesPath, 'luts') : join(app.getAppPath(), 'resources', 'luts')
-  const lutDirectory = existsSync(sourceLuts) ? sourceLuts : join(__dirname, '..', 'resources', 'luts')
+  const bundledLuts = app.isPackaged ? join(process.resourcesPath, 'luts') : join(app.getAppPath(), 'resources', 'luts')
   const configurationPath = join(app.getPath('userData'), 'configuration.json')
   const cache = await managedCacheLocation()
   const storage = cacheFiles(cache.root)
@@ -107,7 +105,8 @@ async function startBackend(): Promise<void> {
       SHOT_MANAGER_THUMBNAIL_CACHE: storage.thumbnails, SHOT_MANAGER_FINGERPRINT_DIRECTORY: storage.fingerprints,
       SHOT_MANAGER_ORGANIZATION_FILE: storage.metadata, SHOT_MANAGER_CACHE_ROOT: storage.root,
       SHOT_MANAGER_CACHE_PARENT: cache.parent, SHOT_MANAGER_CACHE_MOUNT: cache.mount,
-      SHOT_MANAGER_CONFIGURATION_FILE: configurationPath, SHOT_MANAGER_LUT_DIRECTORY: lutDirectory }
+      SHOT_MANAGER_CONFIGURATION_FILE: configurationPath, SHOT_MANAGER_LUT_DIRECTORY: join(profilePath, 'LUTs'),
+      SHOT_MANAGER_BUNDLED_LUT_DIRECTORY: bundledLuts }
   })
   const started = new Promise<void>((resolve, reject) => {
     backend!.on('message', (message: unknown) => { if (typeof message === 'object' && message !== null && 'type' in message && message.type === 'ready') resolve() })
@@ -175,7 +174,7 @@ function createWindow() {
   })
   mainWindow.on('closed', () => { mainWindow = null })
 
-  if (process.env.ELECTRON_RENDERER_URL) {
+  if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
     void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
