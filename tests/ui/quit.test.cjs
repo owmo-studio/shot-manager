@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const { join } = require('node:path');
 if (!process.versions.electron) {
-    for (const mode of ['normal', 'close-button', 'failed-save', 'close-button-failed-save', 'discard-failed-save']) {
+    for (const mode of ['normal', 'slow-refresh', 'close-button', 'failed-save', 'close-button-failed-save', 'discard-failed-save']) {
         const root = fs.mkdtempSync(join(require('node:os').tmpdir(), 'shot-quit-check-'));
         try {
             const env = { ...process.env, SHOT_MANAGER_QUIT_TEST_ROOT: root, SHOT_MANAGER_QUIT_TEST_MODE: mode };
@@ -29,10 +29,15 @@ if (!process.versions.electron) {
     let window, backend, backendURL, token, accepted = 0, textRequests = 0, requested = false, observedQuit = false;
     const timer = setTimeout(() => { console.error('Command+Q did not finish gracefully'); backend?.kill(); app.exit(1); }, 15000);
     let activeReads = 0, shutdownRequested = false, lateFetches = 0, failedFetches = 0;
+    let refreshSignal;
     let vocabularyHandler, vocabularyArgs;
     const originalFetch = global.fetch;
     global.fetch = async (url, options) => {
         if (shutdownRequested) lateFetches++;
+        if (mode === 'slow-refresh' && String(url).endsWith('/api/library/refresh')) {
+            refreshSignal = options.signal;
+            return new Promise((_, reject) => refreshSignal?.addEventListener('abort', () => reject(refreshSignal.reason), {once:true}));
+        }
         const vocabulary = String(url).endsWith('/api/organization/vocabulary');
         if (vocabulary) activeReads++;
         try {
@@ -103,6 +108,7 @@ if (!process.versions.electron) {
     app.on('will-quit', () => {
         try {
             assert.ok(requested && observedQuit && shutdownRequested && backendExited);
+            if (mode === 'slow-refresh') assert.ok(refreshSignal.aborted, 'Quit cancels the outstanding Library refresh');
             assert.ok(window.isDestroyed(), 'Window closes after backend exit');
             assert.equal(lateFetches,0,'No renderer fetch reaches a closing backend');
             assert.equal(failedFetches,0,'Normal quit causes no refused backend requests');
@@ -116,7 +122,7 @@ if (!process.versions.electron) {
             console.log(`PASS: ${mode} drains accepted work, reports delayed shutdown, preserves failed-save choices, and closes only after backend exit.`);
         } catch (error) { console.error(error); app.exit(1); }
     });
-    require('../out/main/index.cjs');
+    require('../../out/main/index.cjs');
     app.whenReady().then(async () => {
         try {
             const wait = async condition => { for (let i = 0; i < 150; i++) { if (await condition()) return; await new Promise(resolve => setTimeout(resolve, 20)); } throw new Error('Quit fixture did not settle'); };
@@ -143,6 +149,10 @@ if (!process.versions.electron) {
             await wait(() => accepted === 4);
             await window.webContents.executeJavaScript('window.desktop.flushOrganizationText()');
             assert.equal(textRequests,2,'Switching from Notes to Scene does not coalesce away either field');
+            if (mode === 'slow-refresh') {
+                await window.webContents.executeJavaScript('window.desktop.refreshCatalogue().catch(()=>{});void 0');
+                await wait(() => !!refreshSignal);
+            }
             await window.webContents.executeJavaScript(`window.desktop.updateOrganization([${JSON.stringify(shot.id)}],{field:'scene',operation:'set',value:'Final'}).catch(()=>{});window.desktop.updateOrganization([${JSON.stringify(shot.id)}],{field:'scene',operation:'set',value:'Final scene before closing.'}).catch(()=>{});void 0`);
             await wait(() => accepted === 6);
             await window.webContents.executeJavaScript(`setInterval(()=>window.desktop.getTagVocabulary().catch(()=>{}),10);void 0`);
@@ -151,8 +161,9 @@ if (!process.versions.electron) {
                 if (closeButton) window.close();
                 else {
                     window.webContents.focus();
-                    window.webContents.sendInputEvent({type:'keyDown',keyCode:'Q',modifiers:['meta']});
-                    if (!window.isDestroyed()) window.webContents.sendInputEvent({type:'keyUp',keyCode:'Q',modifiers:['meta']});
+                    const modifiers = [mode === 'slow-refresh' ? 'control' : 'meta'];
+                    window.webContents.sendInputEvent({type:'keyDown',keyCode:'Q',modifiers});
+                    if (!window.isDestroyed()) window.webContents.sendInputEvent({type:'keyUp',keyCode:'Q',modifiers});
                 }
             };
             requested = true;
@@ -160,7 +171,7 @@ if (!process.versions.electron) {
             if (failureMode && !discardMode) {
                 await wait(() => prompts === 1);
                 await wait(async () => (await window.webContents.executeJavaScript('window.desktop.getSaveStatus()'))?.failed === 1);
-                await window.loadFile(join(__dirname, '../out/renderer/index.html'));
+                await window.loadFile(join(__dirname, '../../out/renderer/index.html'));
                 assert.equal((await window.webContents.executeJavaScript('window.desktop.getSaveStatus()')).failed, 1, 'Unsaved edits survive renderer reload');
                 await wait(() => window.webContents.executeJavaScript(`!!document.querySelector('[aria-label="Retry unsaved changes"]')`));
                 allowWrites = true;

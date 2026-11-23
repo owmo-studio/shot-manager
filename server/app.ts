@@ -93,6 +93,7 @@ export function createServer(token: string, onShotsChanged?: (change: ShotChange
   server.post<{ Body: { shotIds: string[]; token: string } }>('/api/sync/start', { schema: { body: { type: 'object', required: ['shotIds', 'token'], additionalProperties: false, properties: { shotIds: ids, token: { type: 'string', maxLength: 64 } } } } }, request => sync.submit(request.body.token, request.body.shotIds))
   server.get('/api/library', () => catalogue.snapshot())
   server.post('/api/library/refresh', () => catalogue.refresh())
+  server.addHook('preClose', async () => { catalogue.stopRefreshing() })
   server.get('/api/library/vocabulary', () => catalogue.vocabulary())
   server.post<{ Body: { shotIds: string[] } }>('/api/library/review', { schema: clipIdsBody }, request => catalogue.preview(request.body.shotIds))
   server.post<{ Body: { token: string; shotIds: string[] } }>('/api/library/commit', {

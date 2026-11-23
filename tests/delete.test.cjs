@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const { join, resolve } = require('node:path');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 (async () => {
-    const root = await fs.realpath(await fs.mkdtemp(join(require('node:os').tmpdir(), 'owmo-delete-')));
+    const root = await fs.realpath(await fs.mkdtemp(join(require('node:os').tmpdir(), 'shot-manager-delete-')));
     let scanner, queue, catalogue, release;
     try {
         const entry = join(root, 'entry.ts');

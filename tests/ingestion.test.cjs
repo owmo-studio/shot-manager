@@ -13,7 +13,7 @@ async function until(test, description) {
 
 process.exitCode = 1; // An unresolved fixture promise must never produce a passing exit.
 (async () => {
-    const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'owmo-ingest-check-')));
+    const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'shot-manager-ingest-check-')));
     let scanner, queue, server, releaseRefresh, releasePreparation;
     try {
         const entry = join(root, 'entry.ts');
@@ -236,7 +236,7 @@ process.exitCode = 1; // An unresolved fixture promise must never produce a pass
         await assert.rejects(queue.preview([c.id]), /different extension/);
         await fs.unlink(join(library, `${c.id}.source.mov`));
         await assert.rejects(inspectLibrary(source, [source]), /different folders/);
-        await assert.rejects(inspectLibrary(join('/Volumes', `owmo-absent-${process.pid}`)), /not mounted/);
+        await assert.rejects(inspectLibrary(join('/Volumes', `shot-manager-absent-${process.pid}`)), /not mounted/);
 
         // A renderer can see and stop a queue even while submission validation is still running.
         plan = await queue.preview([c.id]);

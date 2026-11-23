@@ -1,7 +1,7 @@
 import { ClipViewProvider } from "./ClipViewContext";
 import type { LibraryCollection } from "../../shared/library";
 import { canStopClip, hasPendingCommit } from "./clipState";
-import { errorMessage } from '../../shared/errors';
+import { AppError, errorMessage } from '../../shared/errors';
 import type { StoppableTransfer } from '../../shared/ingestion';
 import type { DragEvent } from "react";
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
@@ -28,6 +28,10 @@ import { ClipActionDialog } from "./ClipActionDialog";
 import { LibraryDeleteDialog } from "./DeleteButton";
 import { DirectoryUnavailableDialog } from "./DirectoryUnavailableDialog";
 import "./styles.css";
+
+function appClosing(error: unknown) {
+    return error instanceof AppError && error.code === 'APP_CLOSING';
+}
 
 function App() {
     const [status, setStatus] = useState<BackendStatus>({ state: "starting", message: "Starting backend…" });
@@ -196,7 +200,7 @@ function App() {
             }
         }
         const reportError = (error: unknown) => {
-            if (!disposed) setWorkspaceError(errorMessage(error, 'Could not refresh the Library.'));
+            if (!disposed && !appClosing(error)) setWorkspaceError(errorMessage(error, 'Could not refresh the Library.'));
         };
         const configurationChanged = () => void refresh().catch(reportError);
         window.addEventListener('configuration-changed', configurationChanged);
@@ -348,7 +352,8 @@ function App() {
                             receiveShots(currentShots);
                             setWorkspaceLoaded(true);
                         }
-                    } catch {
+                    } catch (error) {
+                        if (appClosing(error)) throw error;
                         if (!disposed) setCommunicationError(true);
                         if (!disposed && !refreshFailed.current) {
                             refreshFailed.current = true;
@@ -356,8 +361,8 @@ function App() {
                         }
                     }
                 }
-            } catch {
-                if (!disposed) setStatus({ state: "unavailable", message: "Desktop connection unavailable." });
+            } catch (error) {
+                if (!disposed && !appClosing(error)) setStatus({ state: "unavailable", message: "Desktop connection unavailable." });
             }
             running = false;
             if (!disposed) timer = setTimeout(refresh, again ? 0 : nextDelay);

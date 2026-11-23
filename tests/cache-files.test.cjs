@@ -5,7 +5,7 @@ const { join, resolve } = require('node:path');
 const { tmpdir } = require('node:os');
 
 (async () => {
-    const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'owmo-cache-files-')));
+    const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'shot-manager-cache-files-')));
     try {
         const entry = join(root, 'fixture.ts');
         await fs.writeFile(entry, `export * from ${JSON.stringify(resolve('server/cacheFiles.ts'))};`);

@@ -1,11 +1,18 @@
 // Synthetic renderer integration check. No source cards, media, or NAS access.
 if (!process.versions.electron) {
     const { spawnSync } = require("node:child_process");
+    const { mkdtempSync, rmSync } = require("node:fs");
+    const { join } = require("node:path");
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
-    const result = spawnSync(require("electron"), [__filename], { env, stdio: "inherit" });
-    if (result.error) console.error(result.error);
-    process.exit(result.status ?? 1);
+    const profile = mkdtempSync(join(require("node:os").tmpdir(), "shot-selection-profile-"));
+    try {
+        const result = spawnSync(require("electron"), [`--user-data-dir=${profile}`, __filename], { env, stdio: "inherit" });
+        if (result.error) console.error(result.error);
+        process.exitCode = result.status ?? 1;
+    } finally {
+        rmSync(profile, { recursive: true, force: true });
+    }
 } else {
     const { app, BrowserWindow, ipcMain, protocol } = require("electron");
     const assert = require("node:assert/strict");
@@ -293,7 +300,7 @@ if (!process.versions.electron) {
                     preload: join(root, "preload.cjs"),
                 },
             });
-            await window.loadFile(join(__dirname, "../out/renderer/index.html"));
+            await window.loadFile(join(__dirname, "../../out/renderer/index.html"));
             const js = async (code) => {
                 try {
                     return await window.webContents.executeJavaScript(code);

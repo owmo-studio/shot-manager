@@ -5,11 +5,10 @@ const { tmpdir } = require('node:os');
 const { build, Platform, Arch } = require('electron-builder');
 
 (async () => {
-    if (process.platform !== 'darwin') throw new Error('Build the Mac application on macOS.');
     const root = resolve(__dirname, '..');
     const iconPath = join(root, 'resources/icon/AppIcon.icns');
     if (!existsSync(iconPath)) {
-        const temporary = mkdtempSync(join(tmpdir(), 'owmo-icon-'));
+        const temporary = mkdtempSync(join(tmpdir(), 'shot-manager-icon-'));
         try {
             const iconset = join(temporary, 'AppIcon.iconset'); mkdirSync(iconset);
             for (const size of [16, 32, 128, 256, 512]) for (const scale of [1, 2]) {
@@ -22,11 +21,10 @@ const { build, Platform, Arch } = require('electron-builder');
     const output = await build({
         targets: Platform.MAC.createTarget('dir', Arch[process.arch]), publish: 'never',
         config: {
-            appId: 'com.owmo.shot-manager', productName: 'Shot Manager', extends: null,
+            appId: 'org.shotmanager.desktop', productName: 'Shot Manager', extends: null,
             directories: { output: 'release', buildResources: 'resources/icon' },
             electronDist: join(dirname(require.resolve('electron')), 'dist'),
-            files: ['out/main/**/*', 'out/preload/**/*', 'out/renderer/**/*', 'package.json'],
-            extraResources: process.argv.includes('--with-luts') ? [{ from: 'resources/luts', to: 'luts', filter: ['apple-log-rec709.cube', 'sony-s709.cube'] }] : [],
+            files: ['out/main/**/*', 'out/preload/**/*', 'out/renderer/**/*', 'package.json', 'LICENSE'],
             npmRebuild: false,
             mac: { category: 'public.app-category.video', icon: 'resources/icon/AppIcon.icns', identity: '-', hardenedRuntime: false, notarize: false },
         },

@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const { join, resolve } = require('node:path');
 
 (async () => {
-    const root = await fs.realpath(await fs.mkdtemp(join(require('node:os').tmpdir(), 'owmo-library-')));
+    const root = await fs.realpath(await fs.mkdtemp(join(require('node:os').tmpdir(), 'shot-manager-library-')));
     try {
         const entry = join(root, 'entry.ts');
         await fs.writeFile(entry, ['server/library.ts', 'shared/library.ts'].map(file => `export * from ${JSON.stringify(resolve(file))};`).join('\n'));

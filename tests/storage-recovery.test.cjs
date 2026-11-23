@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const { join, resolve } = require('node:path');
 
 (async () => {
-    const root = await fs.realpath(await fs.mkdtemp(join(require('node:os').tmpdir(), 'owmo-storage-recovery-')));
+    const root = await fs.realpath(await fs.mkdtemp(join(require('node:os').tmpdir(), 'shot-manager-storage-recovery-')));
     try {
         const entry = join(root, 'entry.ts');
         await fs.writeFile(entry, `export * from ${JSON.stringify(resolve('server/storageRecovery.ts'))};\n`);

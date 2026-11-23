@@ -8,7 +8,7 @@ async function until(test, label) {
     throw new Error(`Timed out: ${label}`);
 }
 (async () => {
-    const root = await fs.realpath(await fs.mkdtemp(join(require('node:os').tmpdir(), 'owmo-catalogue-')));
+    const root = await fs.realpath(await fs.mkdtemp(join(require('node:os').tmpdir(), 'shot-manager-catalogue-')));
     let scanner, queue, catalogue;
     try {
         const entry = join(root, 'entry.ts');

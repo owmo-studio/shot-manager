@@ -9,15 +9,15 @@ const files: Record<ViewingProfile, string> = {
 }
 const loaded = new Map<string, Promise<ViewingLut>>()
 
-// A user-installed table takes precedence over an optional build-time copy.
 export async function resolveViewingLut(profile: ViewingProfile) {
-  for (const directory of [process.env.SHOT_MANAGER_LUT_DIRECTORY, process.env.SHOT_MANAGER_BUNDLED_LUT_DIRECTORY]) {
-    if (!directory) continue
-    const path = join(directory, files[profile])
-    try { return { path, table: await readTable(profile, path) } }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  const directory = process.env.SHOT_MANAGER_LUT_DIRECTORY
+  if (!directory) return null
+  const path = join(directory, files[profile])
+  try { return { path, table: await readTable(profile, path) } }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
   }
-  return null
 }
 
 export async function loadViewingLut(profile: ViewingProfile) {

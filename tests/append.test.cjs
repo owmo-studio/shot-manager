@@ -7,7 +7,7 @@ const execute = require('node:util').promisify(require('node:child_process').exe
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(test, label) { for (let i = 0; i < 750; i++) { if (await test()) return; await sleep(20); } throw new Error(`Timed out: ${label}`); }
 (async () => {
-    const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'owmo-append-')));
+    const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'shot-manager-append-')));
     let manager, queue, release, releaseCapture, releaseExport;
     try {
         const entry = join(root, 'entry.ts');

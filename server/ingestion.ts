@@ -622,7 +622,7 @@ export class IngestQueue {
         // checkExisting has just validated a reviewed Library proxy. The
         // shared presence index may be temporarily unverified during Refresh.
         const proxy = this.proxies && !entry.existing[entry.names[3]] ? await this.proxies.asset(shot.id) : null;
-        const staging = await mkdtemp(join(tmpdir(), 'owmo-ingest-'));
+        const staging = await mkdtemp(join(tmpdir(), 'shot-manager-ingest-'));
         const metadataPath = join(location.path, entry.names[2]);
         const temporaryJSON = join(location.path, `${shot.id}.metadata.${randomUUID()}.partial`);
         try {

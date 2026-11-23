@@ -33,6 +33,7 @@ export class LibraryCatalogue {
     private loaded?: Promise<void>;
     private pending: Promise<unknown> = Promise.resolve();
     private refreshRun?: Promise<LibraryCollection>;
+    private readonly refreshShutdown = new AbortController();
     private refreshing = false;
     private revision = 0;
     private commitRevisions = new Map<string, number>();
@@ -161,12 +162,14 @@ export class LibraryCatalogue {
     }
     refresh(): Promise<LibraryCollection> {
         if (this.refreshRun) return this.refreshRun;
+        const { signal } = this.refreshShutdown;
+        if (signal.aborted) return this.snapshot();
         this.refreshing = true; this.changed();
         const run = this.serialize(async () => {
             await this.load();
             try {
                 const location = await this.inspect();
-                const listing = await listLibrary(location);
+                const listing = await listLibrary(location, signal);
                 const ids = [...listing.assets.keys()].filter(id => listing.assets.get(id)!.includes(libraryAssetName(id, 'metadata', 'json')));
                 const entries = new Map<string, CatalogueEntry>();
                 const verified = new Map<string, { path: string; error?: string }>();
@@ -175,7 +178,7 @@ export class LibraryCatalogue {
                 let next = 0;
                 // Small fixed pool: hundreds of JSON opens must not swamp an SMB share.
                 await Promise.all(Array.from({ length: Math.min(4, ids.length) }, async () => {
-                    while (next < ids.length) {
+                    while (!signal.aborted && next < ids.length) {
                         const id = ids[next++];
                         try {
                             const { metadata } = await readLibraryMetadata(location, id);
@@ -192,7 +195,9 @@ export class LibraryCatalogue {
                         }
                     }
                 }));
-                await this.validateLocation(location);
+                signal.throwIfAborted();
+                await this.validateLocation(location, signal);
+                signal.throwIfAborted();
                 const state = { path: location.path, refreshedAt: new Date().toISOString(), entries: [...entries.values()].sort((a,b) => a.metadata.id.localeCompare(b.metadata.id)) };
                 const unlocked = state.entries.filter(entry => !this.scanner.commitLock(entry.metadata.id)).map(entry => entry.metadata);
                 await this.scanner.organization.syncLibrary(unlocked, () => unlocked.every(entry => !this.scanner.commitLock(entry.id)), location.path);
@@ -200,7 +205,7 @@ export class LibraryCatalogue {
                 this.verified = verified;
                 this.error = undefined; this.warnings = warnings;
                 await this.scanner.reloadOrganizations();
-            } catch (error) { this.error = error instanceof Error ? error.message : String(error); }
+            } catch (error) { if (!signal.aborted) this.error = error instanceof Error ? error.message : String(error); }
             finally { this.refreshing = false; this.changed(); }
             return this.snapshot();
         });
@@ -421,7 +426,7 @@ export class LibraryCatalogue {
         const updated = { ...metadata, ...attributes };
         const path = join(location.path, libraryAssetName(id, 'metadata', 'json'));
         const temporary = join(location.path, `${id}.metadata.${randomUUID()}.partial`);
-        const staging = capture.thumbnail ? await mkdtemp(join(tmpdir(), 'owmo-library-thumb-')) : undefined;
+        const staging = capture.thumbnail ? await mkdtemp(join(tmpdir(), 'shot-manager-library-thumb-')) : undefined;
         try {
             signal.throwIfAborted();
             if (staging && capture.thumbnail) {
@@ -525,5 +530,6 @@ export class LibraryCatalogue {
         return { file: { filename: m.originalFilename, path: join(this.state.path!, source ?? ''), bytes: m.bytes },
             metadata: m.metadata, fingerprint: m.fingerprint, embeddedMetadata: [{ label: 'Library metadata', format: 'json', text: JSON.stringify(m, null, 2) }], mediaInfo: null, errors: [] };
     }
-    async close() { await this.refreshRun; await this.pending; }
+    stopRefreshing() { this.refreshShutdown.abort(); }
+    async close() { this.stopRefreshing(); await this.refreshRun; await this.pending; }
 }

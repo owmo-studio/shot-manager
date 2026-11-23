@@ -1,4 +1,4 @@
-"""Fetch Sony's s709 V200 for an optional local installation."""
+"""Set up optional Shot Manager resources. Currently downloads Sony's s709 V200 viewing LUT."""
 import argparse
 import hashlib
 import io

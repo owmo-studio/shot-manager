@@ -10,7 +10,7 @@ async function until(test, label) {
     throw new Error(`Timed out: ${label}`);
 }
 (async () => {
-    const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'owmo-workspace-')));
+    const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'shot-manager-workspace-')));
     let scanner, releaseThumbnail, releaseFingerprint;
     try {
         const entry = join(root, 'entry.ts');

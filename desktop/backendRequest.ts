@@ -8,7 +8,8 @@ export async function requestBackend<T = unknown>(baseURL: string | null, token:
     const headers = new Headers(options.headers);
     headers.set('Authorization', `Bearer ${token}`);
     if (options.body !== undefined) headers.set('Content-Type', 'application/json');
-    const signal = mutation ? options.signal : AbortSignal.timeout(readTimeoutMs);
+    const deadline = mutation ? undefined : AbortSignal.timeout(readTimeoutMs);
+    const signal = deadline && options.signal ? AbortSignal.any([options.signal, deadline]) : deadline ?? options.signal;
     let response: Response;
     try {
         response = await fetcher(`${baseURL}${path}`, { ...options, headers, signal, redirect: 'error' });

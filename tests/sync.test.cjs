@@ -7,7 +7,7 @@ const parseCSV = async path => JSON.parse((await execute('python3',['-c','import
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) return; await sleep(10); } throw new Error('Export timed out'); }
 (async () => {
-    const root = await fs.realpath(await fs.mkdtemp(join(require('node:os').tmpdir(), 'owmo-sync-')));
+    const root = await fs.realpath(await fs.mkdtemp(join(require('node:os').tmpdir(), 'shot-manager-sync-')));
     let queue, catalogue, scanner;
     try {
         const entry = join(root, 'entry.ts');

@@ -20,6 +20,9 @@ import type { WorkspaceRestore } from '../shared/shots'
 
 // Keep Electron's existing profile path when changing its display name.
 const profilePath = app.getPath('userData')
+const lutDirectory = app.isPackaged
+  ? join(profilePath, 'Resources', 'LUT')
+  : join(app.getAppPath(), 'resources', 'luts')
 app.setName('Shot Manager')
 app.setPath('userData', profilePath)
 
@@ -61,6 +64,7 @@ async function managedCacheLocation() {
 }
 const pendingIPC = new Set<Promise<unknown>>()
 const mediaShutdown = new AbortController()
+let viewShutdown = new AbortController()
 
 function handle(channel: string, listener: Parameters<typeof ipcMain.handle>[1]) {
   ipcMain.handle(channel, (event, ...args) => {
@@ -81,6 +85,14 @@ function backendRequest<T = unknown>(path: string, options: RequestInit = {}) {
   return requestBackend<T>(backendURL, token, path, options)
 }
 
+// Only renderer reads and refreshes may be abandoned. Accepted writes still drain on quit.
+async function viewRequest<T = unknown>(path: string, options: RequestInit = {}) {
+  const { signal } = viewShutdown
+  signal.throwIfAborted()
+  try { return await backendRequest<T>(path, { ...options, signal }) }
+  catch (error) { signal.throwIfAborted(); throw error }
+}
+
 function requireMainWindow(event: IpcMainInvokeEvent): BrowserWindow {
   if (!mainWindow || event.sender !== mainWindow.webContents ||
       event.senderFrame !== mainWindow.webContents.mainFrame) {
@@ -90,7 +102,6 @@ function requireMainWindow(event: IpcMainInvokeEvent): BrowserWindow {
 }
 
 async function startBackend(): Promise<void> {
-  const bundledLuts = app.isPackaged ? join(process.resourcesPath, 'luts') : join(app.getAppPath(), 'resources', 'luts')
   const configurationPath = join(app.getPath('userData'), 'configuration.json')
   const cache = await managedCacheLocation()
   const storage = cacheFiles(cache.root)
@@ -105,8 +116,7 @@ async function startBackend(): Promise<void> {
       SHOT_MANAGER_THUMBNAIL_CACHE: storage.thumbnails, SHOT_MANAGER_FINGERPRINT_DIRECTORY: storage.fingerprints,
       SHOT_MANAGER_ORGANIZATION_FILE: storage.metadata, SHOT_MANAGER_CACHE_ROOT: storage.root,
       SHOT_MANAGER_CACHE_PARENT: cache.parent, SHOT_MANAGER_CACHE_MOUNT: cache.mount,
-      SHOT_MANAGER_CONFIGURATION_FILE: configurationPath, SHOT_MANAGER_LUT_DIRECTORY: join(profilePath, 'LUTs'),
-      SHOT_MANAGER_BUNDLED_LUT_DIRECTORY: bundledLuts }
+      SHOT_MANAGER_CONFIGURATION_FILE: configurationPath, SHOT_MANAGER_LUT_DIRECTORY: lutDirectory }
   })
   const started = new Promise<void>((resolve, reject) => {
     backend!.on('message', (message: unknown) => { if (typeof message === 'object' && message !== null && 'type' in message && message.type === 'ready') resolve() })
@@ -164,7 +174,7 @@ function createWindow() {
     if (url !== mainWindow?.webContents.getURL()) event.preventDefault()
   })
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (input.type === 'keyDown' && input.key.toLowerCase() === 'q' && input.meta && !input.control && !input.alt && !input.shift) {
+    if (input.type === 'keyDown' && input.key.toLowerCase() === 'q' && (input.meta !== input.control) && !input.alt && !input.shift) {
       event.preventDefault()
       app.quit()
     }
@@ -191,7 +201,7 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.whenReady().then(() => {
-    installApplicationMenu()
+    installApplicationMenu(lutDirectory)
     const validateIngestIds = (value: unknown): string[] => {
       if (!Array.isArray(value) || !value.length || value.length > 1000 || value.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id))) throw new Error('Invalid commit selection')
       return [...new Set(value)]
@@ -213,8 +223,8 @@ if (!app.requestSingleInstanceLock()) {
         method: 'POST', body: JSON.stringify({ shotIds })
       }))
     })
-    handle('ingestion:status', event => { requireMainWindow(event); return backendRequest('/api/ingestion') })
-    handle('library:list', event => { requireMainWindow(event); return backendRequest('/api/library') })
+    handle('ingestion:status', event => { requireMainWindow(event); return viewRequest('/api/ingestion') })
+    handle('library:list', event => { requireMainWindow(event); return viewRequest('/api/library') })
     handle('sync:choose-destination', async event => {
       const owner = requireMainWindow(event)
       const result = await dialog.showOpenDialog(owner, { title: 'Choose Export Destination', buttonLabel: 'Choose Destination', properties: ['openDirectory'] })
@@ -229,8 +239,8 @@ if (!app.requestSingleInstanceLock()) {
       await flushDrafts()
       return organizationWrites.run(() => backendRequest(`/api/sync/${action}`, { method: 'POST', body: JSON.stringify(action === 'review' ? { shotIds, destinationToken: token } : { shotIds, token }) }))
     })
-    handle('library:vocabulary', event => { requireMainWindow(event); return backendRequest('/api/library/vocabulary') })
-    handle('library:refresh', async event => { requireMainWindow(event); await flushDrafts(); return backendRequest('/api/library/refresh', { method: 'POST' }) })
+    handle('library:vocabulary', event => { requireMainWindow(event); return viewRequest('/api/library/vocabulary') })
+    handle('library:refresh', async event => { requireMainWindow(event); await flushDrafts(); return viewRequest('/api/library/refresh', { method: 'POST' }) })
     for (const action of ['review', 'revert'] as const) handle(`library:${action}`, async (event, value: unknown) => {
       requireMainWindow(event); const shotIds = validateIngestIds(value); await flushDrafts()
       return organizationWrites.run(() => backendRequest(`/api/library/${action}`, { method: 'POST', body: JSON.stringify({ shotIds }) }))
@@ -264,7 +274,7 @@ if (!app.requestSingleInstanceLock()) {
     for (const asset of ['thumbnail', 'details', 'lut'] as const) handle(`library:${asset}`, async (event, id: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid Library clip ID')
-      const result = await backendRequest<{ dataUrl: string | null }>(`/api/library/${id}/${asset}`)
+      const result = await viewRequest<{ dataUrl: string | null }>(`/api/library/${id}/${asset}`)
       return asset === 'thumbnail' ? result.dataUrl : result
     })
     handle('library:set-thumbnail', async (event, id: unknown, dataUrl: unknown) => {
@@ -274,7 +284,7 @@ if (!app.requestSingleInstanceLock()) {
       await flushDrafts()
       return organizationWrites.run(() => backendRequest(`/api/library/${id}/thumbnail`, { method: 'PUT', body: JSON.stringify({ dataUrl }) }))
     })
-    handle('ingestion:refresh-library', event => { requireMainWindow(event); return backendRequest('/api/ingestion/library/refresh', { method: 'POST' }) })
+    handle('ingestion:refresh-library', event => { requireMainWindow(event); return viewRequest('/api/ingestion/library/refresh', { method: 'POST' }) })
     handle('work:control-queue', (event, queue: unknown, pause: unknown) => {
       requireMainWindow(event)
       if (!isWorkQueue(queue) || typeof pause !== 'boolean') throw new Error('Invalid queue control.')
@@ -473,7 +483,7 @@ if (!app.requestSingleInstanceLock()) {
     })
     handle('cache:summary', (event) => {
       requireMainWindow(event)
-      return backendRequest('/api/cache')
+      return viewRequest('/api/cache')
     })
     handle('cache:clear', (event) => {
       requireMainWindow(event)
@@ -487,6 +497,7 @@ if (!app.requestSingleInstanceLock()) {
       const headers = new Headers({ Authorization: `Bearer ${token}` })
       const range = request.headers.get('range')
       if (range) headers.set('Range', range)
+      const { signal } = viewShutdown
       try {
         const response = await fetch(`${backendURL}/api/${match[1]}/${match[2]}/media/original`, {
           method: request.method, headers, signal: AbortSignal.any([request.signal, mediaShutdown.signal])
@@ -499,21 +510,21 @@ if (!app.requestSingleInstanceLock()) {
     handle('shots:lut', async (event, id: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid shot ID')
-      return backendRequest(`/api/shots/${id}/lut`)
+      return viewRequest(`/api/shots/${id}/lut`)
     })
     handle('shots:details', async (event, id: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid shot ID')
-      return backendRequest(`/api/shots/${id}/details`)
+      return viewRequest(`/api/shots/${id}/details`)
     })
     handle('shots:list', async (event) => {
       requireMainWindow(event)
-      return backendRequest('/api/shots')
+      return viewRequest('/api/shots')
     })
     handle('shots:thumbnail', async (event, id: unknown) => {
       requireMainWindow(event)
       if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid shot ID')
-      const result = await backendRequest<{ dataUrl: string | null }>(`/api/shots/${id}/thumbnail`)
+      const result = await viewRequest<{ dataUrl: string | null }>(`/api/shots/${id}/thumbnail`)
       return result.dataUrl
     })
     handle('shots:set-thumbnail', async (event, id: unknown, dataUrl: unknown) => {
@@ -553,21 +564,24 @@ if (!app.requestSingleInstanceLock()) {
     handle('backend:status', async (event): Promise<BackendStatus> => {
       requireMainWindow(event)
       if (!backendURL) return { state: backendState, message: backendState === 'starting' ? 'Starting backend…' : 'Backend stopped. Relaunch the app to reconnect.' }
+      const { signal } = viewShutdown
       try {
         const response = await fetch(`${backendURL}/api/health`, {
           headers: { Authorization: `Bearer ${token}` },
-          signal: AbortSignal.timeout(2000)
+          signal: AbortSignal.any([signal, AbortSignal.timeout(2000)])
         })
         if (!response.ok) throw new Error(`Health check failed (${response.status})`)
         const health = await response.json() as BackendHealth
         let application: ApplicationStatus
         try {
-          application = await backendRequest<ApplicationStatus>('/api/application-status')
+          application = await viewRequest<ApplicationStatus>('/api/application-status')
         } catch {
+          signal.throwIfAborted()
           application = { level: 'error', message: 'Status Unavailable', detail: 'Could not check application status. The app will retry shortly.' }
         }
         return { state: 'connected', health, application }
       } catch {
+        signal.throwIfAborted()
         return { state: 'unavailable', message: 'Backend is not responding.' }
       }
     })
@@ -588,6 +602,7 @@ if (!app.requestSingleInstanceLock()) {
     event.preventDefault()
     if (quitting) return
     quitting = true
+    viewShutdown.abort(new AppError('The app is closing.', 'APP_CLOSING'))
     publishSaveStatus()
     void (async () => {
       await textWrites.flush().catch(() => undefined)
@@ -600,7 +615,7 @@ if (!app.requestSingleInstanceLock()) {
           detail: 'Keep working to review them, retry saving, or explicitly discard them before quitting.',
           buttons: ['Keep Working', 'Retry Saves', 'Quit Without Saving'], defaultId: 0, cancelId: 0
         })
-        if (choice.response === 0) { quitting = false; publishSaveStatus(); return }
+        if (choice.response === 0) { viewShutdown = new AbortController(); quitting = false; publishSaveStatus(); return }
         if (choice.response === 2) { draftWrites.discard(); break }
         await draftWrites.retry().catch(() => undefined)
       }
@@ -615,7 +630,7 @@ if (!app.requestSingleInstanceLock()) {
         shutdownComplete = true
         app.exit(0)
       }, 10000).unref()
-    })().catch(error => { console.error(error); quitting = false; publishSaveStatus() })
+    })().catch(error => { console.error(error); viewShutdown = new AbortController(); quitting = false; publishSaveStatus() })
   })
   process.on('SIGINT', () => app.quit())
   process.on('SIGTERM', () => app.quit())

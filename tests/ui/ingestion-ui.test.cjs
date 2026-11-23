@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const { join } = require("node:path");
 if (!process.versions.electron) {
     const { spawnSync } = require("node:child_process");
-    const root = fs.realpathSync(fs.mkdtempSync(join(require("node:os").tmpdir(), "owmo-ingest-ui-")));
+    const root = fs.realpathSync(fs.mkdtempSync(join(require("node:os").tmpdir(), "shot-manager-ingest-ui-")));
     try {
         fs.mkdirSync(join(root, "profile"));
         fs.mkdirSync(join(root, "profile", "Cache", "Cache_Data"), { recursive: true });
@@ -36,7 +36,7 @@ if (!process.versions.electron) {
             ]);
             if (video.status !== 0) throw new Error("Could not generate synthetic video");
         }
-        const env = { ...process.env, OWMO_INGEST_UI_ROOT: root };
+        const env = { ...process.env, SHOT_MANAGER_INGEST_UI_ROOT: root };
         delete env.ELECTRON_RUN_AS_NODE;
         const result = spawnSync(require("electron"), [__filename], { env, stdio: "inherit", timeout: 90000 });
         if (result.error) console.error(result.error);
@@ -48,7 +48,7 @@ if (!process.versions.electron) {
     const assert = require("node:assert/strict");
     const electron = require("electron");
     const { app } = electron;
-    const root = process.env.OWMO_INGEST_UI_ROOT;
+    const root = process.env.SHOT_MANAGER_INGEST_UI_ROOT;
     if (!root) throw new Error("Missing isolated profile");
     app.setPath("userData", join(root, "profile"));
     let window,
@@ -130,7 +130,7 @@ if (!process.versions.electron) {
         backend?.kill();
         app.exit(1);
     }, 55000);
-    require("../out/main/index.cjs");
+    require("../../out/main/index.cjs");
     app.whenReady().then(async () => {
         const js = async (code) => {
             try { return await window.webContents.executeJavaScript(code); }
@@ -142,6 +142,13 @@ if (!process.versions.electron) {
                 await new Promise((resolve) => setTimeout(resolve, 20));
             }
             throw new Error(message);
+        };
+        const screenshot = async (name) => {
+            if (!process.env.SHOT_MANAGER_UX_SCREENSHOTS) return;
+            const directory = join(__dirname, "../../test-results/screenshots");
+            await fs.promises.mkdir(directory, { recursive: true });
+            await new Promise(resolve => setTimeout(resolve, 150));
+            await fs.promises.writeFile(join(directory, name + ".png"), (await window.webContents.capturePage()).toPNG());
         };
         const click = (text) =>
             js(
@@ -217,7 +224,7 @@ if (!process.versions.electron) {
             await openConfiguration();
             await until(() => js(`document.querySelector('[aria-label="Cache summary"]')?.textContent.includes(' used') && document.querySelector('[aria-label="Cache summary"]')?.textContent.includes('Proxies:')`), 'Cache Summary did not load');
             assert.ok(await js(`document.querySelector('#cache-summary-title + p + p')?.textContent.includes('90 days')`), 'Cache retention note missing');
-            if(process.env.SHOT_MANAGER_UX_SCREENSHOTS) { await new Promise(resolve=>setTimeout(resolve,150)); await fs.promises.writeFile('/tmp/owmo-ux-configuration.png',(await window.webContents.capturePage()).toPNG()); }
+            await screenshot("ux-configuration");
             assert.equal(
                 await js(`!!document.querySelector('button[aria-label="Configured Cache location"]')`),
                 false,
@@ -364,10 +371,7 @@ if (!process.versions.electron) {
             await js(`document.querySelector('dialog button[aria-label^="Restore "]').click()`);
             assert.equal(await js(`document.querySelectorAll('dialog [data-review-included="true"]').length`), 2, "Excluded row can be restored");
             await js(`document.querySelector('dialog button[aria-label^="Remove "]').click()`);
-            await fs.promises.writeFile(
-                "/tmp/owmo-ingest-review.png",
-                (await window.webContents.capturePage()).toPNG(),
-            );
+            await screenshot("ingest-review");
             await click("Commit");
             await until(async () => !(await js('window.desktop.getIngestStatus()')).active &&
                 (await js('window.desktop.getShots()')).shots.length === 1, 'Successful Commit removes its Import card');
@@ -382,7 +386,7 @@ if (!process.versions.electron) {
             await until(()=>js(`!!document.querySelector('video') && document.querySelector('[aria-label="Notes"]')?.value===''`),'Library inspector and playback');
             assert.equal(await js(`document.querySelector('video').getAttribute('src')`),`shot-media://local/library/${publishedId}/original`);
             await new Promise(resolve=>setTimeout(resolve,150));
-            await fs.promises.writeFile('/tmp/owmo-library-view.png',(await window.webContents.capturePage()).toPNG());
+            await screenshot("library-view");
             await until(()=>js(`!!document.querySelector('[data-shot-image]')`),'Library thumbnail is visible before refresh');
             await js(`window.libraryImageBeforeRefresh=document.querySelector('[data-shot-image]'); window.libraryGridTop=document.querySelector('[data-shot-card]').getBoundingClientRect().top;`);
             holdLibraryThumbnail = true;
@@ -454,7 +458,7 @@ if (!process.versions.electron) {
             await click('Cancel');assert.equal(fs.readdirSync(join(root,'destination')).length,0,'Cancel never exports');
             await click('Export');
             await until(()=>js(`!!document.querySelector('dialog [data-sync-included]') && Array.from(document.querySelectorAll('dialog button')).find(el=>el.textContent.trim()==='Export')?.disabled===false`),'Export plan ready');
-            await fs.promises.writeFile('/tmp/owmo-sync-review.png',(await window.webContents.capturePage()).toPNG());
+            await screenshot("sync-review");
             await click('Export');
             await until(async()=>!(await js('window.desktop.getIngestStatus()')).active && fs.existsSync(join(root,'destination','_metadata.csv')),'Resolve Export completes');
             const exportedMetadata=JSON.parse(fs.readFileSync(join(root,'library',`${publishedId}.metadata.json`),'utf8'));
@@ -570,7 +574,7 @@ if (!process.versions.electron) {
             assert.equal((await js('window.desktop.getIngestStatus()')).active,false,'Synced-only confirmation queues no transfers');
             await js('window.desktop.chooseClips()');
             await until(()=>js(`!!document.querySelector('[data-shot-status="synced"]')`),'Explicit discovery can restore a blue card with its receipt intact');
-            await window.loadFile(join(__dirname, "../out/renderer/index.html"));
+            await window.loadFile(join(__dirname, "../../out/renderer/index.html"));
             await until(
                 () => js(`!!document.querySelector('[data-shot-status="synced"]')`),
                 "Synced badge lost on renderer reload",
@@ -660,7 +664,7 @@ if (!process.versions.electron) {
                 () => js(`!!document.querySelector('#revert-organization-title')`),
                 "Revert confirmation missing",
             );
-            if(process.env.SHOT_MANAGER_UX_SCREENSHOTS) { await new Promise(resolve=>setTimeout(resolve,150)); await fs.promises.writeFile('/tmp/owmo-ux-revert.png',(await window.webContents.capturePage()).toPNG()); }
+            await screenshot("ux-revert");
             await click("Cancel");
             assert.equal(
                 await js(`document.querySelector('[aria-label="Notes"]').value`),
@@ -792,7 +796,7 @@ if (!process.versions.electron) {
                 const previews = Array.from(document.querySelectorAll('[data-shot-working="true"]'));
                 return dot.classList.contains('border-t-yellow-300') &&
                     Array.from(document.querySelectorAll('[data-readiness-working]')).length === 2 &&
-                    dot.getBoundingClientRect().width === 12 && getComputedStyle(dot).animationName === 'spin' && previews.length === 2 &&
+                    dot.offsetWidth === 12 && getComputedStyle(dot).animationName === 'spin' && previews.length === 2 &&
                     previews.every(el => getComputedStyle(el, '::after').animationName === 'shot-work-pulse') &&
                     !document.querySelector('[data-transfer-spinner], [data-proxy-spinner]');
             })()`), true, "Encoding and transfers use small corner spinners and thumbnail pulses without central spinners");
@@ -913,17 +917,11 @@ if (!process.versions.electron) {
                 assert.ok(metrics.panelRight < metrics.actionsLeft, `${label}: progress does not overlap controls`);
             };
             await checkProgressLayout("wide");
-            await fs.promises.writeFile(
-                "/tmp/owmo-ingest-progress-wide.png",
-                (await window.webContents.capturePage()).toPNG(),
-            );
+            await screenshot("ingest-progress-wide");
             window.setSize(1100, 800);
             await until(() => js("window.innerWidth === 1100"), "Narrow layout did not settle");
             await checkProgressLayout("narrow");
-            await fs.promises.writeFile(
-                "/tmp/owmo-ingest-progress-narrow.png",
-                (await window.webContents.capturePage()).toPNG(),
-            );
+            await screenshot("ingest-progress-narrow");
             assert.ok(await js(`!!document.querySelector('header [aria-label="Refresh Library"]:enabled') && !document.querySelector('header').querySelector('[aria-label^="Stop"]')`),
                 'Toolbar offers only Library refresh during queue work');
             await click('Stop Commits');
@@ -1017,7 +1015,7 @@ if (!process.versions.electron) {
             await openConfiguration();
             await click("Clear Cache");
             await until(() => js(`!!document.querySelector('[aria-label="Confirm clear cache"]')`), "Empty-workspace Clear Cache confirmation missing");
-            if(process.env.SHOT_MANAGER_UX_SCREENSHOTS) { await new Promise(resolve=>setTimeout(resolve,150)); await fs.promises.writeFile('/tmp/owmo-ux-cache.png',(await window.webContents.capturePage()).toPNG()); }
+            await screenshot("ux-cache");
             const beforeEmptyClear = rendererLoads;
             await js(`document.querySelector('[aria-label="Confirm clear cache"]').click()`);
             await until(() => rendererLoads > beforeEmptyClear, "Empty-workspace Clear Cache did not reload the renderer");

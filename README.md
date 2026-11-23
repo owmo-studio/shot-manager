@@ -1,56 +1,57 @@
 # Shot Manager
 
-A single-user macOS app for reviewing footage, editing clip metadata, committing media to a NAS Library, and exporting selected clips for DaVinci Resolve.
+Shot Manager is a macOS app for organizing footage in a local or NAS Library and exporting selected clips for editing.
 
-## Run and build
+`This project is developed using OpenAI Codex; use it at your own risk!`
 
-Development requires macOS, Node.js 22.12+, and npm. FFmpeg/FFprobe must be installed locally, with ProRes encoding and the scale filter's `reset_sar` option. Finder launches support the standard Homebrew paths. Transfers use macOS `/usr/bin/rsync`.
+## Requirements
 
-```sh
-npm ci                   # Install dependencies
-npm run dev              # Development app
-npm run package          # Build the .app for this Mac
-npm run deploy           # Copy the existing build to /Applications
-```
+- To run Shot Manager: macOS, FFmpeg, and FFprobe. Proxy encoding requires the `prores_ks` encoder and the scale filter’s `reset_sar` option.
+- To develop or package the app: Node.js 22.12 or later with npm.
 
-`npm run deploy` installs the existing `release/mac-arm64/Shot Manager.app` into `/Applications` (Intel builds use `release/mac/`). Quit the installed app first. Deployment stages and verifies the new bundle before replacing the previous copy; it does not rebuild or launch the app. The app includes its runtime, dependencies, and icon; Node/npm are only needed for development. The version shown in Configuration comes from `package.json`. Personal Rec.709 LUTs can be installed through **Shot Manager → Open LUT Folder…** or embedded with `npm run package:with-luts`. [LUT setup](resources/luts/README.md)
-
-`npm run build` produces `out/`; `npm start` opens that build. Generated `out/` and `release/` files are excluded from Git.
-
-## Workflow
-
-- **Import:** add folders or drop video files. Edit optional attributes and thumbnails; Skip excludes a clip without removing it. Commit uses selected clips, or all eligible clips when nothing is selected. Completed clips leave Import and appear in Library. Reviewed Synced rows only remove workspace cards.
-- **Library:** browse the local catalogue, refresh remote metadata, and stage edits locally. Commit publishes changes; Revert restores Library attributes and thumbnails. Export requires an explicit selection with no pending edits and opens a destination picker before review.
-- **Delete:** review selected Library clips, excluding/restoring rows as needed. Confirmation removes associated Library files and the local catalogue entry. Local drafts are retained. Original source-card files and prior Exports are kept; any recycle behavior belongs to the NAS.
-- **Work:** proxy encoding, Commits, and Exports run independently. Each queue can be paused and resumed independently. Pausing keeps pending jobs, and toolbar Refresh updates the Library catalogue. Queues and workspace membership are session-only, while drafts and successful Commit receipts persist.
-
-## Storage
-
-The Library is flat, keyed by the full sampled fingerprint:
-
-```text
-<id>.source.<original-extension>
-<id>.proxy.mov
-<id>.thumb.jpg
-<id>.metadata.json
-```
-
-JSON retains the original filename, technical evidence, and every optional attribute. Source/thumbnail/missing-proxy transfers finish before JSON is published atomically. Existing regular Library proxies are reused. Proxies use ProRes 422 Proxy MOV, 10-bit 4:2:2, a maximum 1280-pixel long edge without upscaling, preserved display aspect ratio, frame timing, timecode, and audio channels. Viewing LUTs are not baked in.
-
-The app manages local data under `Shot Manager Cache` beside Electron's own cache. Downloaded Library assets use `library/` subfolders, currently `library/thumbnails/`. **Browse Cache** opens it; **Clear Cache** selectively removes app-owned categories without changing Library settings or media. Unused clip data expires after 90 days at graceful shutdown; saved Identity/Project options and corrupt records are preserved. Library catalogue data and pending edits are separate, so refreshing does not discard drafts or the last usable offline view.
-
-Exports contain sources directly in the selected destination, matching files in `Proxy/`, and one `_metadata.csv`. Filenames combine the original stem with a fingerprint prefix. Each successful export adds or replaces its CSV row by filename, preserving other rows and blank fields. Failed/cancelled clips leave previous rows unchanged. Older export folders/CSVs are left untouched.
-
-## Resolve metadata
-
-Import exported source footage; Resolve can discover matching proxies in `Proxy/`. Create **Identity, Project, Group, Camera, and Quality** as Text Input fields under **Manage Custom Metadata → User** for reuse across projects.
-
-Use **File → Import Metadata To → Media Pool**, choose `_metadata.csv`, match filenames, and disable start/end timecode matching. With custom fields defined, disable “Import additional metadata fields as custom metadata” to avoid duplicates. “Update all metadata fields available in source file” applies exported blanks too.
-
-Scene maps to Description, Group to Scene, Camera to Camera #, Notes to Comments, and Preferred/Usable to Good Take. Custom columns retain the assigned values; Clip Name and Keywords provide descriptive/searchable context. All attributes are optional.
+After cloning the repository, run `npm ci` to install its dependencies.
 
 ## Development
 
-`desktop/` owns Electron/preload and save/quit handling; `client/` is React; `server/` owns discovery, jobs, Library/catalogue, and exports; `shared/` defines contracts. Quality is stored as `rating` for compatibility.
+`npm run dev`
 
-Run `npm run typecheck` or `npm run build`, then the relevant `check:*` scripts listed in `package.json`. `npm run check:packaged` checks shipped files with an isolated profile and synthetic footage. Tests must use temporary sources/destinations, never real cards or NAS media. See [AGENTS.md](AGENTS.md) for engineering constraints.
+## Package
+
+`npm run package`
+
+## Install
+
+Move `Shot Manager.app` from `release/mac-arm64/` (Apple Silicon) or `release/mac/` (Intel) into Applications.
+
+## Usage
+
+### Import & Commit media
+
+1. In **Configuration**, choose a Library folder on a local drive or mounted NAS and click **Save**.
+2. In **Import**, drop video files or folders and add any metadata you want. Shot Manager prepares thumbnails and editing proxies in its local cache.
+3. Select clips and click **Commit**. With no selection, Commit reviews all eligible clips in the current view. **Skip** excludes a clip.
+
+Commit copies the full-resolution video as-is and leaves the original in place. Each clip gets a sampled SHA-256 fingerprint (`<id>`) that ties together four files in the Library folder:
+
+```text
+<id>.source.<ext>     Original video in its recorded format
+<id>.proxy.mov        ProRes 422 Proxy, up to 1280 pixels on the long edge
+<id>.thumb.jpg        Selected thumbnail
+<id>.metadata.json    Original filename, technical details, and your clip attributes
+```
+
+Shot Manager writes the JSON after the media transfers succeed. The committed clip then leaves Import and appears in Library.
+
+### Camera recognition
+
+Shot Manager reads device information embedded in each original. Import scans MP4, MOV, MXF, M4V, MTS, M2TS, AVI, MKV, and WebM files.
+
+- Sony FX30
+- Sony ZV-E10 II
+- Apple iPhone
+
+Optional Sony S-Log3 and Apple Log viewing LUTs apply to previews and thumbnails. To install one, choose **Shot Manager → Open Resources Folder…** in the macOS menu bar, copy the file into `LUT/`, then reselect the clip. [Supported LUTs and required filenames](resources/README.md)
+
+### Export
+
+Export copies selected Library clips to your destination folder, with matching proxies in `Proxy/`. It also writes clip metadata to `_metadata.csv`, formatted for import into DaVinci Resolve.

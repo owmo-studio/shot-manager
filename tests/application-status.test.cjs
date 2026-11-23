@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const { join, resolve } = require('node:path');
 
 (async () => {
-    const root = await fs.realpath(await fs.mkdtemp(join(require('node:os').tmpdir(), 'owmo-health-')));
+    const root = await fs.realpath(await fs.mkdtemp(join(require('node:os').tmpdir(), 'shot-manager-health-')));
     try {
         const entry = join(root, 'fixture.ts');
         await fs.writeFile(entry, ['server/applicationStatus.ts', 'server/library.ts']

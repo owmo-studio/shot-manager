@@ -17,16 +17,18 @@ export interface LibraryListing extends LibraryPresence { assets: Map<string, st
 
 // Stream one flat listing and index by clip, rather than retaining all Dirents or
 // searching the full Library once per reviewed clip. No asset contents are opened.
-export async function listLibrary(location: LibraryLocation): Promise<LibraryListing> {
-    return indexLibraryEntries(await opendir(location.path));
+export async function listLibrary(location: LibraryLocation, signal?: AbortSignal): Promise<LibraryListing> {
+    signal?.throwIfAborted();
+    return indexLibraryEntries(await opendir(location.path), signal);
 }
 
-export async function indexLibraryEntries(entries: AsyncIterable<Pick<Dirent, 'name' | 'isFile'>>): Promise<LibraryListing> {
+export async function indexLibraryEntries(entries: AsyncIterable<Pick<Dirent, 'name' | 'isFile'>>, signal?: AbortSignal): Promise<LibraryListing> {
     const assets = new Map<string, string[]>();
     const core = new Map<string, { sources: number; thumbnail: boolean; metadata: boolean }>();
     const proxies = new Set<string>();
     const regularAssets = new Set<string>();
     for await (const entry of entries) {
+        signal?.throwIfAborted();
         const match = parseLibraryAssetName(entry.name);
         if (!match) continue;
         const names = assets.get(match.id) ?? [];

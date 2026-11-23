@@ -8,7 +8,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await test()) return; await sleep(20); } throw new Error(`Timed out: ${message}`); }
 
 (async () => {
-    const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'owmo-proxy-check-')));
+    const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'shot-manager-proxy-check-')));
     let scanner, queue, proxies, releaseThumbnail;
     try {
         const entry = join(root, 'entry.ts');
@@ -220,7 +220,7 @@ async function until(test, message) { for (let i = 0; i < 1000; i++) { if (await
         const abort = new AbortController();
         await assert.rejects(encodeProxy(join(source, first.filename), join(root, 'cancelled.partial'), first, abort.signal, () => abort.abort()), /stopped/);
         await assert.rejects(inspectScratch({ ...config, scratchPath: source }, [source]), /different folders/);
-        await assert.rejects(inspectScratch({ ...config, scratchPath: '/Volumes/owmo-no-such-scratch' }, [source]), /not mounted/);
+        await assert.rejects(inspectScratch({ ...config, scratchPath: '/Volumes/shot-manager-no-such-scratch' }, [source]), /not mounted/);
         const nestedRoot = join(root, 'nested-scratch');
         await fs.mkdir(nestedRoot);
         const nestedConfig = { ...config, scratchPath: nestedRoot, libraryPath: join(nestedRoot, scratchFolder, 'proxies') };

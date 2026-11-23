@@ -17,7 +17,7 @@ function gate(signal) {
     return { promise, release: () => release() };
 }
 (async () => {
-    const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'owmo-eject-')));
+    const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'shot-manager-eject-')));
     let manager, proxies, queue, releasePublication;
     try {
         const entry = join(root, 'entry.ts');

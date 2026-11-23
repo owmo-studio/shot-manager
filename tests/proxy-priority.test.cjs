@@ -7,7 +7,7 @@ const execute = require('node:util').promisify(require('node:child_process').exe
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(test, message) { for (let i=0;i<750;i++) { if(await test()) return; await sleep(20); } throw new Error(`Timed out: ${message}`); }
 (async()=>{
-    const root=await fs.realpath(await fs.mkdtemp(join(tmpdir(),'owmo-proxy-priority-')));
+    const root=await fs.realpath(await fs.mkdtemp(join(tmpdir(),'shot-manager-proxy-priority-')));
     try {
         const entry=join(root,'entry.ts');
         await fs.writeFile(entry,['server/workspace.ts','server/proxies.ts','server/ingestion.ts','server/library.ts'].map(file=>`export * from ${JSON.stringify(resolve(file))};`).join('\n'));
