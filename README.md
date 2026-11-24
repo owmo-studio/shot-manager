@@ -54,4 +54,4 @@ Optional Sony S-Log3 and Apple Log viewing LUTs apply to previews and thumbnails
 
 ### Export
 
-Export copies selected Library clips to your destination folder, with matching proxies in `Proxy/`. It also writes clip metadata to `_metadata.csv`, formatted for import into DaVinci Resolve.
+Export copies selected Library clips to your destination folder. Sources use the full clip fingerprint and their source extension, and matching proxies use `Proxy/<fingerprint>.mov`. For DaVinci Resolve, `_metadata.csv` matches clips by the exported source filename and includes a readable Clip Name based on the original camera filename. Re-exporting into a folder with files under the previous naming scheme keeps those files and their CSV rows.

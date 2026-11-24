@@ -61,32 +61,20 @@ export class LibrarySync {
         if (this.scanner.snapshot().shots.some(shot => shot.filePath === path)) throw new Error('Export would overwrite original footage. Choose another destination.');
         if (identity && identity.split(':').slice(0, 2).join(':') === source.split(':').slice(0, 2).join(':')) throw new Error('Export destination aliases a Library asset. Choose another destination.');
     }
-    private async plan(metadata: Awaited<ReturnType<typeof readLibraryMetadata>>['metadata'], extension: string, destination: string, reserved: Set<string>) {
-        let available: ExportClipPlan | undefined;
-        for (let length = 8; length <= 64; length += 4) {
-            const plan = this.formatter.clip(metadata, extension, length);
-            const names = [plan.source, plan.proxy];
-            names.forEach(name => exportPath(destination, name));
-            if (names.some(name => reserved.has(name.normalize('NFC').toLowerCase()))) continue;
-            const sourcePath = exportPath(destination, plan.source);
-            const existing = await exportFileIdentity(sourcePath);
-            if (existing) {
-                let owner = this.exportOwners.get(existing);
-                if (!owner) {
-                    owner = await readExportOwner(sourcePath);
-                    if (await exportFileIdentity(sourcePath) !== existing) throw new Error('Exported source changed during review. Review Export again.');
-                    this.exportOwners.set(existing, owner);
-                    if (this.exportOwners.size > 1024) this.exportOwners.delete(this.exportOwners.keys().next().value!);
-                }
-                if (owner === metadata.id) return plan;
-                continue; // A different clip already owns this shorter prefix.
-            }
-            // An orphaned proxy cannot identify the clip that owns this name.
-            if (await exportFileIdentity(exportPath(destination, plan.proxy))) continue;
-            available ??= plan;
+    private async checkExportOwner(id: string, source: FileCopy, proxy: FileCopy) {
+        const identity = source.targetIdentity;
+        if (!identity) {
+            if (proxy.targetIdentity) throw new Error('An export proxy already exists without its source. Choose another destination.');
+            return;
         }
-        if (!available) throw new Error('Export filenames conflict. Choose another destination.');
-        return available;
+        let owner = this.exportOwners.get(identity);
+        if (!owner) {
+            owner = await readExportOwner(source.to);
+            if (await exportFileIdentity(source.to) !== identity) throw new Error('Exported source changed during review. Review Export again.');
+            this.exportOwners.set(identity, owner);
+            if (this.exportOwners.size > 1024) this.exportOwners.delete(this.exportOwners.keys().next().value!);
+        }
+        if (owner !== id) throw new Error('The export source filename is already used by another file. Choose another destination.');
     }
     async preview(ids: string[], destinationToken: string): Promise<SyncReview> {
         if (this.busy) throw new Error('Wait for the current Export review.');
@@ -103,7 +91,7 @@ export class LibrarySync {
             this.formatter.manifest([], destination.path, document.content);
             const collection = await this.catalogue.refresh();
             if (collection.error) throw new Error(collection.error);
-            const captures: Capture[] = [], reserved = new Set<string>();
+            const captures: Capture[] = [];
             for (const id of ids) {
                 const shot = collection.shots.find(shot => shot.id === id);
                 const capture: Capture = { id, filename: shot?.filename ?? id, files: [], metadataIdentity: '' };
@@ -116,7 +104,7 @@ export class LibrarySync {
                     const current = await readLibraryMetadata(library, id);
                     if (!shot.organization || JSON.stringify(ingestAttributes(current.metadata)) !== JSON.stringify(ingestAttributes(shot.organization))) throw new Error('Library metadata changed. Refresh and review Export again.');
                     capture.metadataIdentity = current.identity;
-                    const plan = await this.plan(current.metadata, source.extension, destination.path, reserved);
+                    const plan = this.formatter.clip(current.metadata, source.extension);
                     capture.plan = plan;
                     for (const [name, output] of [[shot.relativePath, plan.source], [libraryAssetName(id, 'proxy', 'mov'), plan.proxy]]) {
                         const from = join(library.path, name), to = exportPath(destination.path, output);
@@ -126,7 +114,8 @@ export class LibrarySync {
                         this.protectOriginal(to, targetIdentity, sourceIdentity);
                         capture.files.push({ from, to, sourceIdentity, targetIdentity, bytes: Number(sourceIdentity.split(':')[2]) });
                     }
-                    for (const name of [plan.source, plan.proxy]) reserved.add(name.normalize('NFC').toLowerCase());
+                    const [sourceFile, proxyFile] = capture.files;
+                    await this.checkExportOwner(id, sourceFile, proxyFile);
                 } catch (error) { capture.issue = error instanceof Error ? error.message : String(error); }
                 captures.push(capture);
             }

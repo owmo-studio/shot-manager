@@ -10,6 +10,6 @@ export interface ExportClipPlan {
 // The transfer worker consumes paths and metadata documents, without knowing an editor's fields.
 export interface ExportFormatter {
     id: 'resolve';
-    clip(metadata: LibraryMetadata, extension: string, suffixLength: number): ExportClipPlan;
+    clip(metadata: LibraryMetadata, extension: string): ExportClipPlan;
     manifest(clips: ExportClipPlan[], destination: string, existing?: string): string;
 }

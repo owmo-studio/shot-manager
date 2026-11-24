@@ -461,8 +461,7 @@ if (!process.versions.electron) {
             await screenshot("sync-review");
             await click('Export');
             await until(async()=>!(await js('window.desktop.getIngestStatus()')).active && fs.existsSync(join(root,'destination','_metadata.csv')),'Resolve Export completes');
-            const exportedMetadata=JSON.parse(fs.readFileSync(join(root,'library',`${publishedId}.metadata.json`),'utf8'));
-            const exportBase=require('node:path').parse(exportedMetadata.originalFilename).name+'__'+publishedId.slice(0,8);
+            const exportBase=publishedId;
             assert.deepEqual(fs.readdirSync(join(root,'destination')).sort(),['_metadata.csv','Proxy',`${exportBase}.mp4`].sort());
             for(const [name,role] of [[`${exportBase}.mp4`,'source.mp4'],[`Proxy/${exportBase}.mov`,'proxy.mov']]) assert.deepEqual(fs.readFileSync(join(root,'destination',name)),fs.readFileSync(join(root,'library',`${publishedId}.${role}`)));
             assert.ok(!fs.existsSync(join(root,'destination','Metadata')),'Export does not create a Metadata folder');

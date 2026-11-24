@@ -40,19 +40,11 @@ function readRows(content: string): string[][] {
 
 export const resolveFormatter: ExportFormatter = {
     id: 'resolve',
-    clip(metadata, extension, suffixLength) {
+    clip(metadata, extension) {
         const originalExtension = extname(metadata.originalFilename);
-        const rawStem = (originalExtension ? metadata.originalFilename.slice(0, -originalExtension.length) : metadata.originalFilename)
-            .normalize('NFC').replace(/[<>:"/\\|?*\p{Cc}\p{Cf}]/gu, '_').trim().replace(/[. ]+$/g, '') || 'clip';
-        const suffix = metadata.id.slice(0, suffixLength);
-        const budget = 255 - Math.max(Buffer.byteLength(`.${extension}`), Buffer.byteLength('.mov')) - suffix.length - 2;
-        let stem = '';
-        for (const character of rawStem) { if (Buffer.byteLength(stem + character) > budget) break; stem += character; }
-        if (!stem) throw new Error('Original filename cannot be exported safely.');
-        const base = `${stem}__${suffix}`;
-        const source = `${base}.${extension}`, proxy = `Proxy/${base}.mov`;
-        const descriptive = [metadata.identity, metadata.project, metadata.scene, metadata.camera].filter(Boolean);
-        const clipName = descriptive.length ? [...descriptive, originalExtension ? metadata.originalFilename.slice(0, -originalExtension.length) : metadata.originalFilename].join(' · ') : base;
+        const originalStem = metadata.originalFilename.slice(0, metadata.originalFilename.length - originalExtension.length);
+        const source = `${metadata.id}.${extension}`, proxy = `Proxy/${metadata.id}.mov`;
+        const clipName = [metadata.identity, metadata.project, metadata.scene, metadata.camera, originalStem].filter(Boolean).join(' · ');
         const keywords = [...metadata.tags, ...(metadata.identity ? [`identity:${metadata.identity}`] : []),
             ...(metadata.project ? [`project:${metadata.project}`] : []), ...(metadata.rating ? [`rating:${metadata.rating}`] : [])];
         return { id: metadata.id, source, proxy,
