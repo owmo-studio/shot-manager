@@ -14,15 +14,15 @@ export function installApplicationMenu(lutDirectory: string, openOrphanCleanup: 
         },
         { role: 'editMenu' }, { role: 'viewMenu' },
         { id: 'advanced', label: 'Advanced', submenu: [
-            { label: 'Open Resources Folder…', click: async () => {
+            { label: 'Open Resources Folder', click: async () => {
                 try {
                     await mkdir(lutDirectory, { recursive: true });
                     const error = await shell.openPath(dirname(lutDirectory));
                     if (error) throw new Error(error);
                 } catch (error) { dialog.showErrorBox('Could not open resources folder', String(error)); }
             } },
-            { id: 'clean-orphaned-data', label: 'Clean Orphaned Data...', click: openOrphanCleanup },
-            { id: 'reencode-proxies', label: 'Re-Encode Proxies…', enabled: false, click: openReencode },
+            { id: 'clean-orphaned-data', label: 'Clean Orphaned Data', click: openOrphanCleanup },
+            { id: 'reencode-proxies', label: 'Re-Encode Proxies', enabled: false, click: openReencode },
         ] },
         { role: 'windowMenu' },
     ]));

@@ -175,7 +175,9 @@ export class LibrarySync {
                     // Read the latest document when this serial Export job starts,
                     // including rows written by earlier submissions to this folder.
                     const document = await readExportDocument(review.destination.path, exportMetadataFilename);
-                    const content = this.formatter.manifest([capture.plan!], review.destination.path, document.content);
+                    const plan = capture.plan!;
+                    const mediaFields = await this.formatter.mediaFields?.(capture.files[0].from, signal);
+                    const content = this.formatter.manifest([{ ...plan, fields: { ...plan.fields, ...mediaFields } }], review.destination.path, document.content);
                     const total = capture.files.reduce((sum, file) => sum + file.bytes, 0) || 1;
                     let completed = 0;
                     for (const file of capture.files) {

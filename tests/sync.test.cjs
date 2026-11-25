@@ -11,21 +11,24 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
     let queue, catalogue, scanner;
     try {
         const entry = join(root, 'entry.ts');
-        await fs.writeFile(entry, ['server/sync.ts', 'server/catalogue.ts', 'server/scanner.ts', 'server/ingestion.ts', 'server/library.ts', 'shared/shots.ts', 'server/rsync.ts','server/resolveExport.ts','server/exportFiles.ts','shared/library.ts','server/fingerprints.ts'].map(file => `export * from ${JSON.stringify(resolve(file))};`).join('\n'));
+        await fs.writeFile(entry, ['server/sync.ts', 'server/catalogue.ts', 'server/scanner.ts', 'server/ingestion.ts', 'server/library.ts', 'shared/shots.ts', 'server/rsync.ts','server/resolveExport.ts','server/resolveTimecode.ts','server/exportFiles.ts','shared/library.ts','server/fingerprints.ts'].map(file => `export * from ${JSON.stringify(resolve(file))};`).join('\n'));
         const bundle = await (await import('vite')).build({ configFile: false, logLevel: 'silent', build: { ssr: true, write: false, rollupOptions: { input: entry, output: { format: 'cjs' } } } });
         const loaded = new (require('node:module'))(__filename, module); loaded.paths = module.paths;
         loaded._compile(bundle.output.find(item => item.type === 'chunk' && item.isEntry).code, __filename);
-        const { LibrarySync, LibraryCatalogue, ShotScanner, IngestQueue, inspectLibrary, emptyVideoMetadata, rsyncFile, resolveFormatter, validateLibraryMetadata, exportPath, VideoFingerprintStore, readExportOwner } = loaded.exports;
+        const { LibrarySync, LibraryCatalogue, ShotScanner, IngestQueue, inspectLibrary, emptyVideoMetadata, rsyncFile, resolveTimecodeFields, resolveFormatter, validateLibraryMetadata, exportPath, VideoFingerprintStore, readExportOwner } = loaded.exports;
         const library = join(root, 'library'), cache = join(root, 'cache'), destination = join(root, 'destination');
         for (const path of [library, cache, destination]) await fs.mkdir(path);
         const fingerprints = new VideoFingerprintStore();
         const fixtureSources = await Promise.all(['aaaa', 'bbbb'].map(async (content, index) => {
-            const path = join(root, `source-${index}.mp4`); await fs.writeFile(path, content);
+            const path = join(root, `source-${index}.mp4`);
+            if (index === 0) await execute('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'color=size=32x32:rate=30000/1001',
+                '-frames:v', '3', '-c:v', 'libx264', '-timecode', '00:00:59;29', path]);
+            else await fs.writeFile(path, content);
             return { path, fingerprint: await fingerprints.identify(path, new AbortController().signal) };
         }));
         const ids = fixtureSources.map(source => source.fingerprint.value);
         for (const id of ids) {
-            const metadata = { id, fingerprint: fixtureSources[ids.indexOf(id)].fingerprint, originalFilename: `Camera-${id[0]}.MP4`, bytes: 4,
+            const metadata = { id, fingerprint: fixtureSources[ids.indexOf(id)].fingerprint, originalFilename: `Camera-${id[0]}.MP4`, bytes: (await fs.stat(fixtureSources[ids.indexOf(id)].path)).size,
                 recordedAt: '2026-11-01T10:00:00Z', dateSource: 'camera', dateEvidence: 'fixture', dateConfidence: 'declared', durationSeconds: 1,
                 metadata: emptyVideoMetadata(), warnings: [], identity: null, project: null, scene: '', notes: '', tags: [], ingestion: { completedAt: '2026-11-01T11:00:00Z', transfer: 'rsync' } };
             await fs.writeFile(join(library, `${id}.metadata.json`), JSON.stringify(metadata));
@@ -71,6 +74,8 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         assert.equal(rows.length,1);assert.equal(rows[0]['File Name'],`${ids[0]}.mp4`);assert.equal(rows[0]['Clip Directory'],destination);
         assert.equal(rows[0]['Clip Name'], `Camera-${ids[0][0]}`, 'Resolve has a readable clip name even with blank metadata');
         for(const field of ['Description','Scene','Camera #','Good Take','Comments','Keywords','Identity','Quality']) assert.equal(rows[0][field],'','Optional metadata stays blank');
+        assert.equal(rows[0]['Start TC'], '00:00:59;29');
+        assert.equal(rows[0]['End TC'], '00:01:00;04');
         const firstManifest=await fs.readFile(metadataFile);
         r = await review([ids[0]]); assert.equal(r.clips[0].mode, 'replace');
         const destinationFile = join(destination, `${ids[0]}.mp4`);
@@ -191,8 +196,22 @@ async function until(test) { for (let i = 0; i < 500; i++) { if (await test()) r
         assert.deepEqual(csvHeaders.slice(-5),['Identity','Project','Group','Camera','Quality'],'Custom headers match the user-facing Resolve fields');
         const csvRow=(await parseCSV(csvFixture))[0];assert.equal(csvRow.Description,full.scene);assert.equal(csvRow.Scene,full.group);assert.equal(csvRow['Camera #'],'A');assert.equal(csvRow['Good Take'],'1');assert.equal(csvRow.Comments,full.notes);assert.equal(csvRow.Identity,full.identity);assert.equal(csvRow.Project,full.project);assert.equal(csvRow.Group,full.group);assert.equal(csvRow.Camera,full.camera);assert.equal(csvRow.Quality,full.rating);
         assert.equal(csvRow['Clip Name'], [full.identity, full.project, full.scene, full.camera, `Camera-${ids[0][0]}`].join(' · '));
+        for (const [start, rate, frames, end] of [
+            ['00:09:59;29', 30000/1001, 1, '00:10:00;00'],
+            ['00:00:59;59', 60000/1001, 1, '00:01:00;04'],
+            ['23:59:59;29', 30000/1001, 1, '00:00:00;00'],
+            ['23:59:59:23', 24000/1001, 2, '00:00:00:01'],
+        ]) assert.deepEqual(resolveTimecodeFields(start,rate,frames), {'Start TC':start,'End TC':end});
+        assert.deepEqual(resolveTimecodeFields('00:01:00;01',30000/1001,3),{});
         const other=resolveFormatter.clip(validateLibraryMetadata(JSON.parse(original.get(`${ids[1]}.metadata.json`)),ids[1]),'mp4');
-        const combined=resolveFormatter.manifest([other],destination,csvText);
+        // The 14-column format shipped before timecode matching. Preserve every pre-existing field.
+        const {stdout: legacyManifest} = await execute('python3', ['-c', [
+            'import csv, sys',
+            'rows = csv.DictReader(open(sys.argv[1], newline="", encoding="utf-8"))',
+            'writer = csv.DictWriter(sys.stdout, [c for c in rows.fieldnames if c not in ("Start TC", "End TC")], extrasaction="ignore")',
+            'writer.writeheader(); writer.writerows(rows)',
+        ].join('\n'), csvFixture]);
+        const combined=resolveFormatter.manifest([other],destination,legacyManifest);
         await fs.writeFile(csvFixture,combined);const cumulative=await parseCSV(csvFixture);
         assert.equal(cumulative.length,2);assert.deepEqual(cumulative[0],csvRow,'Unrelated quoted/multiline rows survive merging');
         const updated={...formatted,fields:{...formatted.fields,Comments:'Updated, "quoted"\nnotes',Quality:''}};

@@ -8,12 +8,12 @@ const execute = promisify(execFile);
 type Tags = Record<string, string>;
 type Stream = StreamColor & {
     codec_type: string; codec_tag_string: string; id?: string; tags?: Tags;
-    nb_frames?: string; r_frame_rate: string; avg_frame_rate: string;
+    duration?: string; nb_frames?: string; r_frame_rate: string; avg_frame_rate: string;
 };
 
 async function probe(path: string, signal: AbortSignal) {
     const entries = [
-        'stream=id,codec_type,codec_tag_string,nb_frames,r_frame_rate,avg_frame_rate,pix_fmt,color_range,color_space,color_primaries,color_transfer',
+        'stream=id,codec_type,codec_tag_string,duration,nb_frames,r_frame_rate,avg_frame_rate,pix_fmt,color_range,color_space,color_primaries,color_transfer',
         'stream_tags=timecode,com.apple.quicktime.colorSpace',
         'format_tags=timecode,com.apple.quicktime.colorSpace,CaptureGammaEquation,CaptureColorPrimaries,CodingEquations',
     ];
@@ -110,6 +110,7 @@ export async function inspectProxySource(path: string, signal: AbortSignal) {
         timecode: starts.values().next().value,
         constantRate,
         reportedRate: !timing && rational(video.r_frame_rate) && sameRate(video.r_frame_rate, video.avg_frame_rate) ? video.r_frame_rate : undefined,
+        videoRate: video.r_frame_rate, durationSeconds: Number(video.duration),
         frameCount: Number(video.nb_frames) > 0 ? Number(video.nb_frames) : undefined,
         variable: timing ? timing.minimumDelta !== timing.maximumDelta : video.avg_frame_rate !== video.r_frame_rate,
     };

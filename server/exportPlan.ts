@@ -11,5 +11,6 @@ export interface ExportClipPlan {
 export interface ExportFormatter {
     id: 'resolve';
     clip(metadata: LibraryMetadata, extension: string): ExportClipPlan;
+    mediaFields?(source: string, signal: AbortSignal): Promise<Record<string, string>>;
     manifest(clips: ExportClipPlan[], destination: string, existing?: string): string;
 }

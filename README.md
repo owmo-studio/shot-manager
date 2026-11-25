@@ -44,7 +44,7 @@ Shot Manager writes the JSON after the media transfers succeed. The committed cl
 
 ### Re-encode Library proxies
 
-Select one or more clips in **Library**, choose **Advanced → Re-Encode Proxies…**, and review the filenames. Use **×** to exclude a clip or **−** to restore it, then click **Re-Encode**. Shot Manager reads each Library original and encodes a replacement in the managed Cache. An **Update** badge appears when the replacement is ready. Choose **Commit** to replace the published proxy, or **Revert** to discard the replacement and restore the clip’s Library edits.
+Select one or more clips in **Library**, choose **Advanced → Re-Encode Proxies**, and review the filenames. Use **×** to exclude a clip or **−** to restore it, then click **Re-Encode**. Shot Manager reads each Library original and encodes a replacement in the managed Cache. The clip card turns yellow when the replacement is ready to commit. Choose **Commit** to replace the published proxy, or **Revert** to discard the replacement and restore the clip’s Library edits.
 
 ### Camera recognition
 
@@ -54,8 +54,12 @@ Shot Manager reads device information embedded in each original. Import scans MP
 - Sony ZV-E10 II
 - Apple iPhone
 
-Optional Sony S-Log3 and Apple Log viewing LUTs apply to previews and thumbnails. To install one, choose **Advanced → Open Resources Folder…** in the macOS menu bar, copy the file into `LUT/`, then reselect the clip. [Supported LUTs and required filenames](resources/README.md)
+Optional Sony S-Log3 and Apple Log viewing LUTs apply to previews and thumbnails. To install one, choose **Advanced → Open Resources Folder** in the macOS menu bar, copy the file into `LUT/`, then reselect the clip. [Supported LUTs and required filenames](resources/README.md)
 
 ### Export
 
 Export copies selected Library clips to your destination folder. Sources use the full clip fingerprint and their source extension, and matching proxies use `Proxy/<fingerprint>.mov`. For DaVinci Resolve, `_metadata.csv` matches clips by the exported source filename and includes a readable Clip Name based on the original camera filename. Re-exporting into a folder with files under the previous naming scheme keeps those files and their CSV rows.
+
+When importing `_metadata.csv` into Resolve, keep filename and clip start/end timecode matching enabled for rows with **Start TC** and **End TC**. Export reads the original media, including clips already in the Library. If a row has blank timing fields or you have overridden its timecode in Resolve, use filename matching alone.
+
+Use the first merge option to import populated cells and preserve existing values for blank cells. Choose the second option when blank cells should clear those fields in Resolve.

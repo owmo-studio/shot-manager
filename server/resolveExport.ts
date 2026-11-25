@@ -1,9 +1,13 @@
+import { readResolveTimecode } from './resolveTimecode';
 import { extname } from 'node:path';
 import type { ExportFormatter } from './exportPlan';
 
 // "Rating" is Resolve's built-in star field; keep our Quality value in custom "Quality".
-const columns = ['File Name', 'Clip Directory', 'Clip Name', 'Description', 'Scene', 'Camera #', 'Good Take', 'Comments', 'Keywords',
+const names = ['File Name', 'Clip Directory', 'Clip Name'];
+const attributes = ['Description', 'Scene', 'Camera #', 'Good Take', 'Comments', 'Keywords',
     'Identity', 'Project', 'Group', 'Camera', 'Quality'];
+const legacyColumns = [...names, ...attributes];
+const columns = [...names, 'Start TC', 'End TC', ...attributes];
 // Resolve fails filename matching when ordinary values are unnecessarily quoted.
 // Quote only fields that need CSV escaping, as in Resolve's own metadata export.
 const csvCell = (value: string) => /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
@@ -34,12 +38,17 @@ function readRows(content: string): string[][] {
     }
     if (quoted) throw invalid();
     if (row.length || cell || closed) record();
-    if (JSON.stringify(rows.shift()) !== JSON.stringify(columns) || rows.some(row => row.length !== columns.length || !row[0])) throw invalid();
+    const header = rows.shift();
+    const legacy = JSON.stringify(header) === JSON.stringify(legacyColumns);
+    if (!header || (!legacy && JSON.stringify(header) !== JSON.stringify(columns))) throw invalid();
+    if (rows.some(row => row.length !== header.length || !row[0])) throw invalid();
+    if (legacy) for (const row of rows) row.splice(names.length, 0, '', '');
     return rows;
 }
 
 export const resolveFormatter: ExportFormatter = {
     id: 'resolve',
+    mediaFields: readResolveTimecode,
     clip(metadata, extension) {
         const originalExtension = extname(metadata.originalFilename);
         const originalStem = metadata.originalFilename.slice(0, metadata.originalFilename.length - originalExtension.length);

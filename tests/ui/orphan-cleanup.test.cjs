@@ -59,7 +59,7 @@ if (!process.versions.electron) {
         await until(() => js(`window.desktop.getBackendStatus().then(status => status.state === 'connected')`), 'Backend did not connect');
         await js(`window.desktop.chooseLibrary().then(choice => window.desktop.saveConfigurationLocations({ library: choice.token }))`);
         const menuItem = Menu.getApplicationMenu().getMenuItemById('clean-orphaned-data');
-        assert.equal(menuItem.label, 'Clean Orphaned Data...');
+        assert.equal(menuItem.label, 'Clean Orphaned Data');
         const rowCount = () => js(`document.querySelectorAll('[aria-label="Orphaned files"] li').length`);
         const openReview = async () => {
             menuItem.click(menuItem, window);

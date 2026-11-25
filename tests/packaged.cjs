@@ -66,7 +66,8 @@ if (!process.versions.electron) {
             assert.equal(require('node:url').fileURLToPath(window.webContents.getURL()), join(archive,'out/renderer/index.html'), 'Packaged app uses its own renderer');
             await until(()=>js(`!!window.desktop && window.desktop.getBackendStatus().then(s=>s.state==='connected')`),'Bundled backend did not start');
             const appMenu = electron.Menu.getApplicationMenu().getMenuItemById('advanced').submenu;
-            appMenu.items.find(item => item.label === 'Open Resources Folder…').click();
+            assert.equal(appMenu.getMenuItemById('reencode-proxies').label, 'Re-Encode Proxies');
+            appMenu.items.find(item => item.label === 'Open Resources Folder').click();
             await until(() => openedFolder === userResources, 'Resources menu did not open the profile Resources folder');
             assert.deepEqual(fs.readdirSync(join(userResources, 'LUT')), []);
             assert.equal((await js('window.desktop.getConfiguration()')).libraryPath,null,'Never load real configuration');
@@ -136,6 +137,8 @@ if (!process.versions.electron) {
             assert.equal(fs.readFileSync(target, 'utf8'), 'old proxy');
             const commitButton = `Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Commit' && !b.disabled)`;
             await until(() => js(`!!(${commitButton})`), 'A staged replacement did not enable Commit');
+            assert.equal(await js(`document.getElementById('shot-${id}').classList.contains('ingest-card-needs-sync')`), true);
+            assert.equal(await js(`document.querySelector('[data-shot-thumbnail]').innerText.includes('Update')`), false);
             await js(`(${commitButton}).click()`);
             await until(() => js(`document.querySelector('dialog[open]')?.textContent.includes('Replace Library proxy')`), 'Commit did not review the proxy');
             await js(`(${button('Commit')}).click()`);
