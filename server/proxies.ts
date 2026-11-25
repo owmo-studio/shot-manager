@@ -10,6 +10,7 @@ import { inspectLibrary, libraryAssetName, libraryFileIdentity } from './library
 import type { LibraryLocation } from './library';
 import { ShotScanner } from './scanner';
 import { rename } from 'node:fs/promises';
+import { sourceProxyTiming, verifyProxyTiming } from './proxyTiming';
 
 export const scratchFolder = 'Shot Manager Cache';
 export const minimumFreeBytes = 512 * 1024 * 1024;
@@ -34,7 +35,9 @@ export async function inspectScratch(configuration: AppConfiguration, sources: s
 }
 
 // No viewing LUT or frame-rate conversion: preserve source timing and color interpretation.
-export function encodeProxy(input: string, output: string, shot: VideoShot, signal: AbortSignal, progress: (percent: number) => void): Promise<void> {
+export async function encodeProxy(input: string, output: string, shot: VideoShot, signal: AbortSignal, progress: (percent: number) => void): Promise<void> {
+    signal.throwIfAborted();
+    const timing = await sourceProxyTiming(input, signal);
     signal.throwIfAborted();
     const color = shot.metadata.color;
     const primaries = ['bt709', 'bt470m', 'bt470bg', 'smpte170m', 'smpte240m', 'film', 'bt2020', 'smpte428', 'smpte431', 'smpte432', 'jedec-p22'];
@@ -56,8 +59,11 @@ export function encodeProxy(input: string, output: string, shot: VideoShot, sign
         '-vf', filters.join(','),
         '-c:v', 'prores_ks', '-profile:v', '0', '-pix_fmt', 'yuv422p10le', '-threads', '2', '-c:a', 'pcm_s24le'];
     for (const item of declarations) args.push(item.flag, item.value!);
+    if (timing.variable) args.push('-enc_time_base:v', 'demux');
+    if (timing.timecode) args.push('-metadata:s:v:0', `timecode=${timing.timecode}`, '-timecode', timing.timecode);
+    args.push('-write_tmcd', timing.timecode ? '1' : '0');
     args.push('-movflags', '+write_colr', '-progress', 'pipe:1', '-nostats', '-f', 'mov', output);
-    return new Promise((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
         const child = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
         if (child.pid) { try { setPriority(child.pid, 10); } catch {} }
         let errors = '', tail = '';
@@ -83,6 +89,7 @@ export function encodeProxy(input: string, output: string, shot: VideoShot, sign
             else resolve();
         });
     });
+    await verifyProxyTiming(output, timing, signal);
 }
 
 export class ProxyQueue {

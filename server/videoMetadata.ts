@@ -25,6 +25,13 @@ export function sonyMetadata(container: EmbeddedContainer) {
             const device = object(data.Device);
             if (device["@_manufacturer"] !== "Sony") continue;
             const video = object(object(data.VideoFormat).VideoFrame);
+            const ltcTables = list(data.LtcChangeTable).map(value => {
+                const table = object(value);
+                return {
+                    fps: number(table["@_tcFps"]), halfStep: table["@_halfStep"],
+                    starts: list(table.LtcChange).map(object).filter(row => row["@_frameCount"] === "0").map(row => text(row["@_value"])),
+                };
+            });
             const items = new Map<string, unknown>();
             for (const group of list(object(data.AcquisitionRecord).Group)) {
                 for (const item of list(object(group).Item)) {
@@ -36,7 +43,7 @@ export function sonyMetadata(container: EmbeddedContainer) {
                 model: text(device["@_modelName"]), timestamp: text(object(data.CreationDate)["@_value"]),
                 gamma: text(items.get("CaptureGammaEquation")), primaries: text(items.get("CaptureColorPrimaries")),
                 matrix: text(items.get("CodingEquations")), captureFps: text(video["@_captureFps"]),
-                proxy: /proxy/i.test(String(video["@_videoCodec"] ?? "")),
+                proxy: /proxy/i.test(String(video["@_videoCodec"] ?? "")), ltcTables,
             };
         } catch { container.warnings.push("Embedded Sony XML could not be interpreted."); }
     }
