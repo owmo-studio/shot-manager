@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.3.0 - 2026-11-25
+
+### Added
+
+- **Advanced → Re-Encode Proxies** regenerates proxies for selected Library clips. Review the selection, encode from the Library originals into the local cache, then choose **Commit** to replace the published proxies or **Revert** to discard the replacements.
+
+### Changed
+
+- DaVinci Resolve exports include `Start TC` and `End TC` when source timing is available, so clips can match with Resolve’s default metadata import settings. Re-exporting preserves existing CSV rows.
+- **Open Resources Folder** and **Clean Orphaned Data** are now in the **Advanced** menu.
+
+### Fixed
+
+- Newly encoded proxies preserve source timecode and drop-frame counting, including embedded Sony camera timecode.
+- Proxy encoding preserves source color levels, gamut, and gamma more accurately, including Sony S-Log3 and Apple Log footage.
+
 ## 1.2.0 - 2026-11-24
 
 ### Changed
