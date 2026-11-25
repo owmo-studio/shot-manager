@@ -2,17 +2,23 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readEmbeddedContainer } from './embedded';
 import { rational, sonyMetadata } from './videoMetadata';
+import { proxyColor, verifyProxyColor, type StreamColor } from './proxyColor';
 
 const execute = promisify(execFile);
 type Tags = Record<string, string>;
-type Stream = {
+type Stream = StreamColor & {
     codec_type: string; codec_tag_string: string; id?: string; tags?: Tags;
     nb_frames?: string; r_frame_rate: string; avg_frame_rate: string;
 };
 
 async function probe(path: string, signal: AbortSignal) {
+    const entries = [
+        'stream=id,codec_type,codec_tag_string,nb_frames,r_frame_rate,avg_frame_rate,pix_fmt,color_range,color_space,color_primaries,color_transfer',
+        'stream_tags=timecode,com.apple.quicktime.colorSpace',
+        'format_tags=timecode,com.apple.quicktime.colorSpace,CaptureGammaEquation,CaptureColorPrimaries,CodingEquations',
+    ];
     const { stdout } = await execute('ffprobe', ['-v', 'error', '-protocol_whitelist', 'file',
-        '-show_entries', 'stream=id,codec_type,codec_tag_string,nb_frames,r_frame_rate,avg_frame_rate:stream_tags=timecode:format_tags=timecode',
+        '-show_entries', entries.join(':'),
         '-of', 'json', '-i', path], { signal, timeout: 30000, maxBuffer: 1024 * 1024 });
     const info: { streams: Stream[]; format?: { tags?: Tags } } = JSON.parse(stdout);
     const video = info.streams.find(stream => stream.codec_type === 'video'); // Same stream as -map 0:v:0.
@@ -61,7 +67,7 @@ function sonyStart(table: LtcTable, playbackRate: number | null) {
     return [hours, minutes, seconds].map(pad).join(':') + (drop ? ';' : ':') + pad(frames);
 }
 
-export async function sourceProxyTiming(path: string, signal: AbortSignal) {
+export async function inspectProxySource(path: string, signal: AbortSignal) {
     const { video, streams, tags } = await probe(path, signal);
     const embedded = await readEmbeddedContainer(path, signal);
     const track = embedded.tracks.find(item => item.handler === 'vide' && item.id === Number(video.id));
@@ -70,7 +76,10 @@ export async function sourceProxyTiming(path: string, signal: AbortSignal) {
     const constantRate = timing && track.timeScale && timing.minimumDelta === timing.maximumDelta
         ? `${track.timeScale}/${timing.minimumDelta}` : undefined;
     const rate = rational(constantRate) ?? rational(video.r_frame_rate) ?? rational(video.avg_frame_rate);
-    const cameraStarts = sonyMetadata(embedded)?.ltcTables.map(table => sonyStart(table, rate)) ?? [];
+    const sony = sonyMetadata(embedded);
+    const appleLog = !!track?.logProfiles.includes('com.apple.rec2020.apple-log') ||
+        (tags?.['com.apple.quicktime.colorSpace'] ?? video.tags?.['com.apple.quicktime.colorSpace']) === 'apple_log';
+    const cameraStarts = sony?.ltcTables.map(table => sonyStart(table, rate)) ?? [];
     const cameraStart = cameraStarts.at(0);
     const starts = new Set(cameraStarts);
     const rtmd = streams.filter(stream => stream.codec_tag_string === 'rtmd');
@@ -95,6 +104,9 @@ export async function sourceProxyTiming(path: string, signal: AbortSignal) {
     if (starts.size > 1) throw new Error(`Conflicting source timecodes: ${[...starts].join(', ')}.`);
     if (!starts.size && tmcd.length) throw new Error('Source timecode track has no readable start label.');
     return {
+        color: proxyColor(video, sony ?? {
+            gamma: tags?.CaptureGammaEquation, primaries: tags?.CaptureColorPrimaries, matrix: tags?.CodingEquations,
+        }, appleLog),
         timecode: starts.values().next().value,
         constantRate,
         reportedRate: !timing && rational(video.r_frame_rate) && sameRate(video.r_frame_rate, video.avg_frame_rate) ? video.r_frame_rate : undefined,
@@ -103,8 +115,8 @@ export async function sourceProxyTiming(path: string, signal: AbortSignal) {
     };
 }
 
-export async function verifyProxyTiming(path: string, expected: Awaited<ReturnType<typeof sourceProxyTiming>>, signal: AbortSignal) {
-    const { video, streams } = await probe(path, signal);
+export async function verifyProxy(path: string, expected: Awaited<ReturnType<typeof inspectProxySource>>, signal: AbortSignal) {
+    const { video, streams, tags } = await probe(path, signal);
     const tracks = streams.filter(stream => stream.codec_tag_string === 'tmcd');
     if (tracks.length !== (expected.timecode ? 1 : 0) || timecodeTag(tracks[0]?.tags) !== expected.timecode ||
         timecodeTag(video.tags) !== expected.timecode) {
@@ -120,4 +132,5 @@ export async function verifyProxyTiming(path: string, expected: Awaited<ReturnTy
     if (expected.frameCount !== undefined && Number(video.nb_frames) !== expected.frameCount) {
         throw new Error(`Proxy frame count differs from the source (expected ${expected.frameCount}, found ${video.nb_frames ?? 'unknown'}).`);
     }
+    verifyProxyColor(expected.color, video, tags);
 }

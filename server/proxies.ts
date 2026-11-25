@@ -10,7 +10,8 @@ import { inspectLibrary, libraryAssetName, libraryFileIdentity } from './library
 import type { LibraryLocation } from './library';
 import { ShotScanner } from './scanner';
 import { rename } from 'node:fs/promises';
-import { sourceProxyTiming, verifyProxyTiming } from './proxyTiming';
+import { inspectProxySource, verifyProxy } from './proxyMedia';
+import { proxyColorFilters } from './proxyColor';
 
 export const scratchFolder = 'Shot Manager Cache';
 export const minimumFreeBytes = 512 * 1024 * 1024;
@@ -37,32 +38,21 @@ export async function inspectScratch(configuration: AppConfiguration, sources: s
 // No viewing LUT or frame-rate conversion: preserve source timing and color interpretation.
 export async function encodeProxy(input: string, output: string, shot: VideoShot, signal: AbortSignal, progress: (percent: number) => void): Promise<void> {
     signal.throwIfAborted();
-    const timing = await sourceProxyTiming(input, signal);
+    const source = await inspectProxySource(input, signal);
     signal.throwIfAborted();
-    const color = shot.metadata.color;
-    const primaries = ['bt709', 'bt470m', 'bt470bg', 'smpte170m', 'smpte240m', 'film', 'bt2020', 'smpte428', 'smpte431', 'smpte432', 'jedec-p22'];
-    const transfers = ['bt709', 'gamma22', 'gamma28', 'smpte170m', 'smpte240m', 'linear', 'log', 'log_sqrt', 'iec61966-2-4', 'bt1361e', 'iec61966-2-1', 'bt2020-10', 'bt2020-12', 'smpte2084', 'smpte428', 'arib-std-b67'];
-    const matrices = ['gbr', 'bt709', 'fcc', 'bt470bg', 'smpte170m', 'smpte240m', 'ycgco', 'bt2020nc', 'bt2020c'];
-    const declarations = [
-        { flag: '-color_primaries', parameter: 'color_primaries', value: color.primaries, allowed: primaries },
-        { flag: '-color_trc', parameter: 'color_trc', value: color.transfer, allowed: transfers },
-        { flag: '-colorspace', parameter: 'colorspace', value: color.matrix, allowed: matrices },
-        { flag: '-color_range', parameter: 'range', value: color.range, allowed: ['tv', 'pc'] },
-    ].filter(item => item.value && item.allowed.includes(item.value));
-    // Capture-specific names (S-Log3, S-Gamut3.Cine, Apple Log) are retained in
-    // Library JSON. They are not valid FFmpeg standard color enums or a reason to bake a LUT.
-    const filters = ["scale=w='min(iw,1280)':h='min(ih,1280)':force_original_aspect_ratio=decrease:force_divisible_by=2:reset_sar=1", 'format=yuv422p10le'];
-    if (declarations.length) filters.push(`setparams=${declarations.map(item => `${item.parameter}=${item.value}`).join(':')}`);
+    const color = source.color;
     const args = ['-nostdin', '-hide_banner', '-loglevel', 'error', '-n', '-protocol_whitelist', 'file', '-threads', '2', '-i', input,
         '-map', '0:v:0', '-map', '0:a?', '-map_metadata', '0', '-map_metadata:s:v:0', '0:s:v:0',
         '-copyts', '-start_at_zero', '-fps_mode', 'passthrough', '-filter_threads', '1',
-        '-vf', filters.join(','),
+        '-vf', proxyColorFilters(color).join(','),
         '-c:v', 'prores_ks', '-profile:v', '0', '-pix_fmt', 'yuv422p10le', '-threads', '2', '-c:a', 'pcm_s24le'];
-    for (const item of declarations) args.push(item.flag, item.value!);
-    if (timing.variable) args.push('-enc_time_base:v', 'demux');
-    if (timing.timecode) args.push('-metadata:s:v:0', `timecode=${timing.timecode}`, '-timecode', timing.timecode);
-    args.push('-write_tmcd', timing.timecode ? '1' : '0');
-    args.push('-movflags', '+write_colr', '-progress', 'pipe:1', '-nostats', '-f', 'mov', output);
+    args.push('-color_range', 'tv', '-color_primaries', color.primaries ?? 'unknown',
+        '-color_trc', color.transfer ?? 'unknown', '-colorspace', color.matrix ?? 'unknown');
+    for (const [key, value] of Object.entries(color.captureTags)) args.push('-metadata', `${key}=${value}`);
+    if (source.variable) args.push('-enc_time_base:v', 'demux');
+    if (source.timecode) args.push('-metadata:s:v:0', `timecode=${source.timecode}`, '-timecode', source.timecode);
+    args.push('-write_tmcd', source.timecode ? '1' : '0');
+    args.push('-movflags', Object.keys(color.captureTags).length ? '+write_colr+use_metadata_tags' : '+write_colr', '-progress', 'pipe:1', '-nostats', '-f', 'mov', output);
     await new Promise<void>((resolve, reject) => {
         const child = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
         if (child.pid) { try { setPriority(child.pid, 10); } catch {} }
@@ -89,7 +79,7 @@ export async function encodeProxy(input: string, output: string, shot: VideoShot
             else resolve();
         });
     });
-    await verifyProxyTiming(output, timing, signal);
+    await verifyProxy(output, source, signal);
 }
 
 export class ProxyQueue {

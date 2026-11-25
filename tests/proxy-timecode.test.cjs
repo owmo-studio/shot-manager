@@ -59,7 +59,7 @@ async function sonySource(root, name, frames, seconds, value) {
     const root = await fs.mkdtemp(join(tmpdir(), 'shot-manager-proxy-timecode-'));
     try {
         const entry = join(root, 'entry.ts');
-        await fs.writeFile(entry, ['proxies', 'proxyTiming'].map(file =>
+        await fs.writeFile(entry, ['proxies', 'proxyMedia'].map(file =>
             `export * from ${JSON.stringify(join(__dirname, '..', 'server', file + '.ts'))};`).join('\n'));
         const { build } = await import('vite');
         const bundle = await build({ configFile: false, logLevel: 'silent', build: {
@@ -68,7 +68,7 @@ async function sonySource(root, name, frames, seconds, value) {
         const loaded = new (require('node:module'))(__filename, module);
         loaded.paths = module.paths;
         loaded._compile(bundle.output.find(chunk => chunk.isEntry).code, __filename);
-        const { encodeProxy, sourceProxyTiming, verifyProxyTiming } = loaded.exports;
+        const { encodeProxy, inspectProxySource, verifyProxy } = loaded.exports;
         async function check(input, label, frames, frameRate) {
             const output = input + '.partial';
             await encodeProxy(input, output, shot, signal, () => {});
@@ -109,16 +109,16 @@ async function sonySource(root, name, frames, seconds, value) {
         const fragmented = join(root, 'fragmented.mp4');
         await source(fragmented, 40, ['-bf', '0', '-movflags', 'empty_moov+frag_keyframe'], '60/1');
         await check(fragmented, undefined, 40, '60/1');
-        const fragmentTiming = await sourceProxyTiming(fragmented, signal);
-        await assert.rejects(verifyProxyTiming(join(root, 'untagged.mp4.partial'), fragmentTiming, signal), /frame rate/);
+        const fragmentTiming = await inspectProxySource(fragmented, signal);
+        await assert.rejects(verifyProxy(join(root, 'untagged.mp4.partial'), fragmentTiming, signal), /frame rate/);
 
-        const expected = await sourceProxyTiming(join(root, '0252.mp4'), signal);
-        await assert.rejects(verifyProxyTiming(join(root, 'ndf.mp4.partial'), expected, signal), /timecode verification/);
-        await assert.rejects(verifyProxyTiming(join(root, 'df.mp4.partial'), expected, signal), /frame count/);
-        await assert.rejects(verifyProxyTiming(join(root, 'df.mp4.partial'), { ...expected, constantRate: '30/1' }, signal), /frame rate/);
+        const expected = await inspectProxySource(join(root, '0252.mp4'), signal);
+        await assert.rejects(verifyProxy(join(root, 'ndf.mp4.partial'), expected, signal), /timecode verification/);
+        await assert.rejects(verifyProxy(join(root, 'df.mp4.partial'), expected, signal), /frame count/);
+        await assert.rejects(verifyProxy(join(root, 'df.mp4.partial'), { ...expected, constantRate: '30/1' }, signal), /frame rate/);
         const conflicting = join(root, 'ndf.mp4');
         await fs.appendFile(conflicting, ltcXml('69582007'));
-        await assert.rejects(sourceProxyTiming(conflicting, signal), /Conflicting source timecodes/);
+        await assert.rejects(inspectProxySource(conflicting, signal), /Conflicting source timecodes/);
         const wrongStart = await sonySource(root, 'wrong-start', 40, 49, '69582007');
         await assert.rejects(encodeProxy(wrongStart, wrongStart + '.partial', shot, signal, () => {}), /Conflicting source timecodes/);
 
