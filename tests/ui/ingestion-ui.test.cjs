@@ -385,7 +385,8 @@ if (!process.versions.electron) {
             await js(`document.getElementById('shot-${publishedId}').click()`);
             await until(()=>js(`!!document.querySelector('video') && document.querySelector('[aria-label="Notes"]')?.value===''`),'Library inspector and playback');
             assert.equal(await js(`document.querySelector('video').getAttribute('src')`),`shot-media://local/library/${publishedId}/original`);
-            await new Promise(resolve=>setTimeout(resolve,150));
+            // The card slides into place on entry. Compare its settled position across refresh.
+            await js(`Promise.all(document.querySelector('[data-shot-card]').getAnimations().map(animation => animation.finished)).then(() => true)`);
             await screenshot("library-view");
             await until(()=>js(`!!document.querySelector('[data-shot-image]')`),'Library thumbnail is visible before refresh');
             await js(`window.libraryImageBeforeRefresh=document.querySelector('[data-shot-image]'); window.libraryGridTop=document.querySelector('[data-shot-card]').getBoundingClientRect().top;`);
