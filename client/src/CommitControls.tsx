@@ -182,7 +182,7 @@ export function CommitControls({
             )}
             {!review && !error && failure && (
                 <ErrorDialog
-                    title={failure.kind === "sync" ? "Export failed" : "Commit failed"}
+                    title={failure.kind === "sync" ? "Export failed" : failure.kind === "proxy" ? "Proxy encoding failed" : "Commit failed"}
                     message={`${failure.filename}: ${failure.message}`}
                     onDismiss={() => {
                         void api

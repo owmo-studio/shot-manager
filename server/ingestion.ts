@@ -65,7 +65,7 @@ export class IngestQueue {
         if (proxies) {
             proxies.onChange = () => this.backgroundChanged();
             proxies.onError = (shot, message) => {
-                if (!this.queuedIds.includes(shot.id) && !this.scanner.isEjecting(shot.id)) this.state.errors.push({ id: shot.id, filename: shot.filename, message, eventId: randomUUID() });
+                if (!this.queuedIds.includes(shot.id) && !this.scanner.isEjecting(shot.id)) this.state.errors.push({ id: shot.id, filename: shot.filename, message, eventId: randomUUID(), kind: 'proxy' });
                 this.publish();
             };
         }
@@ -221,6 +221,8 @@ export class IngestQueue {
                 pending.set(`proxy:${shot.id}`, { kind: 'proxy', percent: Math.max(0, Math.min(99, shot.proxyPercent ?? 0)) });
             }
         }
+        for (const work of this.proxies?.replacementProgress?.() ?? []) pending.set(work.key, { kind: 'proxy', percent: work.percent });
+        if (this.proxies?.lastCompletedReplacement) ready.add(this.proxies.lastCompletedReplacement);
         for (const id of this.queuedIds) {
             const workKind = this.scanner.workKind(id);
             if (workKind === 'metadata') continue;
@@ -496,14 +498,15 @@ export class IngestQueue {
                     if (stateKey) this.state.completed = (this.state.completed ?? 0) + 1;
                     this.publish();
                 } catch (error) {
-                    if (clipSignal.reason === pauseTransfer && !signal.aborted && !this.cancelledIds.has(shot.id)) {
+                    const unknown = error instanceof AppError && error.outcome === 'unknown';
+                    if (!unknown && clipSignal.reason === pauseTransfer && !signal.aborted && !this.cancelledIds.has(shot.id)) {
                         if (libraryJob) this.libraryPending.splice(jobIndex, 0, libraryJob);
                         else this.pending.splice(index, 0, item!);
                         this.tasks.delete(this.transferKeys.get(shot.id)!);
                         if (stateKey) { this.state[stateKey] = undefined; this.state.position--; }
                         this.scanner.requeueIngest(shot.id);
                         requeued = true;
-                    } else if (!clipSignal.aborted) this.state.errors.push({ id: shot.id, filename: shot.filename,
+                    } else if (unknown || !clipSignal.aborted) this.state.errors.push({ id: shot.id, filename: shot.filename,
                         message: error instanceof Error ? error.message : String(error), eventId: randomUUID(), kind: kind === 'sync' ? 'sync' : 'commit' });
                     this.publish();
                 } finally {

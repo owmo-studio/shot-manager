@@ -46,6 +46,7 @@ export function RevertOrganizationButton({ shots, onReverted }: {
             <p id="revert-organization-description" className="mt-3 text-sm leading-6 text-zinc-400">
                 Replace local attributes and thumbnails with Library values for {targets.length} {targets.length === 1 ? 'clip' : 'clips'}.
             </p>
+            {mode === 'library' && <p className="mt-2 text-sm text-zinc-400">Any staged proxy replacements for these clips will be discarded.</p>}
             {mode === "import" && <p className="mt-2 text-xs text-zinc-500">Skip is kept.</p>}
             {error && <p role="alert" className="mt-3 text-xs text-red-300">{error}</p>}
             <div className="mt-6 flex justify-end gap-3">

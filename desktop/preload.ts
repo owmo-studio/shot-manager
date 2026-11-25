@@ -24,6 +24,14 @@ const desktop: DesktopBridge = {
   startLibraryCommit: (token, ids) => invoke('library:commit', token, ids),
   reviewLibraryDelete: ids => invoke('library:delete-review', ids),
   deleteLibraryClips: (token, ids) => invoke('library:delete', token, ids),
+  setReencodeEnabled: enabled => invoke('library:reencode-enabled', enabled),
+  onReencodeRequested: listener => {
+    const handle = () => listener()
+    ipcRenderer.on('library:open-reencode', handle)
+    return () => ipcRenderer.removeListener('library:open-reencode', handle)
+  },
+  reviewReencode: ids => invoke('library:reencode-review', ids),
+  startReencode: (token, ids) => invoke('library:reencode', token, ids),
   onOrphanCleanupRequested: listener => {
     const handler = () => listener()
     ipcRenderer.on('library:open-orphan-cleanup', handler)

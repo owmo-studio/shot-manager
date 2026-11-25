@@ -65,7 +65,7 @@ if (!process.versions.electron) {
             await until(()=>window&&!window.webContents.isLoadingMainFrame(),'Renderer did not load');
             assert.equal(require('node:url').fileURLToPath(window.webContents.getURL()), join(archive,'out/renderer/index.html'), 'Packaged app uses its own renderer');
             await until(()=>js(`!!window.desktop && window.desktop.getBackendStatus().then(s=>s.state==='connected')`),'Bundled backend did not start');
-            const appMenu = electron.Menu.getApplicationMenu().items[0].submenu;
+            const appMenu = electron.Menu.getApplicationMenu().getMenuItemById('advanced').submenu;
             appMenu.items.find(item => item.label === 'Open Resources Folder…').click();
             await until(() => openedFolder === userResources, 'Resources menu did not open the profile Resources folder');
             assert.deepEqual(fs.readdirSync(join(userResources, 'LUT')), []);
@@ -104,6 +104,39 @@ if (!process.versions.electron) {
             assert.equal(await js(`getComputedStyle(document.querySelector('input[aria-label="Scene"]')).userSelect`),'text','Editable text fields still allow selection');
             assert.equal(fs.existsSync(join(archive,'out/resources/luts')),false,'Development LUT output must never leak into the archive');
             assert.equal(fs.existsSync(join(resources,'luts')),false,'Packages must exclude camera LUTs');
+            // Run an actual Library repair through the menu and both confirmation dialogs.
+            const id = await js('window.desktop.getShots().then(s => s.shots[0].id)');
+            await js(`window.desktop.reviewIngest(['${id}']).then(r => window.desktop.startIngest(r.token, ['${id}']))`);
+            await until(() => js('window.desktop.getLibrary().then(s => s.shots.length === 1)'), 'Import Commit did not publish');
+            await js(`Array.from(document.querySelectorAll('header button')).find(b => b.textContent === 'Library').click()`);
+            await until(() => js(`!!document.querySelector('[data-shot-card] > button')`), 'Library card missing');
+            const target = join(root, 'library', id + '.proxy.mov');
+            fs.writeFileSync(target, 'old proxy');
+            const original = join(root, 'library', id + '.source.mp4'), before = fs.statSync(original);
+            const menu = appMenu.getMenuItemById('reencode-proxies');
+            await js(`document.querySelector('[data-shot-card] > button').click()`);
+            await until(() => menu.enabled, 'Explicit selection did not enable Re-Encode');
+            menu.click(menu, window);
+            const button = label => `Array.from(document.querySelectorAll('dialog[open] button')).find(b => b.textContent.trim() === '${label}')`;
+            await until(() => js(`!!(${button('Re-Encode 1 Proxy')})`), 'Re-encode review missing');
+            await js(`(${button('Cancel')}).click()`);
+            assert.equal(fs.readFileSync(target, 'utf8'), 'old proxy');
+            await until(() => menu.enabled, 'Re-encode menu did not reopen');
+            menu.click(menu, window);
+            await until(() => js(`!!(${button('Re-Encode 1 Proxy')})`), 'Re-encode confirmation missing');
+            await js(`(${button('Re-Encode 1 Proxy')}).click()`);
+            await until(() => js('window.desktop.getLibrary().then(s => s.shots[0]?.pendingProxy && s.shots[0]?.editable)'), 'No staged proxy');
+            assert.equal(fs.readFileSync(target, 'utf8'), 'old proxy');
+            const commitButton = `Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Commit' && !b.disabled)`;
+            await until(() => js(`!!(${commitButton})`), 'A staged replacement did not enable Commit');
+            await js(`(${commitButton}).click()`);
+            await until(() => js(`document.querySelector('dialog[open]')?.textContent.includes('Replace Library proxy')`), 'Commit did not review the proxy');
+            await js(`(${button('Commit')}).click()`);
+            await until(() => js('window.desktop.getLibrary().then(s => s.shots[0]?.editable && !s.shots[0]?.pendingProxy)'), 'Proxy Commit failed');
+            assert.equal(execFileSync('ffprobe', ['-v','error','-select_streams','v:0','-show_entries','stream=codec_name','-of','csv=p=0',target],
+                { encoding: 'utf8', env: { ...process.env, PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin' } }).trim(), 'prores');
+            assert.equal(fs.statSync(original).ino, before.ino);
+            assert.equal(fs.statSync(original).mtimeMs, before.mtimeMs);
             fs.writeFileSync(join(root,'validated'),'passed');
             console.log('PASS: shipped Shot Manager bundle and title, Configuration version and Clear action, optional local LUT support, Finder PATH, and isolated media processing.');
             clearTimeout(timer);app.quit();

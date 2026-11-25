@@ -1,6 +1,7 @@
 import { lstat, mkdir, readFile, readdir, realpath, rename, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { inspectLibrary, within } from './library';
+import { replacementPattern } from './proxyReplacements';
 import { scratchFolder } from './proxies';
 import { VIDEO_SAMPLE_SCHEME } from '../shared/shots';
 import { validateLibraryMetadata } from '../shared/library';
@@ -68,7 +69,7 @@ async function categoryEntries(root: string, category: CacheCategory) {
         files.push(...await categoryFiles(paths.library.thumbnails, categoryPatterns.thumbnails));
         files.push(...await categoryFiles(join(root, 'library-thumbnails'), categoryPatterns.thumbnails));
     }
-    if (category === 'proxies') files.push(...await categoryFiles(root, categoryPatterns.proxies));
+    if (category === 'proxies') files.push(...await categoryFiles(root, categoryPatterns.proxies), ...await categoryFiles(paths.proxies, replacementPattern));
     return files;
 }
 
@@ -189,6 +190,7 @@ export async function clearSelectedCache(root: string, selection: CacheSelection
     }
     if (selection.fingerprints) await clearDirectory(paths.fingerprints, /^[a-f0-9]{64}\.json(?:\.[a-f0-9-]{36}\.tmp)?$/);
     if (selection.proxies) {
+        await clearDirectory(paths.proxies, replacementPattern);
         await clearDirectory(paths.proxies, /^[a-f0-9]{64}\.proxy\.mov$|^[a-f0-9]{64}\.proxy\.[a-f0-9-]{36}\.partial$/);
         // Recognize files generated before Cache gained named subfolders.
         await clearDirectory(root, /^[a-f0-9]{64}\.proxy\.mov$|^[a-f0-9]{64}\.proxy\.[a-f0-9-]{36}\.partial$/);

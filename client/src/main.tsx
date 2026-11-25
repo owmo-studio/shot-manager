@@ -26,6 +26,7 @@ import { scrollShotIntoView } from "./scrollShotIntoView";
 import { ErrorDialog } from "./ErrorDialog";
 import { ClipActionDialog } from "./ClipActionDialog";
 import { LibraryDeleteDialog } from "./DeleteButton";
+import { ReencodeDialog } from "./ReencodeDialog";
 import { OrphanCleanupDialog } from "./OrphanCleanupDialog";
 import { DirectoryUnavailableDialog } from "./DirectoryUnavailableDialog";
 import "./styles.css";
@@ -150,6 +151,15 @@ function App() {
     const refreshFailed = useRef(false);
     const [communicationError, setCommunicationError] = useState(false);
     const [deleteTargets, setDeleteTargets] = useState<VideoShot[] | null>(null);
+    const [reencodeIds, setReencodeIds] = useState<string[] | null>(null);
+    const reencodeEnabled = tab === 'library' && selectedShots.length > 0 && !reencodeIds &&
+        selectedShots.every(shot => shot.available && shot.editable && !shot.pendingProxy);
+    useEffect(() => {
+        void window.desktop.setReencodeEnabled(reencodeEnabled).catch(error => setWorkspaceError(errorMessage(error, 'Could not update the Advanced menu.')));
+    }, [reencodeEnabled]);
+    useEffect(() => window.desktop.onReencodeRequested(() => {
+        if (reencodeEnabled && !document.querySelector('dialog[open]')) setReencodeIds(selectedShots.map(shot => shot.id));
+    }), [reencodeEnabled, selectedShots]);
     const [orphanCleanupOpen, setOrphanCleanupOpen] = useState(false);
     useEffect(() => window.desktop.onOrphanCleanupRequested(() => setOrphanCleanupOpen(true)), []);
     const [clipAction, setClipAction] = useState<{ kind: 'eject' | StoppableTransfer; shots: VideoShot[] } | null>(null);
@@ -480,6 +490,7 @@ function App() {
                     />}
             </main>
             {deleteTargets && <LibraryDeleteDialog shots={deleteTargets} onClose={() => setDeleteTargets(null)} />}
+            {reencodeIds && <ReencodeDialog ids={reencodeIds} onClose={() => setReencodeIds(null)} />}
             {orphanCleanupOpen && <OrphanCleanupDialog onClose={() => setOrphanCleanupOpen(false)} />}
             {clipAction && <ClipActionDialog key={clipAction.kind} action={clipAction.kind} shots={clipAction.shots} busy={clipActionBusy} error={clipActionError}
                 onCancel={() => { if (!clipActionBusy) setClipAction(null); }}

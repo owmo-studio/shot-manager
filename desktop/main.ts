@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, shell, utilityProcess } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, shell, utilityProcess } from 'electron'
 import type { IpcMainInvokeEvent, UtilityProcess } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { isWorkQueue } from '../shared/ingestion'
@@ -203,6 +203,8 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     installApplicationMenu(lutDirectory, () => {
       if (!quitting && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('library:open-orphan-cleanup')
+    }, () => {
+      if (!quitting && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('library:open-reencode')
     })
     const validateIngestIds = (value: unknown): string[] => {
       if (!Array.isArray(value) || !value.length || value.length > 1000 || value.some(id => typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id))) throw new Error('Invalid commit selection')
@@ -264,6 +266,22 @@ if (!app.requestSingleInstanceLock()) {
       await flushDrafts()
       // Serialize with Cache clearing and location changes, as well as draft writes.
       return organizationWrites.run(() => backendRequest('/api/library/delete', { method: 'POST', body: JSON.stringify({ token, shotIds }) }))
+    })
+    handle('library:reencode-enabled', (event, enabled: unknown) => {
+      requireMainWindow(event)
+      const item = Menu.getApplicationMenu()?.getMenuItemById('reencode-proxies')
+      if (item) item.enabled = enabled === true
+    })
+    handle('library:reencode-review', (event, value: unknown) => {
+      requireMainWindow(event)
+      return backendRequest('/api/library/reencode/review', { method: 'POST', body: JSON.stringify({ shotIds: validateIngestIds(value) }) })
+    })
+    handle('library:reencode', async (event, token: unknown, value: unknown) => {
+      requireMainWindow(event)
+      if (typeof token !== 'string' || !token || token.length > 64) throw new Error('Review the selected clips again.')
+      const shotIds = validateIngestIds(value)
+      await flushDrafts()
+      return organizationWrites.run(() => backendRequest('/api/library/reencode', { method: 'POST', body: JSON.stringify({ token, shotIds }) }))
     })
     handle('library:orphans-review', event => {
       requireMainWindow(event)

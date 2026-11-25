@@ -73,6 +73,10 @@ export interface DesktopAPI {
   startLibraryCommit: DesktopAPI['startIngest']
   reviewLibraryDelete: (shotIds: string[]) => Promise<LibraryDeleteReview>
   deleteLibraryClips: (token: string, shotIds: string[]) => Promise<LibraryDeleteResult>
+  setReencodeEnabled: (enabled: boolean) => Promise<void>
+  onReencodeRequested: (listener: () => void) => () => void
+  reviewReencode: (ids: string[]) => Promise<{ token: string; clips: { id: string; filename: string }[] }>
+  startReencode: (token: string, ids: string[]) => Promise<{ queued: number }>
   onOrphanCleanupRequested: (listener: () => void) => () => void
   reviewOrphanedData: () => Promise<OrphanDataReview>
   deleteOrphanedData: (token: string, fileIds: number[]) => Promise<OrphanDataResult>

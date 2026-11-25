@@ -24,9 +24,18 @@ import type { DeleteAsset, OrphanAsset } from './libraryDeletion';
 import { DEFAULT_STORAGE_WAIT_SECONDS, withStorageRecovery } from './storageRecovery';
 import type { StorageRetryInfo } from './storageRecovery';
 
+import type { ProxyQueue, Scratch } from './proxies';
+import { checkReplacement, renamedFileKey, regularIdentity, replacementName } from './proxyReplacements';
+import { readExportOwner } from './exportFiles';
+import { AppError } from '../shared/errors';
+
+interface ReplacementCapture {
+    name: string; source: string; sourceIdentity: string; targetIdentity: string | null;
+    scratch: Scratch; path: string; identity: string; bytes: number;
+}
 interface CatalogueEntry { metadata: LibraryMetadata; source: string | null; thumbnail: boolean; proxy: boolean; thumbnailRevision?: number; thumbnailDigest?: string }
 interface CatalogueState { path: string | null; refreshedAt?: string; entries: CatalogueEntry[] }
-interface CommitAttempt { metadataIdentity?: string; thumbnail?: { identity: string | null; transferred: boolean } }
+interface CommitAttempt { publishedProxy?: string; metadataIdentity?: string; thumbnail?: { identity: string | null; transferred: boolean } }
 
 export class LibraryCatalogue {
     private state: CatalogueState = { path: null, entries: [] };
@@ -40,7 +49,10 @@ export class LibraryCatalogue {
     private error?: string;
     private warnings: string[] = [];
     private verified = new Map<string, { path: string; error?: string }>();
-    private review?: { token: string; location: LibraryLocation; generation: number; created: number; entries: { id: string; attributes: ReturnType<typeof ingestAttributes>; thumbnailDigest?: string }[] };
+    private review?: { token: string; location: LibraryLocation; generation: number; created: number; entries: { id: string; attributes: ReturnType<typeof ingestAttributes>; thumbnailDigest?: string; proxy?: ReplacementCapture }[] };
+    private staged = new Map<string, string>();
+    private stagedLibrary?: LibraryLocation;
+    private reencodeReview?: { token: string; location: LibraryLocation; generation: number; created: number; entries: { shot: VideoShot; sourceIdentity: string }[] };
     private transfer = rsyncFile;
     private removeAsset = unlink;
     private deleteReview?: { token: string; location: LibraryLocation; generation: number; created: number;
@@ -51,7 +63,9 @@ export class LibraryCatalogue {
         private inspect: () => Promise<LibraryLocation>, private queue: IngestQueue, private file?: string,
         private thumbnails?: string, private assertWritable?: () => Promise<void>,
         private configuredStorageWait: () => Promise<number> = async () => DEFAULT_STORAGE_WAIT_SECONDS,
-        private onStorageRetry: (info: StorageRetryInfo) => void = () => undefined) {}
+        private onStorageRetry: (info: StorageRetryInfo) => void = () => undefined, private proxies?: ProxyQueue) {
+        if (proxies) proxies.onReplacementChanged = () => this.changed();
+    }
 
     changed() { this.revision++; this.onChange?.(); }
     private serialize<T>(operation: () => Promise<T>): Promise<T> {
@@ -129,7 +143,10 @@ export class LibraryCatalogue {
             const lock = this.scanner.commitLock(m.id);
             const baselineDigest = entry.thumbnailDigest ?? (receiptMatchesLibrary(draft?.ingestion, path) ? draft?.ingestion?.thumbnailDigest : undefined);
             const pendingThumbnail = thumbnailDraftChanged(draft?.thumbnailDraft?.digest, entry.thumbnail, baselineDigest);
-            const changed = attributesChanged(organization, m) || pendingThumbnail;
+            const pendingProxy = this.stagedLibrary?.path === path && this.staged.has(m.id);
+            const encoding = this.scanner.workKind(m.id) === 'proxy';
+            const current = encoding ? this.proxies?.status().current : undefined;
+            const changed = attributesChanged(organization, m) || pendingThumbnail || pendingProxy;
             const verification = this.verified.get(m.id);
             const checked = verification?.path === path;
             const thumbnailReady = entry.thumbnail || !!draft?.thumbnailDraft;
@@ -147,14 +164,15 @@ export class LibraryCatalogue {
                 thumbnailStatus: entry.thumbnail || draft?.thumbnailDraft ? 'ready' : 'failed', thumbnailDigest: draft?.thumbnailDraft?.digest ?? baselineDigest,
                 thumbnailRevision: draft?.thumbnailDraft?.revision ?? entry.thumbnailRevision ?? (Date.parse(this.state.refreshedAt ?? '') || 0),
                 editable: !lock, available: !!entry.source && !this.error, warnings: m.warnings,
-                ingestState: lock ?? (changed ? 'changes-pending' : undefined),
+                ingestState: (encoding ? undefined : lock) ?? (changed ? 'changes-pending' : undefined),
                 workKind: this.scanner.workKind(m.id), transferPercent: this.scanner.transferPercent(m.id),
-                proxyState: entry.proxy ? 'ready' : 'missing', proxyLocation: entry.proxy ? 'library' : undefined,
+                pendingProxy, proxyState: encoding ? current?.id === m.id ? 'encoding' : 'queued' : pendingProxy || entry.proxy ? 'ready' : 'missing',
+                proxyPercent: current?.id === m.id ? current.percent : undefined, proxyLocation: pendingProxy ? 'cache' : entry.proxy ? 'library' : undefined,
                 mediaReadiness: mediaReadiness({
                     checked, committed: !changed && !!entry.source && entry.thumbnail && entry.proxy,
-                    source: !!entry.source, thumbnail: thumbnailReady, metadata: true, proxy: entry.proxy,
+                    source: !!entry.source, thumbnail: thumbnailReady, metadata: true, proxy: entry.proxy || pendingProxy,
                     error: this.error ?? (checked ? verification?.error ?? (!entry.source ? 'Library source unavailable.' :
-                        !thumbnailReady ? 'Library thumbnail unavailable.' : !entry.proxy ? 'Library proxy unavailable.' : undefined) : undefined),
+                        !thumbnailReady ? 'Library thumbnail unavailable.' : !entry.proxy && !pendingProxy ? 'Library proxy unavailable.' : undefined) : undefined),
                 }),
             };
         });
@@ -170,6 +188,7 @@ export class LibraryCatalogue {
             await this.load();
             try {
                 const location = await this.inspect();
+                const staged = await this.proxies?.replacementInventory(location) ?? new Map<string, string>();
                 const listing = await listLibrary(location, signal);
                 const ids = [...listing.assets.keys()].filter(id => listing.assets.get(id)!.includes(libraryAssetName(id, 'metadata', 'json')));
                 const entries = new Map<string, CatalogueEntry>();
@@ -203,6 +222,7 @@ export class LibraryCatalogue {
                 const unlocked = state.entries.filter(entry => !this.scanner.commitLock(entry.metadata.id)).map(entry => entry.metadata);
                 await this.scanner.organization.syncLibrary(unlocked, () => unlocked.every(entry => !this.scanner.commitLock(entry.id)), location.path);
                 await this.save(state);
+                this.staged = staged; this.stagedLibrary = location;
                 this.verified = verified;
                 this.error = undefined; this.warnings = warnings;
                 await this.scanner.reloadOrganizations();
@@ -217,6 +237,82 @@ export class LibraryCatalogue {
     private async validateLocation(expected: LibraryLocation, signal?: AbortSignal, configuredWait?: number) {
         const current = await withStorageRecovery(() => this.inspect(), configuredWait ?? await this.configuredStorageWait(), signal, this.onStorageRetry);
         if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('The Library folder or mounted volume changed.');
+    }
+
+    async previewReencode(ids: string[]) {
+        if (!this.proxies || !ids.length || new Set(ids).size !== ids.length) throw new Error('Select Library clips to re-encode.');
+        const generation = this.queue.workRevision;
+        const collection = await this.refresh();
+        if (collection.error) throw new Error(collection.error);
+        const location = await this.inspect();
+        if (collection.libraryPath !== location.path || JSON.stringify(this.stagedLibrary) !== JSON.stringify(location)) throw new Error('The Library changed. Review again.');
+        const scratch = await this.proxies.replacementScratch();
+        if (scratch.directory === location.path) throw new Error('Choose a Cache proxy directory separate from the Library.');
+        const selected = new Map(collection.shots.map(shot => [shot.id, shot]));
+        const entries = [];
+        for (const id of ids) {
+            const shot = selected.get(id);
+            if (!shot?.available || !shot.editable || !shot.relativePath || shot.filePath !== join(location.path, shot.relativePath) || shot.pendingProxy) throw new Error('Select available Library clips without a queued or staged proxy replacement.');
+            const sourceIdentity = await regularIdentity(shot.filePath);
+            if (!sourceIdentity || await readExportOwner(shot.filePath) !== id) throw new Error('The Library source does not match the selected clip.');
+            entries.push({ shot, sourceIdentity });
+        }
+        await this.validateLocation(location);
+        const token = randomUUID();
+        this.reencodeReview = { token, location, entries, generation, created: Date.now() };
+        return { token, clips: entries.map(({ shot }) => ({ id: shot.id, filename: shot.filename })) };
+    }
+    async submitReencode(token: string, ids: string[]) {
+        const review = this.reencodeReview;
+        const selected = new Set(ids);
+        if (!this.proxies || !review || review.token !== token || Date.now() - review.created > 30 * 60_000 ||
+            selected.size !== ids.length || ids.length !== review.entries.length || review.entries.some(e => !selected.has(e.shot.id))) throw new Error('Review the proxy selection again.');
+        const jobs = review.entries.map(({ shot, sourceIdentity }) => {
+            const validateSource = async () => {
+                if (this.state.path !== review.location.path || this.staged.has(shot.id) || await regularIdentity(shot.filePath) !== sourceIdentity) {
+                    throw new Error('The Library source or staged proxy changed. Review again.');
+                }
+            };
+            const validate = async () => { await this.validateLocation(review.location); await validateSource(); };
+            return { validateSource, taskKey: `replacement:${review.token}:${shot.id}`, shot, validate, stage: (temporary: string, scratch: Scratch, signal: AbortSignal) => this.serialize(async () => {
+                await validate(); await this.proxies!.validateScratch(scratch);
+                const identity = await regularIdentity(temporary);
+                if (!identity) throw new Error('Encoded proxy is missing.');
+                const name = replacementName(shot.id, review.location, shot.relativePath, sourceIdentity, identity);
+                const target = join(scratch.directory, name);
+                if (await libraryFileIdentity(target)) throw new Error('A staged proxy appeared while encoding.');
+                signal.throwIfAborted();
+                await rename(temporary, target);
+                this.staged.set(shot.id, name); this.changed();
+            }) };
+        });
+        await this.validateLocation(review.location);
+        for (const job of jobs) await job.validateSource();
+        const status = await this.queue.status();
+        if (status.stopping || this.reencodeReview !== review || this.queue.workRevision !== review.generation) throw new Error('Review the proxy selection again.');
+        this.proxies.enqueueReplacements(jobs);
+        this.reencodeReview = undefined;
+        if (this.proxies.status().paused && !status.pausedQueues?.proxy) this.proxies.resume();
+        return { queued: jobs.length };
+    }
+    private async captureReplacement(shot: VideoShot, location: LibraryLocation): Promise<ReplacementCapture | undefined> {
+        const name = this.staged.get(shot.id);
+        if (!name) return;
+        const scratch = await this.proxies!.replacementScratch();
+        const sourceIdentity = await regularIdentity(shot.filePath);
+        if (!sourceIdentity) throw new Error('Library source is unavailable.');
+        const asset = await checkReplacement(scratch.directory, name, shot.id, location, shot.relativePath, sourceIdentity);
+        const targetIdentity = await regularIdentity(join(location.path, libraryAssetName(shot.id, 'proxy', 'mov')));
+        return { ...asset, name, source: shot.relativePath, sourceIdentity, targetIdentity, scratch };
+    }
+    private async validateReplacement(id: string, proxy: ReplacementCapture, location: LibraryLocation, targetIdentity: string | null, signal?: AbortSignal) {
+        await this.validateLocation(location, signal);
+        await this.proxies!.validateScratch(proxy.scratch);
+        if (this.staged.get(id) !== proxy.name || await regularIdentity(proxy.path) !== proxy.identity ||
+            await regularIdentity(join(location.path, proxy.source)) !== proxy.sourceIdentity ||
+            await regularIdentity(join(location.path, libraryAssetName(id, 'proxy', 'mov'))) !== targetIdentity) {
+            throw new Error('The reviewed source, staged proxy or Library proxy changed. Review Commit again.');
+        }
     }
 
     previewDelete(ids: string[]): Promise<LibraryDeleteReview> {
@@ -424,6 +520,16 @@ export class LibraryCatalogue {
         const expectedThumbnails = Object.fromEntries(Object.entries(before).map(([key, record]) => [key, record?.thumbnailDraft]));
         const location = await this.inspect();
         if (location.path !== this.state.path) throw new Error('The Library changed. Refresh it first.');
+        const staged = new Map<string, { name: string; identity: string; scratch: Scratch }>();
+        for (const id of ids) {
+            const name = this.staged.get(id);
+            if (!name) continue;
+            if (JSON.stringify(this.stagedLibrary) !== JSON.stringify(location)) throw new Error('The Library changed. Refresh and review Revert again.');
+            const scratch = await this.proxies!.replacementScratch();
+            const identity = await regularIdentity(join(scratch.directory, name));
+            if (!identity || !name.endsWith(`.${renamedFileKey(identity)}.mov`)) throw new Error('Staged proxy changed. Refresh and review Revert again.');
+            staged.set(id, { name, identity, scratch });
+        }
         const fresh: { metadata: LibraryMetadata; thumbnail: Buffer }[] = [];
         for (const id of ids) {
             const { metadata, identity } = await readLibraryMetadata(location, id);
@@ -437,6 +543,15 @@ export class LibraryCatalogue {
             valid => this.scanner.organization.restore(fresh.map(({ metadata }) => ({ fingerprint: metadata.fingerprint, attributes: metadata })), valid),
             () => this.scanner.organization.matchesDrafts(expected, expectedThumbnails));
         await this.serialize(async () => {
+            for (const [id, file] of staged) {
+                await this.validateLocation(location);
+                await this.proxies!.validateScratch(file.scratch);
+                const path = join(file.scratch.directory, file.name);
+                if (!this.scanner.canEditLibrary([id]) || this.staged.get(id) !== file.name || await regularIdentity(path) !== file.identity) {
+                    throw new Error('Staged proxy changed. Refresh and review Revert again.');
+                }
+                await unlink(path); this.staged.delete(id);
+            }
             const updated = new Map(fresh.map(entry => [entry.metadata.id, entry]));
             await this.save({ ...this.state, entries: this.state.entries.map(entry => {
                 const fresh = updated.get(entry.metadata.id);
@@ -455,15 +570,21 @@ export class LibraryCatalogue {
         if (this.error) throw new Error(this.error);
         const collection = await this.snapshot();
         const location = await this.inspect();
+        if (collection.libraryPath !== location.path) throw new Error('The Library changed. Review Commit again.');
         const selected = new Set(ids);
-        const shots = collection.shots.filter(shot => selected.has(shot.id) && shot.ingestState === 'changes-pending');
+        const shots = collection.shots.filter(shot => selected.has(shot.id) && shot.editable && shot.ingestState === 'changes-pending');
         if (!shots.length) throw new Error('No clips need committing.');
         const token = randomUUID();
         if (generation !== this.queue.workRevision) throw new Error('Work was stopped. Commit again when ready.');
-        this.review = { token, location, generation, created: Date.now(), entries: shots.map(shot => ({ id: shot.id, attributes: ingestAttributes(shot.organization!), thumbnailDigest: shot.hasCustomThumbnail ? shot.thumbnailDigest : undefined })) };
-        return { token, libraryEdits: true, metadataOnly: !shots.some(shot => shot.hasCustomThumbnail), libraryPath: location.path, clips: shots.map(shot => ({ id: shot.id, filename: shot.filename, bytes: 0, mode: 'replace', proxyReady: false,
-            files: [...(shot.hasCustomThumbnail ? [{ from: 'Updated thumbnail', to: join(location.path, libraryAssetName(shot.id, 'thumb', 'jpg')) }] : []),
-                { from: 'Clip metadata', to: join(location.path, libraryAssetName(shot.id, 'metadata', 'json')) }] })) };
+        const entries = await Promise.all(shots.map(async shot => ({ id: shot.id, attributes: ingestAttributes(shot.organization!),
+            thumbnailDigest: shot.hasCustomThumbnail ? shot.thumbnailDigest : undefined, proxy: await this.captureReplacement(shot, location) })));
+        this.review = { token, location, generation, created: Date.now(), entries };
+        return { token, libraryEdits: true, metadataOnly: !entries.some(entry => entry.thumbnailDigest || entry.proxy), libraryPath: location.path,
+            clips: shots.map((shot, index) => ({ id: shot.id, filename: shot.filename, bytes: entries[index].proxy?.bytes ?? 0,
+                mode: 'replace', proxyReady: !!entries[index].proxy, files: [
+                    ...(entries[index].proxy ? [{ from: 'Replace proxy', to: join(location.path, libraryAssetName(shot.id, 'proxy', 'mov')) }] : []),
+                    ...(shot.hasCustomThumbnail ? [{ from: 'Updated thumbnail', to: join(location.path, libraryAssetName(shot.id, 'thumb', 'jpg')) }] : []),
+                    { from: 'Clip metadata', to: join(location.path, libraryAssetName(shot.id, 'metadata', 'json')) }] })) };
     }
     async submit(token: string, ids: string[]) {
         const review = this.review;
@@ -473,23 +594,60 @@ export class LibraryCatalogue {
         const captures = await Promise.all(ids.map(async id => {
             const shot = current.shots.find(shot => shot.id === id);
             const entry = review.entries.find(entry => entry.id === id)!;
-            if (!shot?.editable || attributesChanged(shot.organization, entry.attributes) ||
+            if (entry.proxy) await this.validateReplacement(id, entry.proxy, review.location, entry.proxy.targetIdentity);
+            if (this.staged.get(id) !== entry.proxy?.name || !shot?.editable || attributesChanged(shot.organization, entry.attributes) ||
                 (shot.hasCustomThumbnail ? shot.thumbnailDigest : undefined) !== entry.thumbnailDigest) throw new Error('Local edits changed. Review again.');
             const thumbnail = entry.thumbnailDigest ? await this.scanner.cachedThumbnail(id, shot.metadata) : null;
             if (entry.thumbnailDigest && (!thumbnail || createHash('sha256').update(thumbnail).digest('hex') !== entry.thumbnailDigest)) throw new Error('Pending thumbnail is missing or changed. Set Thumb again.');
-            return { id, filename: shot.filename, attributes: structuredClone(entry.attributes), thumbnail: thumbnail ? Buffer.from(thumbnail) : undefined };
+            return { id, filename: shot.filename, proxy: entry.proxy, attributes: structuredClone(entry.attributes), thumbnail: thumbnail ? Buffer.from(thumbnail) : undefined };
         }));
         await this.queue.status();
         if (review.generation !== this.queue.workRevision) throw new Error('Work was stopped. Commit again when ready.');
         const storageWait = await this.configuredStorageWait();
         const result = this.queue.enqueueLibrary(captures.map(capture => {
             const attempt: CommitAttempt = {};
-            return { ...capture, kind: capture.thumbnail ? 'commit' as const : 'metadata' as const,
+            return { ...capture, kind: capture.thumbnail || capture.proxy ? 'commit' as const : 'metadata' as const,
                 execute: (signal, progress) => this.commit(capture, review.location, signal, progress, storageWait, attempt) };
         }), token);
         this.review = undefined; this.changed(); return result;
     }
-    private async commit(capture: { id: string; attributes: ReturnType<typeof ingestAttributes>; thumbnail?: Buffer }, location: LibraryLocation, signal: AbortSignal, progress: (percent: number) => void, configuredWait: number, attempt: CommitAttempt = {}) {
+    private async publishReplacement(id: string, proxy: ReplacementCapture, location: LibraryLocation, signal: AbortSignal, progress: (percent: number) => void) {
+        const guard = () => this.validateReplacement(id, proxy, location, proxy.targetIdentity, signal);
+        await guard();
+        signal.throwIfAborted();
+        const target = join(location.path, libraryAssetName(id, 'proxy', 'mov'));
+        const part = join(location.path, `${id}.proxy.${randomUUID()}.partial`);
+        const handle = await open(part, 'wx', 0o600);
+        await handle.close();
+        let owned = await regularIdentity(part);
+        try {
+            await this.transfer(proxy.path, part, signal, percent => progress(Math.min(98, percent)));
+            await this.validateLocation(location, signal);
+            // rsync can replace the temporary inode. Capture the transferred file before publication.
+            owned = await regularIdentity(part);
+            if (!owned || Number(owned.split(':')[2]) !== proxy.bytes) throw new Error('Staged Library transfer is incomplete.');
+            await guard();
+            if (await regularIdentity(part) !== owned) throw new Error('Staged Library transfer changed.');
+            signal.throwIfAborted();
+            try {
+                await rename(part, target);
+                const expected = renamedFileKey(owned);
+                owned = null;
+                await this.validateLocation(location);
+                const published = await regularIdentity(target);
+                if (!published || renamedFileKey(published) !== expected) throw new Error('Published file identity changed.');
+                return published;
+            } catch (error) {
+                throw new AppError(`Proxy publication could not be verified. Refresh the Library before retrying. ${error instanceof Error ? error.message : error}`,
+                    'PROXY_PUBLICATION_UNKNOWN', 'unknown');
+            }
+        } finally {
+            if (owned) await this.validateLocation(location).then(async () => {
+                if (await regularIdentity(part) === owned) await unlink(part);
+            }).catch(() => undefined);
+        }
+    }
+    private async commit(capture: { id: string; attributes: ReturnType<typeof ingestAttributes>; thumbnail?: Buffer; proxy?: ReplacementCapture }, location: LibraryLocation, signal: AbortSignal, progress: (percent: number) => void, configuredWait: number, attempt: CommitAttempt = {}) {
         const { id, attributes } = capture;
         signal.throwIfAborted(); await this.validateLocation(location, signal, configuredWait);
         const { metadata, identity } = await readLibraryMetadata(location, id);
@@ -519,18 +677,34 @@ export class LibraryCatalogue {
             }
             await this.validateLocation(location, signal, configuredWait);
             signal.throwIfAborted();
-            progress(99);
             await writeFile(temporary, JSON.stringify(updated, null, 2) + '\n', { flag: 'wx', flush: true });
             await this.validateLocation(location, signal, configuredWait); signal.throwIfAborted();
             if (await libraryFileIdentity(path) !== identity) throw new Error('Library metadata changed during Commit. Commit again.');
+            if (capture.proxy) {
+                attempt.publishedProxy = await this.publishReplacement(id, capture.proxy, location, signal, progress);
+                // Once the replacement is published, finish metadata and receipt even if Stop races it.
+                await this.validateReplacement(id, capture.proxy, location, attempt.publishedProxy);
+                if (await libraryFileIdentity(path) !== identity) throw new Error('Library metadata changed during proxy publication.');
+            } else signal.throwIfAborted();
+            progress(99);
             await rename(temporary, path);
             // Publication won a possible Stop race; persist that success without an abort check.
             await this.scanner.organization.markIngested(metadata.fingerprint, { libraryPath: location.path,
                 signature: ingestionSignature(attributes, digest), thumbnailDigest: digest, ingestedAt: new Date().toISOString() });
             await this.serialize(async () => {
-                const entries = this.state.entries.map(entry => entry.metadata.id === id ? { ...entry, metadata: updated, thumbnail: true, thumbnailDigest: digest, thumbnailRevision: capture.thumbnail ? Date.now() : entry.thumbnailRevision } : entry);
+                if (capture.proxy) {
+                    await this.validateReplacement(id, capture.proxy, location, attempt.publishedProxy!);
+                    await unlink(capture.proxy.path);
+                    this.staged.delete(id);
+                }
+                const entries = this.state.entries.map(entry => entry.metadata.id === id ? { ...entry, metadata: updated, proxy: !!capture.proxy || entry.proxy, thumbnail: true, thumbnailDigest: digest, thumbnailRevision: capture.thumbnail ? Date.now() : entry.thumbnailRevision } : entry);
                 await this.save({ ...this.state, entries }, id);
             });
+        } catch (error) {
+            if (attempt.publishedProxy) throw new AppError(
+                `The Library proxy was replaced, but Commit could not finish. Refresh the Library before retrying. ${error instanceof Error ? error.message : error}`,
+                'PROXY_COMMIT_INCOMPLETE', 'unknown');
+            throw error;
         } finally {
             await this.validateLocation(location, undefined, configuredWait).then(() => unlink(temporary)).catch(() => undefined);
             if (staging) await rm(staging, { recursive: true, force: true });

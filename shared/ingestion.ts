@@ -44,7 +44,7 @@ export interface IngestStatus {
     // Independent active transfer lanes; current is the Commit worker.
     current?: { id: string; filename: string; percent: number; phase: 'transferring' | 'metadata'; kind?: 'commit' | 'sync' };
     exportCurrent?: IngestStatus['current'];
-    errors: { id: string; filename: string; message: string; eventId: string; kind?: 'commit' | 'sync' }[];
+    errors: { id: string; filename: string; message: string; eventId: string; kind?: 'commit' | 'sync' | 'proxy' }[];
     acceptedReviews?: string[];
 }
 

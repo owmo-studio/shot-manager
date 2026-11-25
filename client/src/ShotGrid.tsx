@@ -92,7 +92,7 @@ function ShotCard({
                 : shot.ingestState === "synced"
                   ? "Synced"
                   : shot.ingestState === "changes-pending"
-                    ? "Needs Syncing"
+                    ? shot.pendingProxy ? "Update · Replacement proxy ready to commit" : "Needs Syncing"
                     : discovering
                       ? "Discovering: preparing thumbnail"
                       : "Editable";
@@ -202,6 +202,9 @@ function ShotCard({
                             />
                         ) : null}
                     </span>
+                    {shot.pendingProxy && !working && (
+                        <span className="absolute bottom-1 right-1 rounded bg-zinc-950/85 px-1.5 text-xs text-yellow-300">Update</span>
+                    )}
                     {unavailable && (
                         <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-red-950/30">
                             <span className="rounded-md bg-[#111318]/80 px-3 py-1.5 text-center text-xs font-medium text-red-300">

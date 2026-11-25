@@ -42,6 +42,10 @@ Commit copies the full-resolution video as-is and leaves the original in place. 
 
 Shot Manager writes the JSON after the media transfers succeed. The committed clip then leaves Import and appears in Library.
 
+### Re-encode Library proxies
+
+Select one or more clips in **Library**, choose **Advanced → Re-Encode Proxies…**, and confirm the filenames. Shot Manager reads each Library original and encodes a replacement in the managed Cache. An **Update** badge appears when the replacement is ready. Choose **Commit** to replace the published proxy, or **Revert** to discard the replacement and restore the clip’s Library edits.
+
 ### Camera recognition
 
 Shot Manager reads device information embedded in each original. Import scans MP4, MOV, MXF, M4V, MTS, M2TS, AVI, MKV, and WebM files.
@@ -50,7 +54,7 @@ Shot Manager reads device information embedded in each original. Import scans MP
 - Sony ZV-E10 II
 - Apple iPhone
 
-Optional Sony S-Log3 and Apple Log viewing LUTs apply to previews and thumbnails. To install one, choose **Shot Manager → Open Resources Folder…** in the macOS menu bar, copy the file into `LUT/`, then reselect the clip. [Supported LUTs and required filenames](resources/README.md)
+Optional Sony S-Log3 and Apple Log viewing LUTs apply to previews and thumbnails. To install one, choose **Advanced → Open Resources Folder…** in the macOS menu bar, copy the file into `LUT/`, then reselect the clip. [Supported LUTs and required filenames](resources/README.md)
 
 ### Export
 

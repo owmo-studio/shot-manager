@@ -283,7 +283,7 @@ if (!process.versions.electron) {
                 previewConfigurationOptions:removals=>ipcRenderer.invoke('fixture:preview-options',removals),saveConfigurationOptions:(removals,reviewToken)=>ipcRenderer.invoke('fixture:save-options',removals,reviewToken),getTagVocabulary:()=>ipcRenderer.invoke('fixture:vocabulary'),updateOrganization:(ids,action)=>ipcRenderer.invoke('fixture:organization',ids,action),
                 getBackendStatus:async()=>({state:'connected',health:{status:'ok'}}),getShots:()=>ipcRenderer.invoke('fixture:shots'),
                 onShotsChanged:listener=>{const fn=(_,value)=>listener(value);ipcRenderer.on('shots:changed',fn);return()=>ipcRenderer.removeListener('shots:changed',fn)},
-                onOrphanCleanupRequested:()=>()=>{},
+                onOrphanCleanupRequested:()=>()=>{}, setReencodeEnabled:async()=>{}, onReencodeRequested:()=>()=>{},
                 getShotThumbnail:async()=>null,getShotDetails:async()=>({file:{filename:'fixture',path:'/synthetic/fixture',bytes:100},embeddedMetadata:[],errors:[]}),
                 cancelClips:ids=>ipcRenderer.invoke('fixture:cancel',ids),
                 ejectClips:ids=>ipcRenderer.invoke('fixture:eject',ids)

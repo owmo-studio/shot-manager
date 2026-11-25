@@ -57,6 +57,7 @@ export function CommitReviewDialog({
                                 <p className="break-all">
                                     {clip.filename} {clip.mode !== 'synced' && <span className="text-xs text-zinc-500">{bytes(clip.bytes)}</span>}
                                 </p>
+                                {review.libraryEdits && clip.proxyReady && <p className="mt-1 text-xs text-zinc-400">Replace Library proxy</p>}
                                 {clip.mode === 'synced' && <p className="mt-1 text-xs text-zinc-500">Remove from workspace.</p>}
                             </div>
                             <button
