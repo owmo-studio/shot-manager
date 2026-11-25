@@ -45,7 +45,12 @@ async function until(test, message) {
             while (hold) { signal.throwIfAborted(); await wait(5); }
             if (fail) throw Error('Synthetic encode failed');
         };
-        const inspect = () => inspectLibrary(library);
+        let afterPublish;
+        const inspect = async () => {
+            const location = await inspectLibrary(library);
+            if (afterPublish) await afterPublish();
+            return location;
+        };
         let sync;
         function start() {
             scanner = new ShotScanner(join(cache, 'thumbs'), undefined, join(cache, 'drafts.json'));
@@ -101,9 +106,28 @@ async function until(test, message) {
         await until(async () => !(await queue.status()).active, 'Commit did not finish');
         assert.equal((await shot()).pendingProxy, true);
         assert.equal(await fs.readFile(target, 'utf8'), 'changed during upload');
-        catalogue.transfer = rsyncFile;
+        // Model a share reporting a different timestamp under the final name.
+        // Same-size corruption must still block metadata publication and preserve the staged copy.
+        let corrupt = true;
+        catalogue.transfer = async (from, part, ...rest) => {
+            await rsyncFile(from, part, ...rest);
+            afterPublish = async () => {
+                try { await fs.stat(part); return; }
+                catch (error) { if (error.code !== 'ENOENT') throw error; }
+                afterPublish = undefined;
+                if (corrupt) await fs.writeFile(target, Buffer.alloc((await fs.stat(target)).size, 0xff));
+                await fs.utimes(target, new Date(0), new Date(0));
+            };
+        };
+        plan = await catalogue.preview([id]); await catalogue.submit(plan.token, [id]);
+        await until(async () => !(await queue.status()).active, 'Corrupt publication did not finish');
+        assert.ok((await queue.status()).errors.some(error => /contents differ/.test(error.message)));
+        assert.equal((await shot()).pendingProxy, true);
+        assert.equal(JSON.parse(await fs.readFile(join(library, id + '.metadata.json'))).notes, '');
+        corrupt = false;
         plan = await catalogue.preview([id]); await catalogue.submit(plan.token, [id]);
         await until(async () => !(await queue.status()).active, 'Publication did not finish');
+        catalogue.transfer = rsyncFile;
         assert.equal(await fs.readFile(target, 'utf8'), 'replacement-' + calls);
         assert.equal((await shot()).pendingProxy, false);
         assert.equal((await shot()).ingestState, undefined);
@@ -142,6 +166,17 @@ async function until(test, message) {
         assert.match(await fs.readFile(join(library, second.value + '.proxy.mov'), 'utf8'), /^replacement-/);
         assert.equal((await catalogue.snapshot()).shots.find(clip => clip.id === id).pendingProxy, true);
         await catalogue.revert([id]);
+        const subset = await catalogue.previewReencode(ids);
+        for (const invalid of [[], [id, id], [id, '0'.repeat(64)]]) {
+            await assert.rejects(catalogue.submitReencode(subset.token, invalid), /review/i);
+        }
+        const beforeSubset = calls;
+        assert.deepEqual(await catalogue.submitReencode(subset.token, [second.value]), { queued: 1 });
+        await until(async () => (await catalogue.snapshot()).shots.some(clip => clip.id === second.value && clip.editable && clip.pendingProxy), 'Included clip was not encoded');
+        assert.equal(calls, beforeSubset + 1);
+        const excluded = (await catalogue.snapshot()).shots.find(clip => clip.id === id);
+        assert.equal(excluded.pendingProxy, false);
+        assert.equal(excluded.editable, true);
         console.log('PASS: reviewed Library proxy encoding, Stop/failure, restart, Revert, Export gating, guarded Commit and source preservation.');
     } finally { await close(); await fs.rm(root, { recursive: true, force: true }); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

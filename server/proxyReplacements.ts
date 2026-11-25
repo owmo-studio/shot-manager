@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { lstat, readdir } from 'node:fs/promises';
+import { constants, type Stats } from 'node:fs';
+import { lstat, open, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { LibraryLocation } from './library';
 
@@ -13,15 +14,40 @@ export function replacementName(id: string, library: LibraryLocation, source: st
     return [id, 'replacement', libraryKey(library), digest([source, sourceIdentity]), renamedFileKey(localIdentity), 'mov'].join('.');
 }
 
+function fileIdentity(info: Stats) {
+    if (!info.isFile() || info.nlink !== 1) throw new Error('Proxy operation requires a regular file with a single link.');
+    return [info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs].join(':');
+}
+
 export async function regularIdentity(path: string) {
     try {
-        const info = await lstat(path);
-        if (!info.isFile() || info.nlink !== 1) throw new Error(`Proxy operation requires a regular file with a single link: ${path}`);
-        return [info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs].join(':');
+        return fileIdentity(await lstat(path));
     } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
         throw error;
     }
+}
+
+async function proxyDigest(path: string, expected: string) {
+    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+        if (fileIdentity(await file.stat()) !== expected) throw new Error('Proxy changed before verification.');
+        const hash = createHash('sha256');
+        for await (const chunk of file.createReadStream({ highWaterMark: 1024 * 1024, autoClose: false })) hash.update(chunk);
+        if (await regularIdentity(path) !== expected) throw new Error('Proxy changed during verification.');
+        return hash.digest('hex');
+    } finally { await file.close(); }
+}
+
+export async function verifyPublishedProxy(target: string, transferred: string, local: { path: string; identity: string; bytes: number }) {
+    const published = await regularIdentity(target);
+    if (!published || Number(published.split(':')[2]) !== local.bytes) throw new Error('Published proxy is missing or its size changed.');
+    if (renamedFileKey(published) !== renamedFileKey(transferred)) {
+        // A share may report different attributes through the final name. Verify the actual proxy bytes in that case.
+        const expected = await proxyDigest(local.path, local.identity);
+        if (await proxyDigest(target, published) !== expected) throw new Error('Published proxy contents differ from the verified Cache copy.');
+    }
+    return published;
 }
 
 export async function listReplacements(directory: string, library: LibraryLocation) {

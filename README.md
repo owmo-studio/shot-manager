@@ -44,7 +44,7 @@ Shot Manager writes the JSON after the media transfers succeed. The committed cl
 
 ### Re-encode Library proxies
 
-Select one or more clips in **Library**, choose **Advanced → Re-Encode Proxies…**, and confirm the filenames. Shot Manager reads each Library original and encodes a replacement in the managed Cache. An **Update** badge appears when the replacement is ready. Choose **Commit** to replace the published proxy, or **Revert** to discard the replacement and restore the clip’s Library edits.
+Select one or more clips in **Library**, choose **Advanced → Re-Encode Proxies…**, and review the filenames. Use **×** to exclude a clip or **−** to restore it, then click **Re-Encode**. Shot Manager reads each Library original and encodes a replacement in the managed Cache. An **Update** badge appears when the replacement is ready. Choose **Commit** to replace the published proxy, or **Revert** to discard the replacement and restore the clip’s Library edits.
 
 ### Camera recognition
 

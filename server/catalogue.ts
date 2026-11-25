@@ -25,7 +25,7 @@ import { DEFAULT_STORAGE_WAIT_SECONDS, withStorageRecovery } from './storageReco
 import type { StorageRetryInfo } from './storageRecovery';
 
 import type { ProxyQueue, Scratch } from './proxies';
-import { checkReplacement, renamedFileKey, regularIdentity, replacementName } from './proxyReplacements';
+import { checkReplacement, renamedFileKey, regularIdentity, replacementName, verifyPublishedProxy } from './proxyReplacements';
 import { readExportOwner } from './exportFiles';
 import { AppError } from '../shared/errors';
 
@@ -266,8 +266,10 @@ export class LibraryCatalogue {
         const review = this.reencodeReview;
         const selected = new Set(ids);
         if (!this.proxies || !review || review.token !== token || Date.now() - review.created > 30 * 60_000 ||
-            selected.size !== ids.length || ids.length !== review.entries.length || review.entries.some(e => !selected.has(e.shot.id))) throw new Error('Review the proxy selection again.');
-        const jobs = review.entries.map(({ shot, sourceIdentity }) => {
+            !ids.length || selected.size !== ids.length) throw new Error('Review the proxy selection again.');
+        const entries = review.entries.filter(entry => selected.has(entry.shot.id));
+        if (entries.length !== selected.size) throw new Error('Review the proxy selection again.');
+        const jobs = entries.map(({ shot, sourceIdentity }) => {
             const validateSource = async () => {
                 if (this.state.path !== review.location.path || this.staged.has(shot.id) || await regularIdentity(shot.filePath) !== sourceIdentity) {
                     throw new Error('The Library source or staged proxy changed. Review again.');
@@ -631,12 +633,10 @@ export class LibraryCatalogue {
             signal.throwIfAborted();
             try {
                 await rename(part, target);
-                const expected = renamedFileKey(owned);
+                const transferred = owned;
                 owned = null;
                 await this.validateLocation(location);
-                const published = await regularIdentity(target);
-                if (!published || renamedFileKey(published) !== expected) throw new Error('Published file identity changed.');
-                return published;
+                return await verifyPublishedProxy(target, transferred, proxy);
             } catch (error) {
                 throw new AppError(`Proxy publication could not be verified. Refresh the Library before retrying. ${error instanceof Error ? error.message : error}`,
                     'PROXY_PUBLICATION_UNKNOWN', 'unknown');
