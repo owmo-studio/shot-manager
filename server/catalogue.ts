@@ -26,6 +26,7 @@ import type { StorageRetryInfo } from './storageRecovery';
 
 import type { ProxyQueue, Scratch } from './proxies';
 import { checkReplacement, renamedFileKey, regularIdentity, replacementName, verifyPublishedProxy } from './proxyReplacements';
+import type { StagedReplacement } from './proxyReplacements';
 import { readExportOwner } from './exportFiles';
 import { AppError } from '../shared/errors';
 
@@ -50,7 +51,7 @@ export class LibraryCatalogue {
     private warnings: string[] = [];
     private verified = new Map<string, { path: string; error?: string }>();
     private review?: { token: string; location: LibraryLocation; generation: number; created: number; entries: { id: string; attributes: ReturnType<typeof ingestAttributes>; thumbnailDigest?: string; proxy?: ReplacementCapture }[] };
-    private staged = new Map<string, string>();
+    private staged = new Map<string, StagedReplacement>();
     private stagedLibrary?: LibraryLocation;
     private reencodeReview?: { token: string; location: LibraryLocation; generation: number; created: number; entries: { shot: VideoShot; sourceIdentity: string }[] };
     private transfer = rsyncFile;
@@ -188,7 +189,7 @@ export class LibraryCatalogue {
             await this.load();
             try {
                 const location = await this.inspect();
-                const staged = await this.proxies?.replacementInventory(location) ?? new Map<string, string>();
+                const staged = await this.proxies?.replacementInventory(location) ?? new Map<string, StagedReplacement>();
                 const listing = await listLibrary(location, signal);
                 const ids = [...listing.assets.keys()].filter(id => listing.assets.get(id)!.includes(libraryAssetName(id, 'metadata', 'json')));
                 const entries = new Map<string, CatalogueEntry>();
@@ -285,7 +286,7 @@ export class LibraryCatalogue {
                 if (await libraryFileIdentity(target)) throw new Error('A staged proxy appeared while encoding.');
                 signal.throwIfAborted();
                 await rename(temporary, target);
-                this.staged.set(shot.id, name); this.changed();
+                this.staged.set(shot.id, { name }); this.changed();
             }) };
         });
         await this.validateLocation(review.location);
@@ -298,19 +299,19 @@ export class LibraryCatalogue {
         return { queued: jobs.length };
     }
     private async captureReplacement(shot: VideoShot, location: LibraryLocation): Promise<ReplacementCapture | undefined> {
-        const name = this.staged.get(shot.id);
-        if (!name) return;
+        const staged = this.staged.get(shot.id);
+        if (!staged) return;
         const scratch = await this.proxies!.replacementScratch();
         const sourceIdentity = await regularIdentity(shot.filePath);
         if (!sourceIdentity) throw new Error('Library source is unavailable.');
-        const asset = await checkReplacement(scratch.directory, name, shot.id, location, shot.relativePath, sourceIdentity);
+        const asset = await checkReplacement(scratch.directory, staged, shot.id, location, shot.relativePath, sourceIdentity);
         const targetIdentity = await regularIdentity(join(location.path, libraryAssetName(shot.id, 'proxy', 'mov')));
-        return { ...asset, name, source: shot.relativePath, sourceIdentity, targetIdentity, scratch };
+        return { ...asset, name: staged.name, source: shot.relativePath, sourceIdentity, targetIdentity, scratch };
     }
     private async validateReplacement(id: string, proxy: ReplacementCapture, location: LibraryLocation, targetIdentity: string | null, signal?: AbortSignal) {
         await this.validateLocation(location, signal);
         await this.proxies!.validateScratch(proxy.scratch);
-        if (this.staged.get(id) !== proxy.name || await regularIdentity(proxy.path) !== proxy.identity ||
+        if (this.staged.get(id)?.name !== proxy.name || await regularIdentity(proxy.path) !== proxy.identity ||
             await regularIdentity(join(location.path, proxy.source)) !== proxy.sourceIdentity ||
             await regularIdentity(join(location.path, libraryAssetName(id, 'proxy', 'mov'))) !== targetIdentity) {
             throw new Error('The reviewed source, staged proxy or Library proxy changed. Review Commit again.');
@@ -524,7 +525,7 @@ export class LibraryCatalogue {
         if (location.path !== this.state.path) throw new Error('The Library changed. Refresh it first.');
         const staged = new Map<string, { name: string; identity: string; scratch: Scratch }>();
         for (const id of ids) {
-            const name = this.staged.get(id);
+            const name = this.staged.get(id)?.name;
             if (!name) continue;
             if (JSON.stringify(this.stagedLibrary) !== JSON.stringify(location)) throw new Error('The Library changed. Refresh and review Revert again.');
             const scratch = await this.proxies!.replacementScratch();
@@ -549,7 +550,7 @@ export class LibraryCatalogue {
                 await this.validateLocation(location);
                 await this.proxies!.validateScratch(file.scratch);
                 const path = join(file.scratch.directory, file.name);
-                if (!this.scanner.canEditLibrary([id]) || this.staged.get(id) !== file.name || await regularIdentity(path) !== file.identity) {
+                if (!this.scanner.canEditLibrary([id]) || this.staged.get(id)?.name !== file.name || await regularIdentity(path) !== file.identity) {
                     throw new Error('Staged proxy changed. Refresh and review Revert again.');
                 }
                 await unlink(path); this.staged.delete(id);
@@ -597,7 +598,7 @@ export class LibraryCatalogue {
             const shot = current.shots.find(shot => shot.id === id);
             const entry = review.entries.find(entry => entry.id === id)!;
             if (entry.proxy) await this.validateReplacement(id, entry.proxy, review.location, entry.proxy.targetIdentity);
-            if (this.staged.get(id) !== entry.proxy?.name || !shot?.editable || attributesChanged(shot.organization, entry.attributes) ||
+            if (this.staged.get(id)?.name !== entry.proxy?.name || !shot?.editable || attributesChanged(shot.organization, entry.attributes) ||
                 (shot.hasCustomThumbnail ? shot.thumbnailDigest : undefined) !== entry.thumbnailDigest) throw new Error('Local edits changed. Review again.');
             const thumbnail = entry.thumbnailDigest ? await this.scanner.cachedThumbnail(id, shot.metadata) : null;
             if (entry.thumbnailDigest && (!thumbnail || createHash('sha256').update(thumbnail).digest('hex') !== entry.thumbnailDigest)) throw new Error('Pending thumbnail is missing or changed. Set Thumb again.');

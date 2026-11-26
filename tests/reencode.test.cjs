@@ -1,5 +1,6 @@
 // Library-only jobs with synthetic media, isolated roots, and a controllable encoder.
 const assert = require('node:assert/strict');
+const { createHash } = require('node:crypto');
 const fs = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { join, resolve } = require('node:path');
@@ -16,13 +17,13 @@ async function until(test, message) {
     try {
         const entry = join(root, 'entry.ts');
         await fs.writeFile(entry, ['server/proxies', 'server/catalogue', 'server/scanner', 'server/ingestion', 'server/library',
-            'server/fingerprints', 'shared/shots', 'server/sync', 'server/rsync'].map(f => `export * from ${JSON.stringify(resolve(f + '.ts'))}`).join('\n'));
+            'server/fingerprints', 'shared/shots', 'server/sync', 'server/rsync', 'server/proxyReplacements'].map(f => `export * from ${JSON.stringify(resolve(f + '.ts'))}`).join('\n'));
         const bundle = await (await import('vite')).build({ configFile: false, logLevel: 'silent', build: { ssr: true, write: false,
             rollupOptions: { input: entry, output: { format: 'cjs' } } } });
         const mod = new (require('node:module'))(__filename, module); mod.paths = module.paths;
         mod._compile(bundle.output.find(c => c.isEntry).code, __filename);
         const { ProxyQueue, ShotScanner, IngestQueue, LibraryCatalogue, inspectLibrary, VideoFingerprintStore,
-            emptyVideoMetadata, LibrarySync, rsyncFile } = mod.exports;
+            emptyVideoMetadata, LibrarySync, rsyncFile, checkReplacement } = mod.exports;
         const library = join(root, 'library'), cache = join(root, 'cache'), dest = join(root, 'export');
         await Promise.all([library, cache, dest].map(path => fs.mkdir(path)));
         const config = { version: 1, libraryPath: library, scratchPath: cache, scratchMount: (await inspectLibrary(cache)).mount };
@@ -45,11 +46,12 @@ async function until(test, message) {
             while (hold) { signal.throwIfAborted(); await wait(5); }
             if (fail) throw Error('Synthetic encode failed');
         };
-        let afterPublish;
+        let afterPublish, offline = false, smbLocation;
         const inspect = async () => {
+            if (offline) throw Error('The Library volume is not mounted.');
             const location = await inspectLibrary(library);
             if (afterPublish) await afterPublish();
-            return location;
+            return { ...location, ...smbLocation };
         };
         let sync;
         function start() {
@@ -144,6 +146,7 @@ async function until(test, message) {
         await fs.writeFile(join(library, second.value + '.metadata.json'), JSON.stringify({ ...metadata, id: second.value,
             fingerprint: second, originalFilename: 'Second.mp4', bytes: (await fs.stat(secondFile)).size }));
         await fs.copyFile(join(library, id + '.thumb.jpg'), join(library, second.value + '.thumb.jpg'));
+        smbLocation = { mount: '//fixture/share:/Volumes/fixture:smbfs' };
         const ids = [id, second.value];
         const batch = await catalogue.previewReencode(ids);
         assert.deepEqual(batch.clips.map(clip => clip.filename), ['Camera.mp4', 'Second.mp4']);
@@ -165,7 +168,53 @@ async function until(test, message) {
         await until(async () => !(await queue.status()).active, 'Missing original proxy was not repaired');
         assert.match(await fs.readFile(join(library, second.value + '.proxy.mov'), 'utf8'), /^replacement-/);
         assert.equal((await catalogue.snapshot()).shots.find(clip => clip.id === id).pendingProxy, true);
-        await catalogue.revert([id]);
+        const beforeDisconnect = await catalogue.preview([id]);
+        const location = await inspect();
+        const [device, inode] = location.identity.split(':');
+        const previousDevice = String(Math.floor(Number(device) / 65536) * 65536 + (Number(device) % 65536 === 1 ? 2 : 1));
+        offline = true;
+        assert.match((await catalogue.refresh()).error, /not mounted/);
+        offline = false;
+        smbLocation.identity = previousDevice + ':' + inode;
+        const reconnected = await catalogue.refresh();
+        assert.equal(reconnected.error, undefined);
+        const pending = reconnected.shots.find(clip => clip.id === id);
+        assert.equal(pending.ingestState, 'changes-pending');
+        assert.equal(pending.proxyLocation, 'cache');
+        assert.equal(reconnected.shots.find(clip => clip.id === second.value).mediaReadiness.state, 'committed');
+        await assert.rejects(catalogue.submit(beforeDisconnect.token, [id]), /volume changed/);
+        // Build a Cache filename exactly as the previous release did, with a
+        // different mount generation in both the directory and source identities.
+        const proxyDirectory = join(cache, 'Shot Manager Cache', 'proxies');
+        const [newName] = await fs.readdir(proxyDirectory);
+        const stagedInfo = await fs.stat(join(proxyDirectory, newName));
+        const sourceInfo = await fs.stat(source);
+        const remountedSource = [previousDevice, sourceInfo.ino, sourceInfo.size, sourceInfo.mtimeMs, sourceInfo.ctimeMs].join(':');
+        const checked = await checkReplacement(proxyDirectory, { name: newName }, id, await inspect(), id + '.source.mp4', remountedSource);
+        assert.equal(checked.bytes, stagedInfo.size);
+        const hash = values => createHash('sha256').update(JSON.stringify(values)).digest('hex').slice(0, 32);
+        const legacyName = [id, 'replacement', hash([library, location.mount, smbLocation.identity]),
+            hash([id + '.source.mp4', remountedSource]),
+            hash([stagedInfo.dev, stagedInfo.ino, stagedInfo.size, stagedInfo.mtimeMs].map(String)), 'mov'].join('.');
+        await fs.rename(join(proxyDirectory, newName), join(proxyDirectory, legacyName));
+        delete smbLocation.identity;
+        await close(); start();
+        const recovered = await catalogue.refresh();
+        assert.equal(recovered.error, undefined);
+        assert.equal(recovered.shots.find(clip => clip.id === id).ingestState, 'changes-pending');
+        const recoveredReview = await catalogue.preview([id]);
+        assert.ok(recoveredReview.clips[0].files.some(file => file.from === 'Replace proxy'));
+        // Even with a matching clip ID, a different Library directory cannot claim the legacy file.
+        smbLocation.identity = device + ':' + (BigInt(inode) + 1n);
+        assert.equal((await catalogue.refresh()).shots.find(clip => clip.id === id).pendingProxy, false);
+        delete smbLocation.identity;
+        const recoveredBytes = await fs.readFile(join(proxyDirectory, legacyName));
+        const freshCommit = await catalogue.preview([id]);
+        await catalogue.submit(freshCommit.token, [id]);
+        await until(async () => !(await queue.status()).active, 'Recovered proxy Commit did not finish');
+        assert.deepEqual(await fs.readFile(target), recoveredBytes);
+        assert.deepEqual(await fs.readdir(proxyDirectory), []);
+        assert.equal((await catalogue.refresh()).shots.find(clip => clip.id === id).mediaReadiness.state, 'committed');
         const subset = await catalogue.previewReencode(ids);
         for (const invalid of [[], [id, id], [id, '0'.repeat(64)]]) {
             await assert.rejects(catalogue.submitReencode(subset.token, invalid), /review/i);
@@ -177,6 +226,9 @@ async function until(test, message) {
         const excluded = (await catalogue.snapshot()).shots.find(clip => clip.id === id);
         assert.equal(excluded.pendingProxy, false);
         assert.equal(excluded.editable, true);
-        console.log('PASS: reviewed Library proxy encoding, Stop/failure, restart, Revert, Export gating, guarded Commit and source preservation.');
+        await fs.writeFile(join(library, second.value + '.source.mp4'), 'changed after encoding');
+        await assert.rejects(catalogue.preview([second.value]), /source changed/);
+        assert.equal((await fs.readdir(proxyDirectory)).length, 1);
+        console.log('PASS: reviewed Library proxy encoding, Stop/failure, restart, SMB remount and legacy recovery, Revert, Export gating, guarded Commit and source preservation.');
     } finally { await close(); await fs.rm(root, { recursive: true, force: true }); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

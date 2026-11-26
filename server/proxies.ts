@@ -12,6 +12,7 @@ import { ShotScanner } from './scanner';
 import { rename } from 'node:fs/promises';
 import { inspectProxySource, verifyProxy } from './proxyMedia';
 import { listReplacements } from './proxyReplacements';
+import type { StagedReplacement } from './proxyReplacements';
 import { proxyColorFilters } from './proxyColor';
 
 export const scratchFolder = 'Shot Manager Cache';
@@ -136,7 +137,7 @@ export class ProxyQueue {
     }
     async replacementInventory(location: LibraryLocation) {
         const configuration = await this.configuration();
-        if (!configuration.scratchPath) return new Map<string, string>();
+        if (!configuration.scratchPath) return new Map<string, StagedReplacement>();
         const scratch = await inspectScratch(configuration, this.scanner.mediaDirectories());
         return listReplacements(scratch.directory, location);
     }
