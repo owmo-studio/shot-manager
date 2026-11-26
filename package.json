@@ -1,6 +1,6 @@
 {
     "name": "shot-manager",
-    "version": "1.3.0",
+    "version": "1.3.1",
     "private": true,
     "license": "MIT",
     "description": "A local desktop workspace for video processing",

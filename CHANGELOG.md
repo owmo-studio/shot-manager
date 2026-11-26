@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.1 - 2026-11-26
+
+### Fixed
+
+- After reconnecting an SMB Library, **Refresh** shows clips with staged replacement proxies as **Update** again. This also recovers matching proxies encoded with 1.3.0 so you can commit them without re-encoding.
+
 ## 1.3.0 - 2026-11-25
 
 ### Added
